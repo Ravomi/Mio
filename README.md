@@ -16,7 +16,7 @@ Mio 将模型调用、代码工具和对话历史组织成完整工作流程：�
 - **子任务可以独立推进。** 按需启用原生子代理，独立会话支持异步委派、状态查询、取消、续接和分叉；探索任务默认只读。
 - **模型与界面解耦。** CLI 接入 OpenAI 兼容服务，包括兼容的本地模型；Rust 库还提供账户与其他服务适配。核心不绑定特定 UI 框架。
 
-项目处于早期阶段，目前通过本地模拟服务和 Linux 原生命令测试验收；没有发布预编译安装包，也没有宣称不同平台或真实账号服务已全面验证。
+项目处于早期阶段，通过本地模拟服务和 Linux 原生命令测试验收；Antigravity 已在当前 Linux 环境完成真实账户调用验证。没有发布预编译安装包，也没有宣称不同平台或其他真实账号服务已全面验证。
 
 ## 开始使用
 
@@ -108,6 +108,19 @@ JSON Lines 事件形状示例：
 
 完整示例见 [`examples/host.rs`](examples/host.rs)。示例 Shell 明确返回“未实现”，不会伪造执行结果。`Config`、`Services` 支持库层的 OpenAI 兼容接口、Codex 与 DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
 
+CLI 支持导入已有本机 Antigravity OAuth 登录及默认模型：
+
+```bash
+mio --import-antigravity ~/.pi/agent
+mio --provider antigravity --subagents --cwd /path/to/project -p '委派只读子任务分析项目，收集结果后汇总'
+```
+
+导入目录须包含兼容的 `auth.json`、`settings.json`，以及已安装提供方的 OAuth 应用元数据。导入过程只解析数据，不启动外部 Agent 或执行插件 JavaScript。也可用 `MIO_GOOGLE_CLIENT_ID`、`MIO_GOOGLE_CLIENT_SECRET` 显式提供与原授权对应的 OAuth 应用信息。
+
+授权、默认模型和思考档位保存到 `$MIO_CONFIG_DIR/antigravity-profile.json`；目录默认是 `$XDG_CONFIG_HOME/mio` 或 `~/.config/mio`。文件在 Unix 下为 `0600`，不修改原授权文件。主 Agent 和子代理共享账户服务及串行令牌刷新；刷新后的凭据只写入 Mio 配置。请求前读取实时模型目录，匹配模型及思考档位；不可用时明确报错，不换供应商。
+
+导入后 CLI 默认使用该账户；`--provider` / `MIO_PROVIDER` 可显式选择供应商，`--model` / `MIO_MODEL` 可覆盖模型。显式提供兼容 API 的 `--base-url` / `MIO_BASE_URL` 且未指定供应商时选择 `custom`。Antigravity 使用固定服务端点，不接受自定义 `--base-url`。此功能复用已有登录，不提供新的交互式登录向导。
+
 Antigravity 需要宿主显式注入 `OAuthConfig { client_id, client_secret }`。例如宿主自行读取 `MIO_GOOGLE_CLIENT_ID`、`MIO_GOOGLE_CLIENT_SECRET` 后传入；库不会自动读取它们。仓库不内置 OAuth 客户端凭据，也不保证任意 OAuth 应用均可使用对应服务。
 
 ## 原生子代理
@@ -128,7 +141,7 @@ mio --subagents --cwd /path/to/project -p '委派两个只读子任务分别分�
 
 子任务默认只读，执行层禁止 `write`、`edit`、`shell`；明确设置 `read_only: false` 可修改文件。CLI 的 `--no-shell` 同时约束子代理。工作目录须在父工作区内；同名会话不可并发，续接时目标、目录和访问模式不能改变。重叠目录中的任务只允许只读并行，写任务独占；主 Agent 的工作区工具也遵守这些占用规则。Shell 仍使用宿主权限，不受文件路径限制，这些规则不是操作系统沙箱。
 
-Rust 宿主通过 `subagent::SubagentManager` 管理会话，将其放入 `RunTools.subagents` 后调用 `run_with_tools`；原有 `run`、`run_with_options` 不变。`RunTools.read_only` 也可独立用于只读主 Agent。子任务共用模型配置、附加指令和轮次上限，不继承主会话历史；模型不能通过委派参数修改服务地址或密钥。首版支持 `Custom`、`Deepseek` API 供应商，其他供应商显式报错。宿主须保留同一管理器才能续接子会话。
+Rust 宿主通过 `subagent::SubagentManager` 管理会话，将其放入 `RunTools.subagents` 后调用 `run_with_tools`；原有 `run`、`run_with_options` 不变。`RunTools.read_only` 也可独立用于只读主 Agent。子任务共用模型配置、附加指令和轮次上限，不继承主会话历史；模型不能通过委派参数修改服务地址或密钥。`new` 支持 `Custom`、`Deepseek` API；Antigravity 使用 `new_with_antigravity` 注入与主 Agent 共用的账户实例。其他账户服务需宿主自行提供执行器。宿主须保留同一管理器才能续接子会话。
 
 子代理通过进程内异步任务运行，没有进程隔离。会话和运行记录仅在内存保存，每个管理器最多 128 个会话及 128 次运行，达到上限后需创建新管理器；每个子会话成功历史上限 2 MiB。管理器释放会取消运行中的任务。CLI 若主模型在子任务仍运行时结束，将取消未完成任务并报告错误。取消不回滚文件改动，已开始的阻塞文件操作仍可能完成。主会话恢复不会恢复子代理管理器。当前未提供持久化调度、自动多阶段重派或对外 MCP 服务。
 

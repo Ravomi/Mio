@@ -11,6 +11,7 @@ mod test_http;
 fn cli() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mio"));
     cmd.env_remove("MIO_MODEL")
+        .env("MIO_PROVIDER", "custom")
         .env_remove("MIO_BASE_URL")
         .env_remove("OPENAI_API_KEY")
         .env("MIO_API_KEY", "local-test-credential");

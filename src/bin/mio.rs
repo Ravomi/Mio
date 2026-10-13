@@ -1,6 +1,6 @@
 use mio_agent::{
-    AgentEvent, Config, Host, HostFuture, RunOptions, RunTools, Services, context::ProjectContext,
-    run_with_tools, session::Session, subagent::SubagentManager,
+    AgentEvent, Config, Host, HostFuture, Provider, RunOptions, RunTools, Services,
+    context::ProjectContext, run_with_tools, session::Session, subagent::SubagentManager,
 };
 use std::{
     io::{self, IsTerminal, Write},
@@ -19,6 +19,8 @@ Without a prompt, starts a line-based conversation in a terminal or reads stdin.
   --json                Emit JSON Lines events on stdout (one task only)
   --cwd PATH            Working directory (default: current directory)
   --model NAME          Model name (or MIO_MODEL)
+  --provider NAME       custom, deepseek, or antigravity (or MIO_PROVIDER)
+  --import-antigravity PATH  Import existing local auth.json/settings.json into Mio
   --base-url URL        OpenAI-compatible base URL (or MIO_BASE_URL)
   --session PATH        Load/save a session file, relative to --cwd
   --resume              Continue the most recently saved session in this workspace
@@ -34,7 +36,7 @@ Without a prompt, starts a line-based conversation in a terminal or reads stdin.
   -V, --version         Show version
 
 Credentials: MIO_API_KEY (fallback OPENAI_API_KEY). Never saved as configuration.
-CLI connects to OpenAI-compatible APIs; account/OAuth adapters remain library APIs.
+CLI supports OpenAI-compatible APIs and imported Antigravity OAuth accounts.
 Sessions: .mio/sessions/*.json, saved after successful turns. No automatic compaction.
 Interactive commands: /help, /new, /fork, /sessions, /exit. Ctrl-C cancels and exits.
 Shell is noninteractive and runs with your user permissions, not in a sandbox.
@@ -44,6 +46,8 @@ Shell is noninteractive and runs with your user permissions, not in a sandbox.
 struct Args {
     cwd: Option<PathBuf>,
     model: Option<String>,
+    provider: Option<String>,
+    import_antigravity: Option<PathBuf>,
     base_url: Option<String>,
     prompt: Option<String>,
     json: bool,
@@ -67,6 +71,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
         match arg.as_str() {
             "--cwd" => parsed.cwd = Some(value()?.into()),
             "--model" => parsed.model = Some(value()?),
+            "--provider" => parsed.provider = Some(value()?),
+            "--import-antigravity" => parsed.import_antigravity = Some(value()?.into()),
             "--base-url" => parsed.base_url = Some(value()?),
             "-p" | "--print" => parsed.prompt = Some(value()?),
             "--session" => parsed.session = Some(value()?.into()),
@@ -197,13 +203,14 @@ struct Runner {
     session: Session,
     path: PathBuf,
     subagents: Option<Arc<SubagentManager>>,
+    antigravity: Option<mio_agent::antigravity::Antigravity>,
 }
 
 impl Runner {
     async fn turn(&mut self, prompt: &str) -> Result<(), String> {
         let history = tokio::select! {
             result = run_with_tools(self.config.clone(), self.session.history.clone(), prompt,
-                &self.session.cwd, self.host.clone(), Services::default(), RunTools {
+                &self.session.cwd, self.host.clone(), Services { antigravity: self.antigravity.as_ref(), ..Services::default() }, RunTools {
                     options: self.options.clone(), read_only: false, subagents: self.subagents.clone(),
                 }) => result?,
             signal = tokio::signal::ctrl_c() => {
@@ -243,6 +250,27 @@ impl Runner {
 }
 
 async fn execute(args: Args) -> Result<(), String> {
+    if let Some(source) = &args.import_antigravity {
+        if args.prompt.is_some() || args.resume || args.session.is_some() {
+            return Err("Import authorization separately from running a task".into());
+        }
+        let result = mio_agent::profile::import_antigravity(
+            source,
+            &mio_agent::profile::config_directory()?,
+        )?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"type":"profile_imported","provider":"antigravity","data":result})
+            );
+        } else {
+            println!(
+                "Imported Antigravity account and model {} into Mio; source files unchanged.",
+                result.model
+            );
+        }
+        return Ok(());
+    }
     let cwd = args
         .cwd
         .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?)
@@ -302,30 +330,67 @@ async fn execute(args: Args) -> Result<(), String> {
     if instructions.len() > 128 * 1024 {
         return Err("Project instructions and selected skills exceed 128 KiB".into());
     }
+    let profile_directory = mio_agent::profile::config_directory()?;
+    let explicit_base = args.base_url.or_else(|| std::env::var("MIO_BASE_URL").ok());
+    let selected_provider = args.provider.or_else(|| std::env::var("MIO_PROVIDER").ok());
+    let profile = if selected_provider
+        .as_deref()
+        .is_some_and(|p| p != "antigravity")
+        || (selected_provider.is_none() && explicit_base.is_some())
+    {
+        None
+    } else {
+        mio_agent::profile::summary(&profile_directory)?
+    };
+    let provider = match selected_provider
+        .as_deref()
+        .unwrap_or(if profile.is_some() {
+            "antigravity"
+        } else {
+            "custom"
+        }) {
+        "custom" => Provider::Custom,
+        "deepseek" => Provider::Deepseek,
+        "antigravity" => Provider::Antigravity,
+        _ => return Err("CLI provider must be custom, deepseek, or antigravity".into()),
+    };
+    if provider == Provider::Antigravity && explicit_base.is_some() {
+        return Err("Antigravity uses its account endpoint; remove --base-url/MIO_BASE_URL".into());
+    }
+    let antigravity = if provider == Provider::Antigravity {
+        Some(mio_agent::antigravity::Antigravity::from_profile(
+            profile_directory,
+        )?)
+    } else {
+        None
+    };
     let config = Config {
+        provider,
         model: args
             .model
             .or_else(|| std::env::var("MIO_MODEL").ok())
+            .or_else(|| profile.map(|p| p.model))
             .ok_or("Set --model or MIO_MODEL")?,
-        base_url: args
-            .base_url
-            .or_else(|| std::env::var("MIO_BASE_URL").ok())
-            .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+        base_url: explicit_base.unwrap_or_else(|| "https://api.openai.com/v1".into()),
         api_key: std::env::var("MIO_API_KEY")
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .unwrap_or_default(),
-        ..Config::default()
     };
     let options = RunOptions {
         instructions,
         max_turns: args.max_turns.unwrap_or(32),
     };
     let subagents = if args.subagents {
-        Some(Arc::new(SubagentManager::new(
-            &cwd,
-            config.clone(),
-            options.clone(),
-        )?))
+        Some(Arc::new(if let Some(account) = &antigravity {
+            SubagentManager::new_with_antigravity(
+                &cwd,
+                config.clone(),
+                options.clone(),
+                account.clone(),
+            )?
+        } else {
+            SubagentManager::new(&cwd, config.clone(), options.clone())?
+        }))
     } else {
         None
     };
@@ -333,6 +398,7 @@ async fn execute(args: Args) -> Result<(), String> {
         config,
         options,
         subagents,
+        antigravity,
         host: Arc::new(CliHost {
             json: args.json,
             no_shell: args.no_shell,

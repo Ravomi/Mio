@@ -20,4 +20,5 @@ Original GPL-3.0 license and terms are retained in `LICENSE`.
 
 - **Rig (`rig-core`, `rig-agent`, `rig-reqwest`)**: MIT License, Copyright (c) 2024 Playgrounds Analytics Inc. See `licenses/Rig-MIT.txt`.
 - **Antigravity Protocol Reference**: MIT License, based on `NoeFabris/opencode-antigravity-auth`. See `licenses/Antigravity-MIT.txt`.
+- **Antigravity authorization and model catalog compatibility**: [iamxeph/pi-provider-antigravity](https://github.com/iamxeph/pi-provider-antigravity), MIT, local reference version 0.22.0. OAuth payload format, current endpoint/header conventions and catalog tier mapping inform the native Rust adapter. OAuth application metadata is imported locally, not bundled; no JavaScript runtime is invoked. See `licenses/Antigravity-Provider-MIT.txt`.
 - **DeepSeek PoW Solver Reference**: MIT License, based on `shaohuahuawww/deepseek-pow`. See `licenses/DeepSeek-PoW-MIT.txt`.

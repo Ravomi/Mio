@@ -8,6 +8,7 @@ pub mod antigravity;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
+pub mod profile;
 pub mod session;
 pub mod shell;
 pub mod subagent;

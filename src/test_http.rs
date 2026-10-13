@@ -1,6 +1,10 @@
 //! Small, bounded request reader shared by local provider protocol tests.
 use std::io::Read;
 pub fn read_json(socket: &mut impl Read) -> (String, serde_json::Value) {
+    let (header, body) = read_body(socket);
+    (header, serde_json::from_slice(&body).unwrap())
+}
+pub fn read_body(socket: &mut impl Read) -> (String, Vec<u8>) {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
         assert!(bytes.len() < 65536, "request headers exceed test limit");
@@ -20,5 +24,5 @@ pub fn read_json(socket: &mut impl Read) -> (String, serde_json::Value) {
     assert!(length < 1024 * 1024, "request body exceeds test limit");
     let mut body = vec![0; length];
     socket.read_exact(&mut body).unwrap();
-    (header, serde_json::from_slice(&body).unwrap())
+    (header, body)
 }

@@ -76,23 +76,38 @@ pub trait Executor: Send + Sync {
 pub struct NativeExecutor;
 impl Executor for NativeExecutor {
     fn execute(&self, task: Task) -> HostFuture<Result<Vec<Message>, String>> {
-        Box::pin(async move {
-            crate::run_with_tools(
-                task.config,
-                task.history,
-                &task.prompt,
-                &task.cwd,
-                task.host,
-                Services::default(),
-                RunTools {
-                    options: task.options,
-                    read_only: task.read_only,
-                    subagents: None,
-                },
-            )
-            .await
-        })
+        execute_task(task, None)
     }
+}
+struct AntigravityExecutor(crate::antigravity::Antigravity);
+impl Executor for AntigravityExecutor {
+    fn execute(&self, task: Task) -> HostFuture<Result<Vec<Message>, String>> {
+        execute_task(task, Some(self.0.clone()))
+    }
+}
+fn execute_task(
+    task: Task,
+    antigravity: Option<crate::antigravity::Antigravity>,
+) -> HostFuture<Result<Vec<Message>, String>> {
+    Box::pin(async move {
+        crate::run_with_tools(
+            task.config,
+            task.history,
+            &task.prompt,
+            &task.cwd,
+            task.host,
+            Services {
+                antigravity: antigravity.as_ref(),
+                ..Services::default()
+            },
+            RunTools {
+                options: task.options,
+                read_only: task.read_only,
+                subagents: None,
+            },
+        )
+        .await
+    })
 }
 
 struct Session {
@@ -135,6 +150,9 @@ impl Drop for SubagentManager {
 }
 impl SubagentManager {
     pub fn new(root: &Path, config: Config, options: RunOptions) -> Result<Self, String> {
+        if !matches!(config.provider, Provider::Custom | Provider::Deepseek) {
+            return Err("This provider requires an injected account service; use new_with_antigravity for Antigravity".into());
+        }
         Self::with_executor(
             root,
             config,
@@ -142,6 +160,25 @@ impl SubagentManager {
             4,
             Duration::from_secs(600),
             Arc::new(NativeExecutor),
+        )
+    }
+    /// Share one account service with the parent; token refresh is serialized by the service.
+    pub fn new_with_antigravity(
+        root: &Path,
+        config: Config,
+        options: RunOptions,
+        account: crate::antigravity::Antigravity,
+    ) -> Result<Self, String> {
+        if config.provider != Provider::Antigravity {
+            return Err("Antigravity account requires the Antigravity provider".into());
+        }
+        Self::with_executor(
+            root,
+            config,
+            options,
+            4,
+            Duration::from_secs(600),
+            Arc::new(AntigravityExecutor(account)),
         )
     }
     pub fn with_executor(
@@ -162,11 +199,6 @@ impl SubagentManager {
             || config.model.trim().is_empty()
         {
             return Err("Invalid subagent workspace, model, limits or instructions".into());
-        }
-        if !matches!(config.provider, Provider::Custom | Provider::Deepseek) {
-            return Err(
-                "Native subagents currently support Custom and Deepseek API providers only".into(),
-            );
         }
         Ok(Self {
             root,

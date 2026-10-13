@@ -146,6 +146,7 @@ fn run_scenario(read_only: bool, shell: bool) {
         .arg("--cwd")
         .arg(dir.path())
         .env("MIO_API_KEY", "test-only")
+        .env("MIO_PROVIDER", "custom")
         .output()
         .unwrap();
     server.join().unwrap();
