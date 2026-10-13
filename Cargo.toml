@@ -21,7 +21,7 @@ tempfile = "=3.27.0"
 base64 = "=0.22.1"
 bytes = "=1.12.1"
 sha2 = "=0.10.9"
-uuid = { version = "=1.27.0", features = ["v4"] }
+uuid = { version = "=1.27.0", features = ["v4", "serde"] }
 keccak = "=0.1.6"
 
 [dev-dependencies]

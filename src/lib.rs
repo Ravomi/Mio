@@ -8,6 +8,7 @@ pub mod antigravity;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
+pub mod session;
 #[cfg(test)]
 pub mod test_http;
 pub mod workspace;
@@ -410,6 +411,19 @@ mod tests {
             events
                 .iter()
                 .any(|e| matches!(e, AgentEvent::Text(txt) if txt.contains("完成：你好")))
+        );
+
+        // Persist and reload the complete tool-call/result history before resuming.
+        let mut saved = session::Session::new(&canonical_dir).unwrap();
+        saved.history = history;
+        let session_path = canonical_dir.join("session.json");
+        saved.save(&session_path).unwrap();
+        let history = session::Session::load(&session_path).unwrap().history;
+        assert_eq!(history, saved.history);
+        assert!(
+            !std::fs::read_to_string(session_path)
+                .unwrap()
+                .contains("test-only")
         );
 
         // Turn 3: resumes from returned history
