@@ -9,6 +9,7 @@ pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
 pub mod session;
+pub mod shell;
 #[cfg(test)]
 pub mod test_http;
 pub mod workspace;
@@ -45,7 +46,8 @@ pub trait Host: Send + Sync {
 }
 
 /// Agent 执行过程中发出的结构化事件。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// 模型流式文本输出。
     Text(String),

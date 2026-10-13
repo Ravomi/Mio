@@ -933,6 +933,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "keccak",
+ "libc",
  "reqwest",
  "rig-agent",
  "rig-core",
