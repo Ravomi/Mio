@@ -5,6 +5,7 @@
 
 pub mod accounts;
 pub mod antigravity;
+pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
 #[cfg(test)]
@@ -99,6 +100,23 @@ pub struct Services<'a> {
     pub deepseek: Option<&'a deepseek::Deepseek>,
 }
 
+/// Optional instructions and turn budget supplied by the host.
+/// Loading project files is explicit through `context::ProjectContext`.
+#[derive(Clone, Debug)]
+pub struct RunOptions {
+    pub instructions: String,
+    pub max_turns: usize,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            instructions: String::new(),
+            max_turns: 32,
+        }
+    }
+}
+
 /// 无状态运行一次 Agent 会话循环。
 ///
 /// * `config`: 模型提供商与连接配置
@@ -118,6 +136,30 @@ pub async fn run(
     host: Arc<dyn Host>,
     services: Services<'_>,
 ) -> Result<Vec<Message>, String> {
+    run_with_options(
+        config,
+        history,
+        prompt,
+        cwd,
+        host,
+        services,
+        RunOptions::default(),
+    )
+    .await
+}
+
+pub async fn run_with_options(
+    config: Config,
+    history: Vec<Message>,
+    prompt: &str,
+    cwd: &Path,
+    host: Arc<dyn Host>,
+    services: Services<'_>,
+    options: RunOptions,
+) -> Result<Vec<Message>, String> {
+    if options.instructions.len() > 128 * 1024 || !(1..=256).contains(&options.max_turns) {
+        return Err("附加指令须不超过 128 KiB，工具轮次须在 1–256 之间".into());
+    }
     if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
         return Err("输入需为 1–65536 字节".into());
     }
@@ -164,12 +206,20 @@ pub async fn run(
 
     let workspace_tool = Workspace::new(canonical_cwd, host.clone())?;
 
+    let preamble = format!(
+        "你叫 Mio，是编程助手。使用中文简洁回答。工具在用户选择的工作目录执行。先查看文件再修改，保留用户改动，不声称未执行的测试通过。命令工具不是交互式 shell，避免需要输入的命令。\n{}",
+        options.instructions
+    );
     let agent = AgentBuilder::new(model)
-        .preamble("你叫 Mio，是编程助手。使用中文简洁回答。工具在用户选择的工作目录执行。先查看文件再修改，保留用户改动，不声称未执行的测试通过。命令工具不是交互式 shell，避免需要输入的命令。")
+        .preamble(preamble)
         .tool(workspace_tool)
         .build();
 
-    let mut stream = agent.prompt(prompt).history(history).max_turns(32).stream();
+    let mut stream = agent
+        .prompt(prompt)
+        .history(history)
+        .max_turns(options.max_turns)
+        .stream();
 
     let mut final_history = None;
 
@@ -325,13 +375,17 @@ mod tests {
         };
 
         // Turn 1 & 2: runs tool call and produces final message history
-        let history = run(
+        let history = run_with_options(
             config.clone(),
             Vec::new(),
             "写入文件",
             &canonical_dir,
             host.clone(),
             Services::default(),
+            RunOptions {
+                instructions: "Project rule: preserve CRLF".into(),
+                ..RunOptions::default()
+            },
         )
         .await
         .unwrap();
@@ -373,6 +427,11 @@ mod tests {
         server.join().unwrap();
         let requests: Vec<_> = rx.try_iter().collect();
         assert_eq!(requests.len(), 3);
+        assert!(
+            requests[0]["messages"]
+                .to_string()
+                .contains("Project rule: preserve CRLF")
+        );
         let second = requests[1]["messages"].as_array().unwrap();
         assert!(second.iter().any(|m| m["role"] == "tool"));
         let third = requests[2]["messages"].as_array().unwrap();
