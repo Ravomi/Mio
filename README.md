@@ -164,4 +164,4 @@ cargo clippy --all-targets --locked -- -D warnings
 
 Mio 从 [Ravomi](https://github.com/Ravomi/ravomi-app) 的 Agent 代码中抽离，独立发展为通用编程 Agent。来源记录见 [CREDITS.md](CREDITS.md)。
 
-感谢 **[Rig](https://github.com/0xPlaygrounds/rig)** 提供 Rust LLM 框架基础。Mio 保留 Rig 依赖及第三方许可，以 **GPL-3.0-only** 发布；相关声明见 [LICENSE](LICENSE)、[licenses/](licenses/) 和 [CREDITS.md](CREDITS.md)。
+感谢 **[Rig](https://github.com/0xPlaygrounds/rig)** 提供 Rust LLM 框架基础。Mio 保留 Rig 依赖及第三方许可，以 **MIT** 发布；相关声明见 [LICENSE](LICENSE)、[licenses/](licenses/) 和 [CREDITS.md](CREDITS.md)。

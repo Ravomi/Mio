@@ -12,10 +12,11 @@ Source files in `mio-agent` map directly to their originals in `Ravomi/crates/ra
 - `src/deepseek_pow.rs`: Extracted from `crates/ravomi-core/src/deepseek_pow.rs`
 - `src/test_http.rs`: Extracted from `crates/ravomi-core/src/test_http.rs`
 
-Original GPL-3.0 license and terms are retained in `LICENSE`.
+Original historical extraction took place when Ravomi was licensed under GPL-3.0-only; Mio itself is licensed under the MIT License (see `LICENSE`). This project does not claim or represent any change to the upstream Ravomi project's license.
 
 ## Upstream Software & Licenses
 
+- **DeepSeek Web API Protocol Reference**: In `src/deepseek.rs`, the REST/patch protocol flow references `xuweizhengo/deepseek-web-api` (`ds_core`, GPL-3.0). The reference is informational for protocol compatibility; no upstream files are vendored, and third-party license terms remain respected.
 - **Subagent interface design reference**: [guyiicn/pi-subagent](https://github.com/guyiicn/pi-subagent) (MIT). Named delegation, asynchronous status collection, cancellation and session reuse informed Mio's native Rust implementation. No upstream runtime or source files are vendored by this feature.
 
 - **Rig (`rig-core`, `rig-agent`, `rig-reqwest`)**: MIT License, Copyright (c) 2024 Playgrounds Analytics Inc. See `licenses/Rig-MIT.txt`.
