@@ -9,6 +9,9 @@ pub mod deepseek;
 pub mod deepseek_pow;
 #[cfg(test)]
 pub mod test_http;
+pub mod workspace;
+
+pub use workspace::{Arguments, Workspace, checked_path};
 
 use futures_util::StreamExt;
 use rig_agent::{AgentBuilder, agent::MultiTurnStreamItem};
@@ -18,17 +21,9 @@ use rig_core::{
     operation::Completion,
     providers::openai::{OpenAIConfig, wire::Route},
     streaming::{Item, StreamEvent},
-    tool::PortableTool,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::{
-    future::Future,
-    path::{Path, PathBuf},
-    pin::Pin,
-    sync::Arc,
-    time::Duration,
-};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 /// 异步 Shell 任务的 Boxed Future。
 pub type HostFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -167,10 +162,7 @@ pub async fn run(
         }
     };
 
-    let workspace_tool = Workspace {
-        cwd: canonical_cwd,
-        host: host.clone(),
-    };
+    let workspace_tool = Workspace::new(canonical_cwd, host.clone())?;
 
     let agent = AgentBuilder::new(model)
         .preamble("你叫 Mio，是编程助手。使用中文简洁回答。工具在用户选择的工作目录执行。先查看文件再修改，保留用户改动，不声称未执行的测试通过。命令工具不是交互式 shell，避免需要输入的命令。")
@@ -200,139 +192,17 @@ pub async fn run(
     final_history.ok_or_else(|| "模型连接结束，未返回完整结果".into())
 }
 
-#[derive(Clone)]
-struct Workspace {
-    cwd: PathBuf,
-    host: Arc<dyn Host>,
-}
-
-#[derive(Deserialize)]
-struct Arguments {
-    operation: String,
-    path: String,
-    value: String,
-}
-
-impl PortableTool for Workspace {
-    const NAME: &'static str = "workspace";
-    type Args = Arguments;
-    type Output = Value;
-    type Error = std::convert::Infallible;
-
-    fn description(&self) -> String {
-        "Read UTF-8 files, write files, or execute a noninteractive shell command in the node working directory. For read/write use relative path; for shell put the command in value and leave path empty. Shell output format is determined by the host environment. Commands time out after 120 seconds.".into()
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "operation": {"type": "string", "enum": ["read", "write", "shell"]},
-                "path": {"type": "string"},
-                "value": {"type": "string"}
-            },
-            "required": ["operation", "path", "value"],
-            "additionalProperties": false
-        })
-    }
-
-    async fn call(&self, args: Arguments) -> Result<Value, Self::Error> {
-        let target = if args.operation == "shell" {
-            args.value.clone()
-        } else {
-            args.path.clone()
-        };
-        let operation = args.operation.clone();
-
-        self.host.on_event(AgentEvent::ToolStarted {
-            operation: operation.clone(),
-            target: target.clone(),
-        });
-
-        let result = self.execute(args).await;
-        self.host.on_event(AgentEvent::ToolFinished {
-            operation,
-            target,
-            result: result.clone(),
-        });
-
-        let value = match result {
-            Ok(output) => json!({"output": output}),
-            Err(error) => json!({"error": error}),
-        };
-
-        Ok(value)
-    }
-}
-
-impl Workspace {
-    async fn execute(&self, args: Arguments) -> Result<String, String> {
-        match args.operation.as_str() {
-            "read" => {
-                let path = checked_path(&self.cwd, &args.path, false)?;
-                if tokio::fs::metadata(&path)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .len()
-                    > 65536
-                {
-                    return Err("文件超过 64 KiB，请使用 shell 分段读取".into());
-                }
-                tokio::fs::read_to_string(path)
-                    .await
-                    .map_err(|e| e.to_string())
-            }
-            "write" => {
-                if args.value.len() > 1024 * 1024 {
-                    return Err("写入内容超过 1 MiB".into());
-                }
-                let path = checked_path(&self.cwd, &args.path, true)?;
-                tokio::fs::write(path, args.value)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok("文件已写入".into())
-            }
-            "shell" => {
-                let shell_fut = self.host.shell(&args.value, &self.cwd);
-                tokio::time::timeout(Duration::from_secs(120), shell_fut)
-                    .await
-                    .map_err(|_| {
-                        "命令超过 120 秒，已取消命令协程；宿主须自行回收子进程".to_string()
-                    })?
-            }
-            _ => Err("未知工具操作".into()),
-        }
-    }
-}
-
-/// 校验读写路径必须严格在工作目录内，防止目录遍历逃逸。
-pub fn checked_path(cwd: &Path, path: &str, write: bool) -> Result<PathBuf, String> {
-    let target = cwd.join(path);
-    let resolved = if write && !target.exists() {
-        target
-            .parent()
-            .ok_or("无效路径")?
-            .canonicalize()
-            .map_err(|e| e.to_string())?
-            .join(target.file_name().ok_or("无效文件名")?)
-    } else {
-        target.canonicalize().map_err(|e| e.to_string())?
-    };
-    if !resolved.starts_with(cwd) {
-        return Err("文件路径必须位于节点工作目录中".into());
-    }
-    Ok(resolved)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
     use std::{
         io::Write,
         sync::{
             Mutex,
             atomic::{AtomicBool, Ordering},
         },
+        time::Duration,
     };
 
     struct TestHost {
@@ -516,38 +386,20 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let canonical_dir = folder.path().canonicalize().unwrap();
         let host = Arc::new(TestHost::new());
-        let tools = Workspace {
-            cwd: canonical_dir.clone(),
-            host,
-        };
+        let tools = Workspace::new(canonical_dir.clone(), host).unwrap();
 
         assert!(
             tools
-                .execute(Arguments {
-                    operation: "write".into(),
-                    path: "../escape.txt".into(),
-                    value: "no".into()
-                })
+                .execute(Arguments::write("../escape.txt", "no"))
                 .await
                 .is_err()
         );
         tools
-            .execute(Arguments {
-                operation: "write".into(),
-                path: "test.txt".into(),
-                value: "中文内容".into(),
-            })
+            .execute(Arguments::write("test.txt", "中文内容"))
             .await
             .unwrap();
         assert_eq!(
-            tools
-                .execute(Arguments {
-                    operation: "read".into(),
-                    path: "test.txt".into(),
-                    value: "".into()
-                })
-                .await
-                .unwrap(),
+            tools.execute(Arguments::read("test.txt")).await.unwrap(),
             "中文内容"
         );
 
@@ -564,16 +416,9 @@ mod tests {
         let canonical_dir = folder.path().canonicalize().unwrap();
         let dropped = Arc::new(AtomicBool::new(false));
         let host = Arc::new(TestHost::with_drop_flag(dropped.clone()));
-        let tools = Workspace {
-            cwd: canonical_dir,
-            host,
-        };
+        let tools = Workspace::new(canonical_dir, host).unwrap();
 
-        let mut exec_fut = Box::pin(tools.execute(Arguments {
-            operation: "shell".into(),
-            path: "".into(),
-            value: "hang".into(),
-        }));
+        let mut exec_fut = Box::pin(tools.execute(Arguments::shell("hang")));
 
         tokio::select! {
             _ = &mut exec_fut => panic!("should not finish"),
