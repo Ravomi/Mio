@@ -152,12 +152,23 @@ fn session_list(directory: &Path) -> Result<Vec<mio_agent::session::SessionMetad
     if !directory.try_exists().map_err(|e| e.to_string())? {
         return Ok(Vec::new());
     }
-    let (mut list, warnings) = Session::list(directory)?;
+    let (list, warnings) = Session::list(directory)?;
     for warning in warnings {
         eprintln!("Warning: {warning}");
     }
-    list.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
-    Ok(list)
+    // Session timestamps use seconds. File timestamps distinguish saves made
+    // within the same second, so a freshly forked task is selected reliably.
+    let mut dated = list
+        .into_iter()
+        .map(|session| {
+            let modified = std::fs::metadata(&session.file_path)
+                .and_then(|metadata| metadata.modified())
+                .map_err(|e| e.to_string())?;
+            Ok((modified, session))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    dated.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    Ok(dated.into_iter().map(|(_, session)| session).collect())
 }
 
 fn print_sessions(directory: &Path, json: bool) -> Result<(), String> {
@@ -398,5 +409,33 @@ async fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_session_uses_save_order_even_when_session_seconds_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut original = Session::new(dir.path()).unwrap();
+        let mut fork = original.fork();
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        original.save(&a).unwrap();
+        fork.save(&b).unwrap();
+        for (path, nanos) in [(&a, 1), (&b, 2)] {
+            let times = std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos));
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(times)
+                .unwrap();
+        }
+        let list = session_list(dir.path()).unwrap();
+        assert_eq!(list[0].id, fork.id);
     }
 }
