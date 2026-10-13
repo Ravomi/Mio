@@ -216,6 +216,8 @@ pub async fn run_with_options(
         .tool(workspace_tool)
         .build();
 
+    // Rig's FinalResponse contains only this run's new messages, not input history.
+    let mut complete_history = history.clone();
     let mut stream = agent
         .prompt(prompt)
         .history(history)
@@ -234,7 +236,8 @@ pub async fn run_with_options(
                 host.on_event(AgentEvent::Text(text));
             }
             MultiTurnStreamItem::FinalResponse(response) => {
-                final_history = Some(response.messages().to_vec());
+                complete_history.extend_from_slice(response.messages());
+                final_history = Some(std::mem::take(&mut complete_history));
             }
             _ => {}
         }
@@ -437,6 +440,8 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(resumed_history.starts_with(&saved.history));
+        assert!(resumed_history.len() > saved.history.len());
 
         server.join().unwrap();
         let requests: Vec<_> = rx.try_iter().collect();
