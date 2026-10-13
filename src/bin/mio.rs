@@ -1,6 +1,6 @@
 use mio_agent::{
-    AgentEvent, Config, Host, HostFuture, RunOptions, Services, context::ProjectContext,
-    run_with_options, session::Session,
+    AgentEvent, Config, Host, HostFuture, RunOptions, RunTools, Services, context::ProjectContext,
+    run_with_tools, session::Session, subagent::SubagentManager,
 };
 use std::{
     io::{self, IsTerminal, Write},
@@ -28,6 +28,7 @@ Without a prompt, starts a line-based conversation in a terminal or reads stdin.
   --template NAME       Use .mio/prompts/NAME.md; prompt replaces $ARGUMENTS
   --no-context          Do not load project instructions or skills
   --no-shell            Disable shell execution (file tools remain available)
+  --subagents           Enable native child sessions (4 concurrent; memory only)
   --max-turns N         Tool-loop budget, 1–256 (default: 32)
   -h, --help            Show help
   -V, --version         Show version
@@ -54,6 +55,7 @@ struct Args {
     template: Option<String>,
     no_context: bool,
     no_shell: bool,
+    subagents: bool,
     max_turns: Option<usize>,
 }
 
@@ -79,6 +81,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--list-sessions" => parsed.list = true,
             "--no-context" => parsed.no_context = true,
             "--no-shell" => parsed.no_shell = true,
+            "--subagents" => parsed.subagents = true,
             "--" => {
                 if parsed.prompt.is_some() {
                     return Err("Prompt already provided".into());
@@ -193,18 +196,34 @@ struct Runner {
     host: Arc<CliHost>,
     session: Session,
     path: PathBuf,
+    subagents: Option<Arc<SubagentManager>>,
 }
 
 impl Runner {
     async fn turn(&mut self, prompt: &str) -> Result<(), String> {
         let history = tokio::select! {
-            result = run_with_options(self.config.clone(), self.session.history.clone(), prompt,
-                &self.session.cwd, self.host.clone(), Services::default(), self.options.clone()) => result?,
+            result = run_with_tools(self.config.clone(), self.session.history.clone(), prompt,
+                &self.session.cwd, self.host.clone(), Services::default(), RunTools {
+                    options: self.options.clone(), read_only: false, subagents: self.subagents.clone(),
+                }) => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal.map_err(|e| e.to_string())?;
                 return Err("Cancelled; previous session retained. File changes are not rolled back.".into());
             }
         };
+        if let Some(manager) = &self.subagents {
+            let active: Vec<_> = manager
+                .list()
+                .into_iter()
+                .filter(|run| run.status == mio_agent::subagent::Status::Running)
+                .collect();
+            if !active.is_empty() {
+                for run in active {
+                    manager.kill(run.run_id).await?;
+                }
+                return Err("Parent ended before collecting child tasks; unfinished children cancelled. File changes are not rolled back.".into());
+            }
+        }
         self.session.history = history;
         let parent = self.path.parent().ok_or("Invalid session path")?;
         std::fs::create_dir_all(parent)
@@ -297,12 +316,23 @@ async fn execute(args: Args) -> Result<(), String> {
             .unwrap_or_default(),
         ..Config::default()
     };
+    let options = RunOptions {
+        instructions,
+        max_turns: args.max_turns.unwrap_or(32),
+    };
+    let subagents = if args.subagents {
+        Some(Arc::new(SubagentManager::new(
+            &cwd,
+            config.clone(),
+            options.clone(),
+        )?))
+    } else {
+        None
+    };
     let mut runner = Runner {
         config,
-        options: RunOptions {
-            instructions,
-            max_turns: args.max_turns.unwrap_or(32),
-        },
+        options,
+        subagents,
         host: Arc::new(CliHost {
             json: args.json,
             no_shell: args.no_shell,

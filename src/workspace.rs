@@ -38,6 +38,8 @@ const IGNORED_NAMES: &[&str] = &[
 pub struct Workspace {
     pub(crate) cwd: PathBuf,
     pub(crate) host: Arc<dyn Host>,
+    pub(crate) read_only: bool,
+    pub(crate) subagents: Option<Arc<crate::subagent::SubagentManager>>,
 }
 
 impl Workspace {
@@ -53,7 +55,22 @@ impl Workspace {
         Ok(Self {
             cwd: canonical_cwd,
             host,
+            read_only: false,
+            subagents: None,
         })
+    }
+
+    /// 创建一个只读的 Workspace 工具实例。
+    /// 在工具执行层拒绝 write, edit 和 shell 操作。
+    pub fn new_read_only(cwd: impl AsRef<Path>, host: Arc<dyn Host>) -> Result<Self, String> {
+        let mut workspace = Self::new(cwd, host)?;
+        workspace.read_only = true;
+        Ok(workspace)
+    }
+
+    /// 是否为只读模式
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// 获取绑定的工作目录绝对路径。
@@ -63,6 +80,25 @@ impl Workspace {
 
     /// 执行 Workspace 工具操作。
     pub async fn execute(&self, args: Arguments) -> Result<String, String> {
+        let _lease = self
+            .subagents
+            .as_ref()
+            .map(|manager| {
+                manager.parent_operation(matches!(
+                    args.operation.as_str(),
+                    "write" | "edit" | "shell"
+                ))
+            })
+            .transpose()?;
+        if self.read_only {
+            match args.operation.as_str() {
+                "write" | "edit" | "shell" => {
+                    return Err(format!("只读工作区禁止执行 '{}' 操作", args.operation));
+                }
+                _ => {}
+            }
+        }
+
         match args.operation.as_str() {
             "read" => self.execute_read(args).await,
             "write" => self.execute_write(args).await,

@@ -10,6 +10,7 @@ pub mod deepseek;
 pub mod deepseek_pow;
 pub mod session;
 pub mod shell;
+pub mod subagent;
 #[cfg(test)]
 pub mod test_http;
 pub mod workspace;
@@ -160,6 +161,37 @@ pub async fn run_with_options(
     services: Services<'_>,
     options: RunOptions,
 ) -> Result<Vec<Message>, String> {
+    run_with_tools(config, history, prompt, cwd, host, services, options.into()).await
+}
+
+/// Host-controlled tool access. Children never receive a subagent manager.
+#[derive(Default)]
+pub struct RunTools {
+    pub options: RunOptions,
+    pub read_only: bool,
+    pub subagents: Option<Arc<subagent::SubagentManager>>,
+}
+
+impl From<RunOptions> for RunTools {
+    fn from(options: RunOptions) -> Self {
+        Self {
+            options,
+            ..Self::default()
+        }
+    }
+}
+
+/// Run with optional native delegation. Keep the manager alive across turns to resume children.
+pub async fn run_with_tools(
+    config: Config,
+    history: Vec<Message>,
+    prompt: &str,
+    cwd: &Path,
+    host: Arc<dyn Host>,
+    services: Services<'_>,
+    tools: RunTools,
+) -> Result<Vec<Message>, String> {
+    let options = tools.options;
     if options.instructions.len() > 128 * 1024 || !(1..=256).contains(&options.max_turns) {
         return Err("附加指令须不超过 128 KiB，工具轮次须在 1–256 之间".into());
     }
@@ -207,16 +239,29 @@ pub async fn run_with_options(
         }
     };
 
-    let workspace_tool = Workspace::new(canonical_cwd, host.clone())?;
+    if let Some(manager) = &tools.subagents
+        && (tools.read_only || manager.root_cwd() != canonical_cwd)
+    {
+        return Err("Delegation requires a writable parent with the same workspace root".into());
+    }
+    let mut workspace_tool = if tools.read_only {
+        Workspace::new_read_only(&canonical_cwd, host.clone())?
+    } else {
+        Workspace::new(&canonical_cwd, host.clone())?
+    };
+    workspace_tool.subagents = tools.subagents.clone();
 
     let preamble = format!(
         "你叫 Mio，是编程助手。使用中文简洁回答。工具在用户选择的工作目录执行。先查看文件再修改，保留用户改动，不声称未执行的测试通过。命令工具不是交互式 shell，避免需要输入的命令。\n{}",
         options.instructions
     );
-    let agent = AgentBuilder::new(model)
+    let mut builder = AgentBuilder::new(model)
         .preamble(preamble)
-        .tool(workspace_tool)
-        .build();
+        .tool(workspace_tool);
+    if let Some(manager) = tools.subagents {
+        builder = builder.tool(subagent::SubagentTool::new(manager, host.clone()));
+    }
+    let agent = builder.build();
 
     // Rig's FinalResponse contains only this run's new messages, not input history.
     let mut complete_history = history.clone();

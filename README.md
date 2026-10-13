@@ -13,6 +13,7 @@ Mio 将模型调用、代码工具和对话历史组织成完整工作流程：�
 - **项目规则随仓库走。** 加载 `AGENTS.md`、项目 Skills 和提示词模板，同一项目的编码约定可重复使用。
 - **任务可以接着做。** 保存完整消息与工具结果，支持恢复和创建会话分支，继续探索时保留原会话。
 - **过程可接入自己的界面。** 文本增量、工具开始和工具结果以结构化事件提供；CLI 支持 JSON Lines，Rust 宿主使用 `Host` 回调。
+- **子任务可以独立推进。** 按需启用原生子代理，独立会话支持异步委派、状态查询、取消、续接和分叉；探索任务默认只读。
 - **模型与界面解耦。** CLI 接入 OpenAI 兼容服务，包括兼容的本地模型；Rust 库还提供账户与其他服务适配。核心不绑定特定 UI 框架。
 
 项目处于早期阶段，目前通过本地模拟服务和 Linux 原生命令测试验收；没有发布预编译安装包，也没有宣称不同平台或真实账号服务已全面验证。
@@ -108,6 +109,28 @@ JSON Lines 事件形状示例：
 完整示例见 [`examples/host.rs`](examples/host.rs)。示例 Shell 明确返回“未实现”，不会伪造执行结果。`Config`、`Services` 支持库层的 OpenAI 兼容接口、Codex 与 DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
 
 Antigravity 需要宿主显式注入 `OAuthConfig { client_id, client_secret }`。例如宿主自行读取 `MIO_GOOGLE_CLIENT_ID`、`MIO_GOOGLE_CLIENT_SECRET` 后传入；库不会自动读取它们。仓库不内置 OAuth 客户端凭据，也不保证任意 OAuth 应用均可使用对应服务。
+
+## 原生子代理
+
+```bash
+mio --subagents --cwd /path/to/project -p '委派两个只读子任务分别分析模块结构和测试缺口，等待结果后汇总'
+```
+
+`--subagents` 为主模型增加 `subagent` 工具，支持 `delegate`、`status`、`snapshot`、`list`、`kill`、`fork`。每次委派返回独立 `run_id`，用它查询或取消该次运行；同名会话继续最后一次成功的历史，失败不会清空已有成功历史。子任务不会收到再次委派的工具。子代理文本保留在任务结果中，不混入主回答；主 Agent 的委派和查询操作仍输出工具事件。
+
+默认最多同时运行 4 个任务，每个任务超时 600 秒。`status` 支持最多 30 秒长轮询；状态区分 `running`、`completed`、`failed`、`cancelled`、`timed_out`。快照提供当前文本和最近工具名，文本上限 32 KiB，截断时 `output_truncated` 为真。`completed` 表示执行结束，任务结果仍需主 Agent 检查。
+
+委派参数示例：
+
+```json
+{"operation":"delegate","task":{"session":"review-tests","goal":"检查测试缺口","prompt":"只阅读测试及其对应实现，列出未覆盖的行为","read_only":true}}
+```
+
+子任务默认只读，执行层禁止 `write`、`edit`、`shell`；明确设置 `read_only: false` 可修改文件。CLI 的 `--no-shell` 同时约束子代理。工作目录须在父工作区内；同名会话不可并发，续接时目标、目录和访问模式不能改变。重叠目录中的任务只允许只读并行，写任务独占；主 Agent 的工作区工具也遵守这些占用规则。Shell 仍使用宿主权限，不受文件路径限制，这些规则不是操作系统沙箱。
+
+Rust 宿主通过 `subagent::SubagentManager` 管理会话，将其放入 `RunTools.subagents` 后调用 `run_with_tools`；原有 `run`、`run_with_options` 不变。`RunTools.read_only` 也可独立用于只读主 Agent。子任务共用模型配置、附加指令和轮次上限，不继承主会话历史；模型不能通过委派参数修改服务地址或密钥。首版支持 `Custom`、`Deepseek` API 供应商，其他供应商显式报错。宿主须保留同一管理器才能续接子会话。
+
+子代理通过进程内异步任务运行，没有进程隔离。会话和运行记录仅在内存保存，每个管理器最多 128 个会话及 128 次运行，达到上限后需创建新管理器；每个子会话成功历史上限 2 MiB。管理器释放会取消运行中的任务。CLI 若主模型在子任务仍运行时结束，将取消未完成任务并报告错误。取消不回滚文件改动，已开始的阻塞文件操作仍可能完成。主会话恢复不会恢复子代理管理器。当前未提供持久化调度、自动多阶段重派或对外 MCP 服务。
 
 ## 当前边界
 
