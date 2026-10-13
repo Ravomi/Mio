@@ -1,101 +1,65 @@
 # Mio (`mio-agent`)
 
-Mio 是从 [Ravomi](https://github.com/Ravomi/ravomi-app) 提取的无头（Headless）编程 Agent 运行时内核，基于 Rust 编写并以 [Rig](https://github.com/0xPlaygrounds/rig) 驱动大语言模型交互。
+Mio 是用 Rust 构建的编程 Agent，面向代码理解、文件修改和命令执行。它将模型、工具与对话上下文组织成可嵌入应用的工作流程，让宿主掌控执行环境和交互体验。
 
-本项目专注于轻量、可靠的对话与工具多轮循环执行引擎，不依赖任何特定前端桌面技术（Bevy、GPUI、Alacritty 或 SQLite），可嵌入任意 Rust 宿主应用。
+> **当前阶段说明**：项目目前处于早期阶段，现阶段以 `mio-agent` Rust 库形式提供核心能力，尚未提供独立的 CLI 或打包应用。
 
-## 现状与范围说明
+## 核心设计与优势
 
-- **未对齐 Pi 全部功能**：Mio 聚焦于 Agent 多轮交互与基础 workspace 工具循环，不包含扩展机制、TUI 界面系统、会话持久化与自定义主题等。
-- **实测与落地状态**：真实多账号服务（Google Antigravity / DeepSeek Web）和跨平台（尤其是非 Unix 环境）尚未验收；宿主工程 Ravomi 目前尚未接入本新独立库。
+Mio 围绕将编程 Agent 原生嵌入宿主应用设计，优势体现于现有架构与代码实现：
 
-## 定位与特性
+- **Rust 原生进程内集成**：作为 Rust 库直接链接至宿主，无需跨进程维护单独的 Node.js 或 Python Agent 后台进程（宿主需提供 Tokio 异步运行时）。
+- **界面解耦，适配多种宿主形态**：Mio 自身不绑定特定 UI 框架，为未来嵌入桌面客户端、CLI 终端或服务端后台等不同宿主形态提供通用 Agent 核心。
+- **模型层与宿主解耦**：同一调用入口接入 OpenAI 兼容服务（包括兼容的本地模型服务）、Codex 和 DeepSeek，并提供实验性的 Antigravity 与 DeepSeek 网页适配。
+- **结构化事件驱动**：向宿主通过回调提供 `Text`、`ToolStarted`、`ToolFinished` 等细粒度事件，便于宿主精准驱动流式渲染、操作指示与工具执行记录。
+- **执行边界由宿主全权掌控**：外部命令权限、子进程回收以及会话落盘持久化均由宿主实现；Mio 专注于工具循环调度、多轮历史返回与协同取消控制。本地模拟测试覆盖多轮工具调用、历史恢复与取消流程。
 
-- **轻量嵌入式引擎**：通过统一的 `run(...)` 函数驱动 32 轮流式调用循环与多轮工具交互。
-- **无状态设计**：调用方全权掌控对话历史持久化、会话状态存储及超时策略；单次 `run` 返回包含本次工具与回复的完整历史（`Vec<Message>`）。
-- **外部宿主抽象（`Host` trait）**：
-  - 负责终端命令执行与流式事件回调（`Text`、`ToolStarted`、`ToolFinished`）。
-  - 事件处理回调应遵循 drop-safe 并且是非阻塞（nonblocking）的。
-  - 工作目录限制并不是容器沙箱（外部命令权限完全取决于宿主）。
-  - 任务取消并不会自动回滚已经写入磁盘的文件。
-- **内置安全约束**：工作目录路径逃逸检查（防止目录遍历）、单文件读取 64 KiB 限制、写入 1 MiB 限制以及库内执行的 120 秒超时控制。
-- **全链路协程取消**：调用方 drop 掉 `run` 的 future，会同步释放正在运行的内部工具及宿主 shell future。
-- **丰富供应商生态**：保留并支持 OpenAI 兼容 API、Codex、DeepSeek（API 与 Web 协议）、Google Antigravity OAuth 协议。
-  - 使用 Google Antigravity 时，宿主须提供自己获授权使用的 Google OAuth 客户端配置（`OAuthConfig`，可从 `MIO_GOOGLE_CLIENT_ID` 与 `MIO_GOOGLE_CLIENT_SECRET` 读取）。若未提供有效配置则无法启用 Antigravity；本库不承诺任意注册的普通 OAuth 客户端一定支持 Cloud Code Assist 协议。
+## 能力状态
 
-## 调用示例
+| 能力模块 | 状态 | 说明 |
+|---|---|---|
+| **流式内容回复** | 已具备 | 按模型返回的文本增量触发 `AgentEvent::Text` 事件。 |
+| **多轮工具循环** | 已具备 | 支持模型自主发起并连续处理工具调用。 |
+| **文件读写** | 已具备 | 提供基础读取、写入与工作区路径安全边界检查。 |
+| **宿主命令接入** | 已具备 | 通过 `Host::shell` trait 代理至宿主环境执行。 |
+| **历史传入与恢复** | 已具备 | 宿主传入已有 `Vec<Message>`，并在完成时返回更新后的完整历史。 |
+| **异步取消协同** | 已具备 | 宿主丢弃（drop）`run` 的 Future 即可取消内部调用并释放宿主命令 future；子进程由宿主回收。 |
+| **精确编辑与检索** | 计划中 | 计划引入块级精准替换与结构化代码检索能力。 |
+| **上下文压缩与会话管理** | 计划中 | 计划支持长上下文修剪、自动压缩及会话元数据管理。 |
+| **Skills / 扩展机制** | 计划中 | 计划引入模块化技能与扩展工具加载系统。 |
+| **CLI 独立工具** | 计划中 | 面向终端直接使用的命令行交互工具。 |
 
-代码位于 `examples/host.rs`，宿主示例显式返回未实现 shell：
+## 快速上手与集成
 
-```rust
-use mio_agent::{AgentEvent, Config, Host, HostFuture, Provider, Services, run};
-use std::{path::Path, sync::Arc};
+`mio-agent` 通过统一入口驱动多轮交互，完整调用示例请参考 [`examples/host.rs`](examples/host.rs)。
 
-struct ExampleHost;
+### 验证与构建
 
-impl Host for ExampleHost {
-    fn shell(&self, _command: &str, _cwd: &Path) -> HostFuture<Result<String, String>> {
-        Box::pin(async move {
-            // 宿主环境未实现真正的 PTY / 子进程 shell 执行
-            Err("示例 Host 未实现 shell 执行功能".to_string())
-        })
-    }
+```bash
+# 格式检查
+cargo fmt --check
 
-    fn on_event(&self, event: AgentEvent) {
-        match event {
-            AgentEvent::Text(delta) => print!("{delta}"),
-            AgentEvent::ToolStarted { operation, target } => {
-                eprintln!("[tool start] {operation}: {target}");
-            }
-            AgentEvent::ToolFinished {
-                operation,
-                target,
-                result,
-            } => {
-                eprintln!("[tool finish] {operation} ({target}): {:?}", result.is_ok());
-            }
-        }
-    }
-}
+# 类型与编译检查
+cargo check --all-targets --locked
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config {
-        provider: Provider::Custom,
-        base_url: "https://api.openai.com/v1".into(),
-        model: "gpt-4o".into(),
-        api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-    };
+# 单元与集成测试（本地 mock 验证，不消耗外部模型额度）
+cargo test --locked
 
-    let host = Arc::new(ExampleHost);
-    let cwd = std::env::current_dir()?;
-    let history = Vec::new();
+# 代码规范检查
+cargo clippy --all-targets --locked -- -D warnings
 
-    let updated_history = run(
-        config,
-        history,
-        "请查看当前目录下的 Cargo.toml",
-        &cwd,
-        host,
-        Services::default(),
-    )
-    .await?;
-
-    println!("Total turns in history: {}", updated_history.len());
-    Ok(())
-}
+# 检查示例编译（仅验证编译，不会发出真实模型请求）
+cargo check --examples
 ```
 
-可使用 `cargo check --examples` 进行编译验证。
+## 宿主边界与已知约束
 
-## 取消与运行时约定
+- **Shell 执行**：`examples/host.rs` 中的示例宿主仅为骨架演示，未实现真实的 shell 执行；生产使用需由宿主提供命令执行与子进程回收，可按需要使用 PTY。
+- **凭据与多账号服务**：使用 Antigravity 需宿主传入合规的 `OAuthConfig`（由宿主自行读取环境变量如 `MIO_GOOGLE_CLIENT_ID` 与 `MIO_GOOGLE_CLIENT_SECRET` 或其他凭据源后传入）；真实多账号服务与非 Unix 跨平台支持尚未完成全面验收。
+- **文件与取消边界**：工作目录路径逃逸检查防止相对路径越界，但并非操作系统级沙箱；取消任务 Future 不会自动回滚此前已写入磁盘的文件变动。
 
-- 宿主须在多线程 Tokio 运行时环境下调用本 crate。
-- 取消任务只需直接丢弃（drop）`run(...)` 返回的 Future；Mio 将协同 drop 宿主 `shell` 返回的 Future。宿主负责其启动的子进程生命周期回收。
-- 宿主负责总任务超时与会话落盘；当任务失败或被中断取消时，宿主可记录失败原因并自主决定如何保留上下文。
+## 项目背景与致谢
 
-## 历史溯源与致谢
-
-- 历史源文件及上游开源协议见 [CREDITS.md](CREDITS.md)。
-- [Rig](https://github.com/0xPlaygrounds/rig) - 优雅模块化的 Rust LLM 应用框架。
-- [Ravomi](https://github.com/Ravomi/ravomi-app) - 本项目的源生桌面环境与设计来源。
+- **与 Ravomi 的关系**：Mio 是独立的通用编程 Agent 项目；[Ravomi](https://github.com/Ravomi/ravomi-app) 将作为其图形桌面宿主，目前两者尚未完成接入。早期代码起源详见 [CREDITS.md](CREDITS.md)。
+- **[Rig](https://github.com/0xPlaygrounds/rig)**：感谢 Rig 提供的 Rust LLM 框架基础。
+- **开源协议**：本项目基于 GPL-3.0-only 开源许可发布，依赖组件的许可证声明见 `licenses/` 与 [CREDITS.md](CREDITS.md)。
