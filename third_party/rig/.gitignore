@@ -1,0 +1,2 @@
+# Retain Cargo's original upstream manifests as provenance.
+!**/Cargo.toml.orig
