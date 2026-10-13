@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mio - Rust 原生编程 Agent 引擎</title>
+  <meta name="description" content="Mio 是用 Rust 构建的编程 Agent，面向代码理解、文件修改和命令执行。Rust 原生进程内集成、模型与界面解耦、细粒度结构化事件，执行由宿主全权掌控。">
+  
+  <!-- Open Graph / Meta -->
+  <meta property="og:title" content="Mio - Rust 原生编程 Agent 引擎">
+  <meta property="og:description" content="从理解代码到执行修改：Rust 原生、可独立运行也可嵌入的通用编程 Agent 核心。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ravomi.github.io/Mio/">
+  <meta name="twitter:card" content="summary">
+
+  <!-- Local Favicon -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 键盘跳过导航链接 -->
+  <a href="#main-content" class="skip-link">跳至主要内容</a>
+
+  <!-- 顶部导航 -->
+  <header class="site-header">
+    <div class="container nav-container">
+      <a href="./" class="brand-link" aria-label="Mio 首页">
+        <svg class="brand-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="64" height="64" rx="14" fill="#0f172a"/>
+          <path d="M16 46V20L28 34L32 30L36 34L48 20V46" stroke="#f8fafc" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="32" cy="18" r="3.5" fill="#4f46e5"/>
+          <circle cx="28" cy="34" r="2" fill="#818cf8"/>
+          <circle cx="36" cy="34" r="2" fill="#818cf8"/>
+          <path d="M22 46H42" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <span>Mio</span>
+        <span class="nav-tagline">Rust 编程 Agent</span>
+      </a>
+
+      <nav aria-label="主导航">
+        <ul class="nav-links">
+          <li><a href="#advantages">优势</a></li>
+          <li><a href="#capabilities">能力</a></li>
+          <li><a href="#quickstart">开始使用</a></li>
+          <li>
+            <a href="https://github.com/Ravomi/Mio" class="nav-external" target="_blank" rel="noopener noreferrer">
+              <span>GitHub</span>
+              <svg class="ext-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+              </svg>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <!-- Hero 首屏 -->
+    <section class="hero-section">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <div class="hero-badge-row">
+            <span class="pill-badge">mio-agent v0.1.0</span>
+            <span class="pill-badge-outline">Rust 2024 Edition</span>
+            <span class="pill-badge-outline">GPL-3.0-only</span>
+          </div>
+          <h1 class="hero-title">
+            从理解代码<br>
+            到<span class="hero-title-highlight">执行修改</span>
+          </h1>
+          <p class="hero-summary">
+            在终端理解项目、检索代码、完成修改，再从保存的会话继续工作。Mio 以 Rust 构建，同一个 Agent 核心也能直接嵌入你的应用。
+          </p>
+          <div class="hero-actions">
+            <a href="#quickstart" class="btn btn-primary">快速开始</a>
+            <a href="https://github.com/Ravomi/Mio" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">查看源码</a>
+          </div>
+        </div>
+
+        <!-- 交互/状态展示面板 -->
+        <div class="panel-wrapper">
+          <div class="code-panel">
+            <div class="panel-header">
+              <div class="panel-title-area">
+                <div class="panel-dots" aria-hidden="true">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                </div>
+                <span class="panel-filename">examples/host.rs</span>
+              </div>
+              <div class="panel-tab-group" role="tablist" aria-label="面板内容切换">
+                <button class="panel-tab-btn active" role="tab" aria-selected="true" aria-controls="tab-events" tabindex="0" data-tab="tab-events" id="tab-btn-events">结构化事件流</button>
+                <button class="panel-tab-btn" role="tab" aria-selected="false" aria-controls="tab-code" tabindex="-1" data-tab="tab-code" id="tab-btn-code">宿主集成代码</button>
+              </div>
+            </div>
+
+            <!-- Tab 1: 事件流 -->
+            <div class="panel-body tab-panel-content" id="tab-events" role="tabpanel" aria-labelledby="tab-btn-events">
+              <div class="panel-caption">事件示意，非性能实测</div>
+              <div class="event-stream-list">
+                <div class="event-row event-text">
+                  <span class="event-tag tag-text">Text</span>
+                  <span class="event-msg">"正在检查目标文件..."</span>
+                </div>
+                <div class="event-row event-tool">
+                  <span class="event-tag tag-tool">ToolStarted</span>
+                  <span class="event-msg">operation="read" target="src/main.rs"</span>
+                </div>
+                <div class="event-row event-tool">
+                  <span class="event-tag tag-tool">ToolFinished</span>
+                  <span class="event-msg">operation="read" target="src/main.rs" result=Ok(...)</span>
+                </div>
+                <div class="event-row event-tool">
+                  <span class="event-tag tag-tool">ToolStarted</span>
+                  <span class="event-msg">operation="edit" target="src/main.rs"</span>
+                </div>
+                <div class="event-row event-tool">
+                  <span class="event-tag tag-tool">ToolFinished</span>
+                  <span class="event-msg">operation="edit" target="src/main.rs" result=Ok(...)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: 宿主集成代码 -->
+            <div class="panel-body tab-panel-content" id="tab-code" role="tabpanel" aria-labelledby="tab-btn-code">
+              <div class="panel-caption">代码片段示意（完整实现见 <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer">examples/host.rs</a>）</div>
+              <pre class="code-pre"><code><span class="c-kw">use</span> mio_agent::{run, AgentEvent, Config, Host, HostFuture, Provider, Services};
+<span class="c-kw">use</span> std::{path::Path, sync::Arc};
+
+<span class="c-kw">struct</span> <span class="c-typ">ExampleHost</span>;
+
+<span class="c-kw">impl</span> <span class="c-typ">Host</span> <span class="c-kw">for</span> <span class="c-typ">ExampleHost</span> {
+    <span class="c-kw">fn</span> <span class="c-fn">shell</span>(&amp;<span class="c-kw">self</span>, _cmd: &amp;<span class="c-typ">str</span>, _cwd: &amp;<span class="c-typ">Path</span>) -&gt; <span class="c-typ">HostFuture</span>&lt;<span class="c-typ">Result</span>&lt;String, String&gt;&gt; {
+        Box::pin(<span class="c-kw">async move</span> {
+            <span class="c-com">// 由宿主决定命令执行与子进程实际回收</span>
+            Err(<span class="c-str">"未实现 shell 执行"</span>.into())
+        })
+    }
+
+    <span class="c-kw">fn</span> <span class="c-fn">on_event</span>(&amp;<span class="c-kw">self</span>, event: <span class="c-typ">AgentEvent</span>) {
+        <span class="c-kw">match</span> event {
+            <span class="c-typ">AgentEvent</span>::<span class="c-fn">Text</span>(delta) =&gt; print!(<span class="c-str">"{delta}"</span>),
+            <span class="c-typ">AgentEvent</span>::<span class="c-fn">ToolStarted</span> { operation, target } =&gt; {
+                eprintln!(<span class="c-str">"[start] {operation}: {target}"</span>);
+            }
+            <span class="c-typ">AgentEvent</span>::<span class="c-fn">ToolFinished</span> { operation, target, result } =&gt; {
+                eprintln!(<span class="c-str">"[finish] {operation} ({target}): {:?}"</span>, result.is_ok());
+            }
+        }
+    }
+}
+
+<span class="c-com">// 调用入口：mio_agent::run</span>
+<span class="c-kw">let</span> updated_history = run(
+    config,
+    history,
+    <span class="c-str">"查看当前目录"</span>,
+    &amp;cwd,
+    Arc::new(<span class="c-typ">ExampleHost</span>),
+    Services::default(),
+).<span class="c-kw">await</span>?;</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 优势与开发者价值 Section -->
+    <section id="advantages" class="why-section">
+      <div class="container">
+        <div class="section-lead">
+          <span class="section-badge">核心设计</span>
+          <h2 class="section-title">直接用，也能成为你应用的一部分</h2>
+          <p class="section-description">
+            从日常终端任务到自己的桌面界面，复用同一套工具、会话与模型调用逻辑。
+          </p>
+        </div>
+
+        <div class="features-grid">
+          <!-- 优势 1 -->
+          <article class="feature-card">
+            <div class="card-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <h3 class="card-title">Rust 原生进程内集成</h3>
+            <p class="card-desc">
+              以 Rust crate 形式直接链接进宿主程序，共享 Tokio 异步运行时。宿主直接调用 Rust 接口，无需维护额外 Agent 运行进程。
+            </p>
+            <div class="card-value-box">
+              <strong>少维护一层：</strong> 应用直接调用库；独立使用时，安装一个 Rust 命令行程序即可。
+            </div>
+          </article>
+
+          <!-- 优势 2 -->
+          <article class="feature-card">
+            <div class="card-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                <polyline points="2 17 12 22 22 17"/>
+                <polyline points="2 12 12 17 22 12"/>
+              </svg>
+            </div>
+            <h3 class="card-title">模型与界面自由组合</h3>
+            <p class="card-desc">
+              Mio 核心不捆绑任何特定前端、终端或图形 UI 框架。提供 OpenAI 兼容服务等接入，上层宿主可按需实现任意形式的交互体验。
+            </p>
+            <div class="card-value-box">
+              <strong>按项目选择：</strong> 连接兼容的云端或本地模型，界面和执行环境由宿主实现。
+            </div>
+          </article>
+
+          <!-- 优势 3 -->
+          <article class="feature-card">
+            <div class="card-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+            </div>
+            <h3 class="card-title">细粒度结构化事件驱动</h3>
+            <p class="card-desc">
+              整个循环通过强类型的枚举事件驱动，宿主可在第一时间截获 <code>Text</code> 增量、<code>ToolStarted</code> 与 <code>ToolFinished</code> 等结构化事实，精准同步给业务渲染流水线。
+            </p>
+            <div class="card-value-box">
+              <strong>过程看得见：</strong> 直接消费 Rust 事件或 CLI 的 JSON Lines，展示文本与工具执行进度。
+            </div>
+          </article>
+
+          <!-- 优势 4 -->
+          <article class="feature-card">
+            <div class="card-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <h3 class="card-title">项目上下文与任务一起保留</h3>
+            <p class="card-desc">
+              加载仓库中的 <code>AGENTS.md</code>、项目 Skills 与提示词模板。成功完成任务后，完整消息与工具结果保存为本地会话。
+            </p>
+            <div class="card-value-box">
+              <strong>下次接着做：</strong> 恢复上次任务，或创建分支尝试其他方案，保留原会话。
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 能力状态明细 Section -->
+    <section id="capabilities" class="capabilities-section">
+      <div class="container">
+        <div class="section-lead">
+          <span class="section-badge">当前能力</span>
+          <h2 class="section-title">把日常编码流程连起来</h2>
+          <p class="section-description">
+            已提供原生 CLI 与 Rust 库。项目仍在早期阶段，以下列出可用功能及后续方向。
+          </p>
+        </div>
+
+        <div class="table-responsive">
+          <table class="status-table">
+            <thead>
+              <tr>
+                <th scope="col" style="width: 22%;">能力模块</th>
+                <th scope="col" style="width: 15%;">状态</th>
+                <th scope="col" style="width: 63%;">技术细节与说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>流式内容回复</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>模型生成的文本增量以强类型 <code>AgentEvent::Text</code> 事件向宿主实时触发。</td>
+              </tr>
+              <tr>
+                <td><strong>多轮工具循环</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>自主发起、交替解析与连续处理多轮工具调用，支持多轮历史状态同步。</td>
+              </tr>
+              <tr>
+                <td><strong>基础文件读写</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>支持文件读取 (<code>read</code>) 与写入 (<code>write</code>)，集成基础工作区相对路径防越界安全检查（非 OS 沙箱）。</td>
+              </tr>
+              <tr>
+                <td><strong>宿主命令接入 (Shell)</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>通过 <code>Host::shell</code> trait 代理至宿主环境执行，shell 遵循宿主进程权限，宿主可在其实现中加入安全策略与审批。</td>
+              </tr>
+              <tr>
+                <td><strong>历史传入与异步取消</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>支持宿主传入 <code>Vec&lt;Message&gt;</code> 恢复对话；丢弃（drop）调用 Future 时由宿主负责子进程实际回收。</td>
+              </tr>
+              <tr>
+                <td><strong>精确编辑与检索</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td><code>edit</code> 只替换唯一匹配；<code>grep</code>、<code>find</code>、<code>ls</code> 支持有界检索与目录查看，读取可按行分页。</td>
+              </tr>
+              <tr>
+                <td><strong>工程规范加载</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>加载 <code>AGENTS.md</code>、项目 Skills 目录摘要、按需正文与提示词模板；可关闭自动上下文加载。</td>
+              </tr>
+              <tr>
+                <td><strong>独立 CLI 交互工具</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>单次任务、逐行交互、标准输入与 JSON Lines 事件输出，可配置模型和禁用 Shell。</td>
+              </tr>
+              <tr>
+                <td><strong>本地会话与分支</strong></td>
+                <td><span class="status-pill status-ready">已具备</span></td>
+                <td>完整消息与工具结果原子保存，支持列出、恢复和复制分支；模型连接配置不写入会话。</td>
+              </tr>
+              <tr>
+                <td><strong>长上下文自动压缩</strong></td>
+                <td><span class="status-pill status-plan">规划中</span></td>
+                <td>长会话的自动摘要与上下文预算管理，当前仍保留完整历史。</td>
+              </tr>
+              <tr>
+                <td><strong>完整终端 UI (TUI)</strong></td>
+                <td><span class="status-pill status-plan">规划中</span></td>
+                <td>基于终端的富交互界面、多面板实时渲染与交互式审批组件。</td>
+              </tr>
+              <tr>
+                <td><strong>可执行扩展与任务队列</strong></td>
+                <td><span class="status-pill status-plan">规划中</span></td>
+                <td>独立外部进程扩展协议、多任务排队调度与后台异步持久化执行队列。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="model-support-note">
+          <strong>模型服务接入：</strong>
+          CLI 连接支持流式工具调用的 OpenAI 兼容服务，包括兼容的本地模型。库层还提供 Codex、DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
+        </div>
+      </div>
+    </section>
+
+    <!-- 快速开始 Section -->
+    <section id="quickstart" class="quickstart-section">
+      <div class="container">
+        <div class="section-lead">
+          <span class="section-badge">开始使用</span>
+          <h2 class="section-title">从一个终端任务开始</h2>
+          <p class="section-description">
+            准备 Rust 1.95 或更新版本，从源码安装命令行工具。当前尚未发布预编译安装包。
+          </p>
+        </div>
+
+        <!-- 步骤 1 -->
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">1</span>
+            <h3 class="step-title">安装 Mio</h3>
+          </div>
+          <p>从 GitHub 克隆仓库，使用锁定依赖构建：</p>
+          <div class="cmd-box">
+            <button class="copy-btn" data-target="cmd-code-1" data-label="复制">复制</button>
+            <code id="cmd-code-1">git clone https://github.com/Ravomi/Mio.git
+cd Mio
+cargo install --path . --locked
+mio --help</code>
+          </div>
+        </div>
+
+        <!-- 步骤 2 -->
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">2</span>
+            <h3 class="step-title">连接模型并运行任务</h3>
+          </div>
+          <p>替换下方服务地址、模型名和项目路径，通过环境变量提供 <code>MIO_API_KEY</code>：</p>
+          <div class="cmd-box">
+            <button class="copy-btn" data-target="cmd-code-2" data-label="复制">复制</button>
+            <code id="cmd-code-2">export MIO_BASE_URL='https://your-provider.example/v1'
+export MIO_MODEL='your-model-name'
+mio --cwd /path/to/project -p '解释项目结构，列出主要模块'</code>
+          </div>
+          <p class="quickstart-tip">
+            地址和模型名为占位值。兼容的本地免密钥服务可不设置密钥；云服务费用由提供方决定。
+          </p>
+        </div>
+
+        <!-- 步骤 3 -->
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">3</span>
+            <h3 class="step-title">继续任务，或嵌入你的应用</h3>
+          </div>
+          <p>
+            查看仓库中的集成示例 <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer"><code>examples/host.rs</code></a>，了解如何将 <code>mio-agent</code> 链接至自定义宿主应用、绑定事件流回调与命令执行边界。
+          </p>
+          <p class="quickstart-tip">
+            使用 <code>mio --cwd /path/to/project --resume</code> 继续最近的会话；加上 <code>--fork</code> 创建分支。更多选项见 <a href="https://github.com/Ravomi/Mio#readme">README</a>。
+          </p>
+        </div>
+
+        <!-- 宿主边界与已知约束 -->
+        <div class="boundary-box">
+          <h3>使用边界</h3>
+          <ul class="boundary-list">
+            <li><strong>命令执行：</strong> CLI 默认允许文件修改和 Shell，以当前用户权限执行。<code>--no-shell</code> 只关闭 Shell；Unix 原生实现会在取消时终止子进程组。Rust 宿主可复用原生执行模块或实现自己的策略。</li>
+            <li><strong>文件变动与沙箱边界：</strong> Mio 的工作区路径检查可防御相对路径越界，但并非 OS 安全沙箱；工具无审批拦截回调（<code>on_event</code> 仅作通知）；丢弃 Future 取消任务不会自动回滚已写入磁盘的文件，且由宿主负责子进程实际回收。</li>
+            <li><strong>验证范围：</strong> 当前通过 Linux 本地模拟服务、CLI 工作流和子进程测试。其他操作系统与真实账户服务尚未全面验收；完整 TUI、任务队列、双向 RPC 和自动压缩仍未实现。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 页脚 -->
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand-area">
+          <a href="./" class="brand-link">
+            <span>Mio</span>
+          </a>
+          <p>
+            用 Rust 构建的编程 Agent。理解代码，完成修改，让任务从上次停下的地方继续。
+          </p>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">导航与文档</h4>
+          <ul class="footer-links">
+            <li><a href="#advantages">设计与优势</a></li>
+            <li><a href="#capabilities">能力与状态</a></li>
+            <li><a href="#quickstart">快速开始</a></li>
+            <li><a href="https://github.com/Ravomi/Mio/blob/main/README.md" target="_blank" rel="noopener noreferrer">项目 README</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">开源与代码</h4>
+          <ul class="footer-links">
+            <li><a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer">Ravomi/Mio 源码库</a></li>
+            <li><a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer">Rig (LLM 框架)</a></li>
+            <li><a href="https://github.com/Ravomi/ravomi-app" target="_blank" rel="noopener noreferrer">Ravomi 桌面宿主</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <div class="footer-acknowledgment">
+          <span>致谢：感谢 <a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer">Rig</a> 提供的 Rust LLM 框架基础。</span>
+        </div>
+        <div>
+          <span>开源协议：GPL-3.0-only</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- 无障碍 live region，供复制反馈通知屏幕阅读器 -->
+  <div id="copy-status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>
