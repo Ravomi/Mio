@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/mio-logo.png" alt="Mio logo" width="240" />
+</p>
+
 # Mio
 
 **Rust 编程 Agent：在终端完成编码任务，也能直接嵌入你的应用。**
