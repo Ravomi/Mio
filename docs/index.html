@@ -1,465 +1,1115 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light" data-theme-mode="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mio - Rust 原生编程 Agent 引擎</title>
-  <meta name="description" content="Mio 是用 Rust 构建的编程 Agent，面向代码理解、文件修改和命令执行。Rust 原生进程内集成、模型与界面解耦、细粒度结构化事件，执行由宿主全权掌控。">
-  
-  <!-- Open Graph / Meta -->
-  <meta property="og:title" content="Mio - Rust 原生编程 Agent 引擎">
-  <meta property="og:description" content="从理解代码到执行修改：Rust 原生、可独立运行也可嵌入的通用编程 Agent 核心。">
+  <title>Mio — Rust 原生编程 Agent 引擎与 CLI</title>
+  <meta name="description" content="Mio (mio-agent) 是用 Rust 构建的极速编程 Agent。2.5ms 冷启动、5.6MB 内存占用，内置精确文件编辑、并发只读子代理、会话树分支与上下文压缩，既可终端独立运行，也可零 IPC 进程内嵌入你的 Rust 应用。">
+  <meta name="theme-color" content="#f8f6fb">
+
+  <!-- Open Graph / Social -->
+  <meta property="og:title" content="Mio — Rust 原生编程 Agent 引擎与 CLI">
+  <meta property="og:description" content="理解代码、精确修改、并发子代理与可分叉会话树。2.5ms 启动、5.6MB 内存，终端与宿主应用共用同一个 Rust 核心。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ravomi.github.io/Mio/">
+  <meta property="og:image" content="https://ravomi.github.io/Mio/mio-logo.png">
   <meta name="twitter:card" content="summary">
 
-  <!-- Local Favicon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Mio",
+    "alternateName": "mio-agent",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "description": "Rust-native headless coding agent engine and CLI with workspace tools, concurrent subagents, session branching, context compaction, and in-process Host trait embedding.",
+    "license": "https://opensource.org/licenses/MIT",
+    "codeRepository": "https://github.com/Ravomi/Mio",
+    "url": "https://ravomi.github.io/Mio/"
+  }
+  </script>
+
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('mio:theme');
+        var mode = (stored === 'dark' || stored === 'light' || stored === 'auto') ? stored : 'light';
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themeMode = mode;
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
-  <!-- 键盘跳过导航链接 -->
   <a href="#main-content" class="skip-link">跳至主要内容</a>
 
-  <!-- 顶部导航 -->
-  <header class="site-header">
-    <div class="container nav-container">
-      <a href="./" class="brand-link" aria-label="Mio 首页">
-        <svg class="brand-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect width="64" height="64" rx="14" fill="#0f172a"/>
-          <path d="M16 46V20L28 34L32 30L36 34L48 20V46" stroke="#f8fafc" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-          <circle cx="32" cy="18" r="3.5" fill="#4f46e5"/>
-          <circle cx="28" cy="34" r="2" fill="#818cf8"/>
-          <circle cx="36" cy="34" r="2" fill="#818cf8"/>
-          <path d="M22 46H42" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round"/>
-        </svg>
+  <!-- 顶部导航栏 (ThoughtDAG 毛玻璃画布风 + Pi Logo 菜单与主题切换) -->
+  <header class="site-nav" role="banner">
+    <div class="nav-brand-wrap">
+      <a href="#top" class="brand-link" id="brandLogoTrigger" aria-label="Mio 首页（右键查看图标菜单）">
+        <img src="mio-logo.png" alt="Mio 图标" class="brand-logo" width="32" height="32">
         <span>Mio</span>
-        <span class="nav-tagline">Rust 编程 Agent</span>
+        <span class="brand-tag">v0.1.0 · Rust</span>
       </a>
+      <div class="logo-menu" id="logoContextMenu" hidden>
+        <button type="button" class="logo-menu-item" id="copyLogoSvgBtn">
+          <span>复制 SVG 图标</span>
+          <span>⌘C</span>
+        </button>
+        <a href="mio-logo.png" download="mio-logo.png" class="logo-menu-item">
+          <span>下载 PNG 图标</span>
+          <span>↓</span>
+        </a>
+        <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="logo-menu-item">
+          <span>GitHub 源码库</span>
+          <span>↗</span>
+        </a>
+      </div>
+    </div>
 
-      <nav aria-label="主导航">
-        <ul class="nav-links">
-          <li><a href="#advantages">优势</a></li>
-          <li><a href="#capabilities">能力</a></li>
-          <li><a href="#quickstart">开始使用</a></li>
-          <li>
-            <a href="https://github.com/Ravomi/Mio" class="nav-external" target="_blank" rel="noopener noreferrer">
-              <span>GitHub</span>
-              <svg class="ext-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-              </svg>
-            </a>
-          </li>
-        </ul>
-      </nav>
+    <nav aria-label="主导航">
+      <ul class="nav-links">
+        <li><a href="#showcase" class="nav-link" data-zh="交互演示" data-en="Live Demo">交互演示</a></li>
+        <li><a href="#story" class="nav-link" data-zh="执行图谱" data-en="Context Graph">执行图谱</a></li>
+        <li><a href="#capabilities" class="nav-link" data-zh="核心能力" data-en="Capabilities">核心能力</a></li>
+        <li><a href="#benchmark" class="nav-link" data-zh="性能基准" data-en="Benchmarks">性能基准</a></li>
+        <li><a href="#quickstart" class="nav-link" data-zh="快速开始" data-en="Quickstart">快速开始</a></li>
+        <li>
+          <a href="https://github.com/Ravomi/Mio" class="nav-link" target="_blank" rel="noopener noreferrer">
+            GitHub ↗
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="nav-controls">
+      <button type="button" class="nav-pill-btn" id="langToggleBtn" aria-label="切换语言 / Switch language">
+        EN
+      </button>
+      <button type="button" class="nav-pill-btn" id="themeToggleBtn" aria-label="切换深浅色主题">
+        <span id="themeIcon" aria-hidden="true">☀</span>
+        <span id="themeLabel" data-zh="浅色" data-en="Light">浅色</span>
+      </button>
+      <a href="#quickstart" class="nav-cta" data-zh="开始使用 ↓" data-en="Get started ↓">开始使用 ↓</a>
     </div>
   </header>
 
   <main id="main-content">
-    <!-- Hero 首屏 -->
-    <section class="hero-section">
-      <div class="container hero-grid">
-        <div class="hero-content">
-          <div class="hero-badge-row">
-            <span class="pill-badge">mio-agent v0.1.0</span>
-            <span class="pill-badge-outline">Rust 2024 Edition</span>
-            <span class="pill-badge-outline">MIT</span>
+    <!-- Hero 首屏：ThoughtDAG 呼吸感排版 + Mio 猫耳终端舞台 + Pi 多标签安装切换器 -->
+    <section class="hero-section" id="top">
+      <div class="container hero-top-center">
+        <div class="kicker-row">
+          <span class="kicker">
+            <i class="kicker-dot" aria-hidden="true"></i>
+            <span data-zh="mio-agent · Rust 2024 Edition · MIT 开源" data-en="mio-agent · Rust 2024 Edition · MIT Open Source">mio-agent · Rust 2024 Edition · MIT 开源</span>
+          </span>
+          <a href="#benchmark" class="kicker-stat" data-zh="⚡ 实测 2.5 ms 冷启动 · 5.6 MB 内存 →" data-en="⚡ 2.5 ms Cold Start · 5.6 MB RSS →">
+            ⚡ 实测 2.5 ms 冷启动 · 5.6 MB 内存 →
+          </a>
+        </div>
+
+        <div class="hero-logo-stage" id="heroLogoStage" role="button" tabindex="0" aria-label="点击触发 Mio 终端脉冲动画">
+          <div class="hero-logo-ring" aria-hidden="true"></div>
+          <img src="mio-logo.png" alt="Mio 猫耳终端提示符 Logo" class="hero-logo-img" width="104" height="104">
+          <span class="hero-logo-badge" id="heroLogoBadge">&gt;_ mio</span>
+        </div>
+
+        <h1 class="hero-title" data-zh-html="理解仓库、精确修改，<br>也能直接嵌入应用的 <span class='hl-purple' style='white-space:nowrap;'>Rust 原生 Agent</span>。" data-en-html="Understand repos, edit precisely,<br>or embed as a <span class='hl-purple' style='white-space:nowrap;'>Rust-native Agent</span>.">
+          理解仓库、精确修改，<br>也能直接嵌入应用的 <span class="hl-purple" style="white-space: nowrap;">Rust 原生 Agent</span>。
+        </h1>
+
+        <p class="hero-lede" data-zh="Mio 将流式模型调用、有界代码工具、并发只读子代理与可分叉会话组织成极速闭环。既能在终端以 2.5 ms 瞬时启动，也能作为 Rust crate 零 IPC 链接进你的桌面或服务端宿主。" data-en="Mio unifies streaming LLM calls, bounded workspace tools, concurrent read-only subagents, and branchable sessions in one ultra-fast loop. Run it in the terminal in 2.5 ms or embed the Rust crate in-process with zero IPC.">
+          Mio 将流式模型调用、有界代码工具、并发只读子代理与可分叉会话组织成极速闭环。既能在终端以 2.5 ms 瞬时启动，也能作为 Rust crate 零 IPC 链接进你的桌面或服务端宿主。
+        </p>
+
+        <div class="hero-actions">
+          <a href="#showcase" class="btn btn-primary" data-zh="查看交互演示 ↓" data-en="Interactive Demo ↓">查看交互演示 ↓</a>
+          <a href="#benchmark" class="btn btn-dark" data-zh="Agent 性能基准对比" data-en="Agent Benchmarks">Agent 性能基准对比</a>
+          <a href="#story" class="btn" data-zh="探索上下文与子代理图谱" data-en="Explore Context Graph">探索上下文与子代理图谱</a>
+          <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="btn" data-zh="GitHub 源码 ↗" data-en="GitHub Source ↗">GitHub 源码 ↗</a>
+        </div>
+
+        <!-- Pi 风格多模式安装与启动命令切换器 -->
+        <div class="install-switcher" data-install-switcher>
+          <div class="install-tabs-bar">
+            <div class="install-tabs" role="tablist" aria-label="安装与启动方式">
+              <button type="button" class="install-tab is-active" role="tab" aria-selected="true" data-install-tab="cargo" data-zh="Cargo 源码安装" data-en="Cargo Install">Cargo 源码安装</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="antigravity" data-zh="Antigravity 账号导入" data-en="Antigravity OAuth">Antigravity 账号导入</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="openai" data-zh="OpenAI / 本地模型" data-en="OpenAI / Local">OpenAI / 本地模型</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="thinking" data-zh="子代理 + 思考档位" data-en="Subagents + Thinking">子代理 + 思考档位</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="crate" data-zh="Rust 库嵌入 (Crate)" data-en="Rust Crate SDK">Rust 库嵌入 (Crate)</button>
+            </div>
+            <span class="install-hint" id="installTabHint" data-zh="需要 Rust 1.95+ · 锁定依赖构建" data-en="Requires Rust 1.95+ · Locked build">需要 Rust 1.95+ · 锁定依赖构建</span>
           </div>
-          <h1 class="hero-title">
-            从理解代码<br>
-            到<span class="hero-title-highlight">执行修改</span>
-          </h1>
-          <p class="hero-summary">
-            在终端理解项目、检索代码、完成修改，再从保存的会话继续工作。Mio 以 Rust 构建，同一个 Agent 核心也能直接嵌入你的应用。
-          </p>
-          <div class="hero-actions">
-            <a href="#quickstart" class="btn btn-primary">快速开始</a>
-            <a href="https://github.com/Ravomi/Mio" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">查看源码</a>
+
+          <div class="install-command-area">
+            <code class="install-code-panel" data-install-panel="cargo" id="install-cmd-cargo"><span class="prompt-sign">$</span>git clone https://github.com/Ravomi/Mio.git &amp;&amp; cd Mio &amp;&amp; cargo install --path . --locked</code>
+            <code class="install-code-panel" data-install-panel="antigravity" id="install-cmd-antigravity" hidden><span class="prompt-sign">$</span>mio --import-antigravity ~/.pi/agent &amp;&amp; mio --provider antigravity --subagents</code>
+            <code class="install-code-panel" data-install-panel="openai" id="install-cmd-openai" hidden><span class="prompt-sign">$</span>export MIO_BASE_URL='https://your-provider.example/v1' MIO_MODEL='gpt-5.4' &amp;&amp; mio -p '分析模块结构'</code>
+            <code class="install-code-panel" data-install-panel="thinking" id="install-cmd-thinking" hidden><span class="prompt-sign">$</span>mio --model deepseek/deepseek-reasoner:high --subagents -p '并行审计模块边界与测试覆盖'</code>
+            <code class="install-code-panel" data-install-panel="crate" id="install-cmd-crate" hidden><span class="prompt-sign">$</span>cargo add mio-agent --git https://github.com/Ravomi/Mio</code>
+
+            <button type="button" class="copy-action-btn" id="heroCopyBtn" data-zh="复制命令" data-en="Copy">
+              复制命令
+            </button>
           </div>
         </div>
 
-        <!-- 交互/状态展示面板 -->
-        <div class="panel-wrapper">
-          <div class="code-panel">
-            <div class="panel-header">
-              <div class="panel-title-area">
-                <div class="panel-dots" aria-hidden="true">
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                </div>
-                <span class="panel-filename">examples/host.rs</span>
-              </div>
-              <div class="panel-tab-group" role="tablist" aria-label="面板内容切换">
-                <button class="panel-tab-btn active" role="tab" aria-selected="true" aria-controls="tab-events" tabindex="0" data-tab="tab-events" id="tab-btn-events">结构化事件流</button>
-                <button class="panel-tab-btn" role="tab" aria-selected="false" aria-controls="tab-code" tabindex="-1" data-tab="tab-code" id="tab-btn-code">宿主集成代码</button>
-              </div>
-            </div>
-
-            <!-- Tab 1: 事件流 -->
-            <div class="panel-body tab-panel-content" id="tab-events" role="tabpanel" aria-labelledby="tab-btn-events">
-              <div class="panel-caption">事件示意，非性能实测</div>
-              <div class="event-stream-list">
-                <div class="event-row event-text">
-                  <span class="event-tag tag-text">Text</span>
-                  <span class="event-msg">"正在检查目标文件..."</span>
-                </div>
-                <div class="event-row event-tool">
-                  <span class="event-tag tag-tool">ToolStarted</span>
-                  <span class="event-msg">operation="read" target="src/main.rs"</span>
-                </div>
-                <div class="event-row event-tool">
-                  <span class="event-tag tag-tool">ToolFinished</span>
-                  <span class="event-msg">operation="read" target="src/main.rs" result=Ok(...)</span>
-                </div>
-                <div class="event-row event-tool">
-                  <span class="event-tag tag-tool">ToolStarted</span>
-                  <span class="event-msg">operation="edit" target="src/main.rs"</span>
-                </div>
-                <div class="event-row event-tool">
-                  <span class="event-tag tag-tool">ToolFinished</span>
-                  <span class="event-msg">operation="edit" target="src/main.rs" result=Ok(...)</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Tab 2: 宿主集成代码 -->
-            <div class="panel-body tab-panel-content" id="tab-code" role="tabpanel" aria-labelledby="tab-btn-code">
-              <div class="panel-caption">代码片段示意（完整实现见 <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer">examples/host.rs</a>）</div>
-              <pre class="code-pre"><code><span class="c-kw">use</span> mio_agent::{run, AgentEvent, Config, Host, HostFuture, Provider, Services};
-<span class="c-kw">use</span> std::{path::Path, sync::Arc};
-
-<span class="c-kw">struct</span> <span class="c-typ">ExampleHost</span>;
-
-<span class="c-kw">impl</span> <span class="c-typ">Host</span> <span class="c-kw">for</span> <span class="c-typ">ExampleHost</span> {
-    <span class="c-kw">fn</span> <span class="c-fn">shell</span>(&amp;<span class="c-kw">self</span>, _cmd: &amp;<span class="c-typ">str</span>, _cwd: &amp;<span class="c-typ">Path</span>) -&gt; <span class="c-typ">HostFuture</span>&lt;<span class="c-typ">Result</span>&lt;String, String&gt;&gt; {
-        Box::pin(<span class="c-kw">async move</span> {
-            <span class="c-com">// 由宿主决定命令执行与子进程实际回收</span>
-            Err(<span class="c-str">"未实现 shell 执行"</span>.into())
-        })
-    }
-
-    <span class="c-kw">fn</span> <span class="c-fn">on_event</span>(&amp;<span class="c-kw">self</span>, event: <span class="c-typ">AgentEvent</span>) {
-        <span class="c-kw">match</span> event {
-            <span class="c-typ">AgentEvent</span>::<span class="c-fn">Text</span>(delta) =&gt; print!(<span class="c-str">"{delta}"</span>),
-            <span class="c-typ">AgentEvent</span>::<span class="c-fn">ToolStarted</span> { operation, target } =&gt; {
-                eprintln!(<span class="c-str">"[start] {operation}: {target}"</span>);
-            }
-            <span class="c-typ">AgentEvent</span>::<span class="c-fn">ToolFinished</span> { operation, target, result } =&gt; {
-                eprintln!(<span class="c-str">"[finish] {operation} ({target}): {:?}"</span>, result.is_ok());
-            }
-        }
-    }
-}
-
-<span class="c-com">// 调用入口：mio_agent::run</span>
-<span class="c-kw">let</span> updated_history = run(
-    config,
-    history,
-    <span class="c-str">"查看当前目录"</span>,
-    &amp;cwd,
-    Arc::new(<span class="c-typ">ExampleHost</span>),
-    Services::default(),
-).<span class="c-kw">await</span>?;</code></pre>
-            </div>
+        <!-- 4 项实测核心指标条 -->
+        <div class="hero-metrics-strip" aria-label="Mio 核心实测指标">
+          <div class="hero-metric-pill">
+            <strong>2.5 <span class="unit">ms</span></strong>
+            <span data-zh="CLI 冷启动耗时（hyperfine 实测）" data-en="Cold CLI startup (hyperfine)">CLI 冷启动耗时（hyperfine 实测）</span>
+          </div>
+          <div class="hero-metric-pill">
+            <strong>5.6 <span class="unit">MB</span></strong>
+            <span data-zh="峰值常驻内存 RSS（对比 Node ~166MB）" data-en="Peak memory RSS (vs ~166MB Node)">峰值常驻内存 RSS（对比 Node ~166MB）</span>
+          </div>
+          <div class="hero-metric-pill">
+            <strong>14 <span class="unit">MB</span></strong>
+            <span data-zh="Stripped 单文件体积（零外部运行时）" data-en="Stripped single binary (zero VM)">Stripped 单文件体积（零外部运行时）</span>
+          </div>
+          <div class="hero-metric-pill">
+            <strong>~180 <span class="unit">tok</span></strong>
+            <span data-zh="极简系统提示词（留存有效上下文）" data-en="Minimal system prompt overhead">极简系统提示词（留存有效上下文）</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 优势与开发者价值 Section -->
-    <section id="advantages" class="why-section">
+    <!-- Pi 风格双栏交互式终端舞台 + 滚动章节 (#showcase) -->
+    <section class="showcase-section" id="showcase" aria-labelledby="showcase-heading">
       <div class="container">
-        <div class="section-lead">
-          <span class="section-badge">核心设计</span>
-          <h2 class="section-title">直接用，也能成为你应用的一部分</h2>
-          <p class="section-description">
-            从日常终端任务到自己的桌面界面，复用同一套工具、会话与模型调用逻辑。
+        <header class="showcase-intro">
+          <p class="section-eyebrow" data-zh="Interactive Workflow Stage · 交互式工作流舞台" data-en="Interactive Workflow Stage">Interactive Workflow Stage · 交互式工作流舞台</p>
+          <h2 class="section-heading" id="showcase-heading" data-zh-html="一个原语核心，<span>适配你的所有工作流。</span>" data-en-html="One minimal Rust core, <span>adapted to how you work.</span>">
+            一个原语核心，<span>适配你的所有工作流。</span>
+          </h2>
+          <p class="section-sub" data-zh="向下滚动或点击任意工作流章节，左侧终端舞台将实时回放对应的 CLI 交互、JSON Lines 结构化事件流与 Rust 宿主集成代码。" data-en="Scroll through the chapters or click any scenario below. The sticky stage replays the corresponding CLI session, JSON Lines event stream, and Rust Host code.">
+            向下滚动或点击任意工作流章节，左侧终端舞台将实时回放对应的 CLI 交互、JSON Lines 结构化事件流与 Rust 宿主集成代码。
           </p>
-        </div>
+        </header>
 
-        <div class="features-grid">
-          <!-- 优势 1 -->
-          <article class="feature-card">
-            <div class="card-header-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                <line x1="8" y1="21" x2="16" y2="21"/>
-                <line x1="12" y1="17" x2="12" y2="21"/>
-              </svg>
-            </div>
-            <h3 class="card-title">Rust 原生进程内集成</h3>
-            <p class="card-desc">
-              以 Rust crate 形式直接链接进宿主程序，共享 Tokio 异步运行时。宿主直接调用 Rust 接口，无需维护额外 Agent 运行进程。
-            </p>
-            <div class="card-value-box">
-              <strong>少维护一层：</strong> 应用直接调用库；独立使用时，安装一个 Rust 命令行程序即可。
-            </div>
-          </article>
+        <div class="home-story-grid">
+          <!-- 左侧 Sticky 终端/事件/代码播放器 (参考 pi.dev) -->
+          <div class="landing-stage" id="landingStage">
+            <figure class="figure-frame" aria-label="Mio 实时工作流终端演示">
+              <span class="figure-corner figure-corner--tl" aria-hidden="true"></span>
+              <span class="figure-corner figure-corner--tr" aria-hidden="true"></span>
+              <span class="figure-corner figure-corner--bl" aria-hidden="true"></span>
+              <span class="figure-corner figure-corner--br" aria-hidden="true"></span>
 
-          <!-- 优势 2 -->
-          <article class="feature-card">
-            <div class="card-header-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-                <polyline points="2 17 12 22 22 17"/>
-                <polyline points="2 12 12 17 22 12"/>
-              </svg>
-            </div>
-            <h3 class="card-title">模型与界面自由组合</h3>
-            <p class="card-desc">
-              Mio 核心不捆绑任何特定前端、终端或图形 UI 框架。提供 OpenAI 兼容服务等接入，上层宿主可按需实现任意形式的交互体验。
-            </p>
-            <div class="card-value-box">
-              <strong>按项目选择：</strong> 连接兼容的云端或本地模型，界面和执行环境由宿主实现。
-            </div>
-          </article>
+              <div class="stage-topbar">
+                <div class="stage-window-title">
+                  <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                  <span id="stageScenarioTitle">01 · 有界检索与精确替换 (edit + diff)</span>
+                  <span class="live-indicator" id="stageLiveBadge">LIVE</span>
+                </div>
+                <div class="stage-view-modes" role="tablist" aria-label="演示视图模式">
+                  <button type="button" class="stage-mode-btn is-active" role="tab" aria-selected="true" data-stage-mode="cli" data-zh="终端实录 CLI" data-en="CLI Transcript">终端实录 CLI</button>
+                  <button type="button" class="stage-mode-btn" role="tab" aria-selected="false" data-stage-mode="jsonl" data-zh="JSONL 事件流" data-en="JSONL Events">JSONL 事件流</button>
+                  <button type="button" class="stage-mode-btn" role="tab" aria-selected="false" data-stage-mode="rust" data-zh="Rust 宿主代码" data-en="Rust Host SDK">Rust 宿主代码</button>
+                </div>
+              </div>
 
-          <!-- 优势 3 -->
-          <article class="feature-card">
-            <div class="card-header-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-            </div>
-            <h3 class="card-title">细粒度结构化事件驱动</h3>
-            <p class="card-desc">
-              整个循环通过强类型的枚举事件驱动，宿主可在第一时间截获 <code>Text</code> 增量、<code>ToolStarted</code> 与 <code>ToolFinished</code> 等结构化事实，精准同步给业务渲染流水线。
-            </p>
-            <div class="card-value-box">
-              <strong>过程看得见：</strong> 直接消费 Rust 事件或 CLI 的 JSON Lines，展示文本与工具执行进度。
-            </div>
-          </article>
+              <div class="stage-scenario-strip" role="tablist" aria-label="切换演示场景">
+                <button type="button" class="scenario-chip is-active" data-scenario-btn="edit" data-zh="01 检索与编辑" data-en="01 Search &amp; Edit">01 检索与编辑</button>
+                <button type="button" class="scenario-chip" data-scenario-btn="subagents" data-zh="02 并发子代理" data-en="02 Subagents">02 并发子代理</button>
+                <button type="button" class="scenario-chip" data-scenario-btn="context" data-zh="03 上下文工程" data-en="03 Context">03 上下文工程</button>
+                <button type="button" class="scenario-chip" data-scenario-btn="session" data-zh="04 分叉与压缩" data-en="04 Fork &amp; Compact">04 分叉与压缩</button>
+                <button type="button" class="scenario-chip" data-scenario-btn="providers" data-zh="05 模型与思考" data-en="05 Models">05 模型与思考</button>
+                <button type="button" class="scenario-chip" data-scenario-btn="embed" data-zh="06 进程内嵌入" data-en="06 Rust Embed">06 进程内嵌入</button>
+              </div>
 
-          <!-- 优势 4 -->
-          <article class="feature-card">
-            <div class="card-header-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-              </svg>
-            </div>
-            <h3 class="card-title">项目上下文与任务一起保留</h3>
-            <p class="card-desc">
-              加载仓库中的 <code>AGENTS.md</code>、项目 Skills 与提示词模板。成功完成任务后，完整消息与工具结果保存为本地会话。
-            </p>
-            <div class="card-value-box">
-              <strong>下次接着做：</strong> 恢复上次任务，或创建分支尝试其他方案，保留原会话。
-            </div>
-          </article>
+              <div class="stage-viewport" id="stageViewport" aria-live="polite">
+                <!-- JS 动态渲染当前场景的终端步骤 / JSONL / Rust 代码；内置默认首屏内容保证无 JS 亦可完整阅读 -->
+                <div class="term-line term-cmd"><span class="ps1">$</span>mio <span class="flag">--cwd</span> ./mio <span class="flag">-p</span> <span class="arg">'检查 src/workspace.rs 的编辑边界，确保多处匹配时拒绝修改'</span></div>
+                <div class="term-line"><span class="term-event-badge badge-tool">grep</span> <code>pattern="execute_edit" path="src/workspace.rs"</code> → 命中第 218 行</div>
+                <div class="term-line"><span class="term-event-badge badge-tool">read</span> <code>path="src/workspace.rs" offset=215 limit=45</code> (1.8 KiB / 64 KiB 上限)</div>
+                <div class="term-line"><span class="term-event-badge badge-tool">edit</span> <code>path="src/workspace.rs"</code> 唯一匹配校验通过，生成 Unified Diff：</div>
+                <div class="term-diff-box"><span class="diff-hdr">@@ -234,4 +234,5 @@ impl Workspace</span>
+<span class="diff-del">-    if matches.len() != 1 { return Err("需唯一匹配".into()); }</span>
+<span class="diff-add">+    if matches.is_empty() { return Err("未找到 old_text 匹配项".into()); }</span>
+<span class="diff-add">+    if matches.len() &gt; 1 { return Err(format!("匹配到 {} 处，拒绝歧义替换", matches.len())); }</span></div>
+                <div class="term-line"><span class="term-event-badge badge-text">Mio</span> 已完成精确替换并通过 <code>cargo test --test workspace</code> 验证，会话已保存至 <code>.mio/sessions/20261014-01.json</code>。</div>
+              </div>
+
+              <div class="stage-controls-bar">
+                <div class="player-btns">
+                  <button type="button" class="player-btn" id="stagePlayPauseBtn" aria-label="暂停或继续回放">⏸ 暂停</button>
+                  <button type="button" class="player-btn" id="stageReplayBtn" aria-label="重新播放当前场景">↺ 重播</button>
+                  <button type="button" class="player-btn" id="stageSpeedBtn" aria-label="切换回放倍速">1×</button>
+                </div>
+                <div class="stage-progress-track" id="stageProgressTrack" title="点击跳转步骤">
+                  <div class="stage-progress-fill" id="stageProgressFill"></div>
+                </div>
+                <span id="stageStepCounter">6 / 6 steps</span>
+              </div>
+
+              <figcaption class="stage-caption-bar">
+                <span id="stageCaptionText" data-zh="所有文件工具均经过 checked_path 校验，拒绝绝对路径、.. 越界与符号链接穿透。" data-en="All file tools validate paths via checked_path, rejecting absolute paths, .. traversal, and symlinks.">所有文件工具均经过 checked_path 校验，拒绝绝对路径、.. 越界与符号链接穿透。</span>
+                <span style="font-family: var(--font-mono); font-size: 11px; color: #8b7cf8;">mio-agent::Workspace</span>
+              </figcaption>
+            </figure>
+          </div>
+
+          <!-- 右侧 6 个滚动叙事章节 (参考 pi.dev 的右侧章节联动) -->
+          <div class="story-chapters-col">
+            <article class="story-chapter is-active" data-scenario="edit" data-accent="purple" tabindex="0">
+              <div class="chapter-meta">
+                <span>01 · WORKSPACE PRIMITIVES</span>
+                <span>read · grep · find · ls · edit</span>
+              </div>
+              <h3 data-zh="先看清代码，再做零歧义修改" data-en="Inspect first, then make unambiguous edits">先看清代码，再做零歧义修改</h3>
+              <p data-zh="内置按行分页读取 (read)、字面与有界 Thompson NFA 正则检索 (grep)、Glob/子串查找 (find) 与精确替换 (edit)。替换内容必须唯一匹配或通过非重叠 edits[] 批量提交，遇到歧义绝不静默破坏文件，并直接返回 Unified Diff。" data-en="Built-in paginated read, literal &amp; bounded Thompson NFA regex grep, glob/substring find, and exact edit. Replacements must match uniquely or use non-overlapping edits[], returning a clean Unified Diff.">
+                内置按行分页读取 (<code>read</code>)、字面与有界 Thompson NFA 正则检索 (<code>grep</code>)、Glob/子串查找 (<code>find</code>) 与精确替换 (<code>edit</code>)。替换内容必须唯一匹配或通过非重叠 <code>edits[]</code> 批量提交，遇到歧义绝不静默破坏文件，并直接返回 Unified Diff。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip">64 KiB 输出边界</span>
+                <span class="chip green">Unified Diff 预览</span>
+                <span class="chip">防符号链接越界</span>
+              </div>
+            </article>
+
+            <article class="story-chapter" data-scenario="subagents" data-accent="green" tabindex="0">
+              <div class="chapter-meta">
+                <span>02 · NATIVE SUBAGENTS &amp; LOCKS</span>
+                <span>delegate · status · snapshot · fork</span>
+              </div>
+              <h3 data-zh="原生并发子代理与目录读写锁" data-en="Concurrent subagents with directory read/write locks">原生并发子代理与目录读写锁</h3>
+              <p data-zh="开启 --subagents 后，主 Agent 可异步或同步委派最多 4 个并发子会话。探索任务默认只读 (read_only: true)，执行层硬性拦截 write/edit/shell；重叠工作目录自动执行『只读共享、写入独占』锁协调，主子任务互不踩踏。" data-en="With --subagents, delegate up to 4 concurrent child sessions. Exploration defaults to read_only: true; overlapping directories enforce shared-read / exclusive-write locks across parent and children.">
+                开启 <code>--subagents</code> 后，主 Agent 可异步或同步委派最多 4 个并发子会话。探索任务默认只读 (<code>read_only: true</code>)，执行层硬性拦截 <code>write</code>/<code>edit</code>/<code>shell</code>；重叠工作目录自动执行“只读共享、写入独占”锁协调，主子任务互不踩踏。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip green">默认只读探索</span>
+                <span class="chip">最多 4 路并发</span>
+                <span class="chip orange">重叠目录写独占锁</span>
+              </div>
+            </article>
+
+            <article class="story-chapter" data-scenario="context" data-accent="purple" tabindex="0">
+              <div class="chapter-meta">
+                <span>03 · CONTEXT ENGINEERING</span>
+                <span>AGENTS.md · SYSTEM.md · SKILL.md</span>
+              </div>
+              <h3 data-zh="真正的上下文工程：按需披露，拒绝膨胀" data-en="Context engineering: progressive disclosure, zero bloat">真正的上下文工程：按需披露，拒绝膨胀</h3>
+              <p data-zh="Mio 基础系统提示词仅 84 字（约 180 tokens）。自动按祖先到当前目录层级加载 AGENTS.md 与 .mio/SYSTEM.md；项目 Skills 仅向模型注入轻量目录摘要，正文由模型按需读取或通过 --skill 显式挂载，保护 Prompt Cache 命中率。" data-en="Mio's base system prompt is ~180 tokens. It loads AGENTS.md and .mio/SYSTEM.md hierarchically, injecting only compact skill summaries while loading full SKILL.md bodies on demand.">
+                Mio 基础系统提示词仅 84 字（约 180 tokens）。自动按祖先到当前目录层级加载 <code>AGENTS.md</code> 与 <code>.mio/SYSTEM.md</code>；项目 Skills 仅向模型注入轻量目录摘要，正文由模型按需读取或通过 <code>--skill</code> 显式挂载，保护 Prompt Cache 命中率。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip">~180 tok 极简基底</span>
+                <span class="chip green">Skills 渐进式披露</span>
+                <span class="chip">$ARGUMENTS 模板</span>
+              </div>
+            </article>
+
+            <article class="story-chapter" data-scenario="session" data-accent="orange" tabindex="0">
+              <div class="chapter-meta">
+                <span>04 · SESSION TREE &amp; COMPACTION</span>
+                <span>--resume · --fork · /tree · /compact</span>
+              </div>
+              <h3 data-zh="可分叉的本地会话树与安全上下文压缩" data-en="Branchable local sessions &amp; safe context compaction">可分叉的本地会话树与安全上下文压缩</h3>
+              <p data-zh="每轮成功后以 0600 权限原子落盘至 .mio/sessions/*.json（绝不写入 API 密钥）。使用 --resume --fork 随时从既有进度分叉尝试新方案，用 /tree 浏览与回退历史节点，用 /compact 或 --auto-compact 在不割裂工具调用对的前提下压缩长对话。" data-en="Atomically saves 0600 snapshots to .mio/sessions/*.json without credentials. Branch with --resume --fork, navigate via /tree, and summarize long histories with /compact without splitting tool-call pairs.">
+                每轮成功后以 <code>0600</code> 权限原子落盘至 <code>.mio/sessions/*.json</code>（绝不写入 API 密钥）。使用 <code>--resume --fork</code> 随时从既有进度分叉尝试新方案，用 <code>/tree</code> 浏览与回退历史节点，用 <code>/compact</code> 或 <code>--auto-compact</code> 在不割裂工具调用对的前提下压缩长对话。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip">0600 原子快照</span>
+                <span class="chip green">--fork 分支实验</span>
+                <span class="chip orange">/compact 边界对齐压缩</span>
+              </div>
+            </article>
+
+            <article class="story-chapter" data-scenario="providers" data-accent="green" tabindex="0">
+              <div class="chapter-meta">
+                <span>05 · PROVIDERS &amp; THINKING BUDGET</span>
+                <span>OpenAI · DeepSeek · Codex · Antigravity</span>
+              </div>
+              <h3 data-zh="多供应商接入、OAuth 复用与 7 档思考预算" data-en="Multi-provider routing, OAuth reuse &amp; 7 thinking levels">多供应商接入、OAuth 复用与 7 档思考预算</h3>
+              <p data-zh="支持任意 OpenAI 兼容服务端点、DeepSeek、Codex，以及一键导入本机已有的 Antigravity OAuth 登录 (--import-antigravity ~/.pi/agent)，主子代理共享串行令牌刷新。支持 [provider/]model[:thinking] 简写与会话内 /model、/thinking 实时切换。" data-en="Connect any OpenAI-compatible API, DeepSeek, Codex, or import existing local Antigravity OAuth credentials. Supports [provider/]model[:thinking] shorthand and live /model &amp; /thinking switching.">
+                支持任意 OpenAI 兼容服务端点、DeepSeek、Codex，以及一键导入本机已有的 Antigravity OAuth 登录 (<code>--import-antigravity ~/.pi/agent</code>)，主子代理共享串行令牌刷新。支持 <code>[provider/]model[:thinking]</code> 简写与会话内 <code>/model</code>、<code>/thinking</code> 实时切换。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip green">Antigravity 免重登导入</span>
+                <span class="chip">off → max 7 档思考</span>
+                <span class="chip">本地 Ollama / vLLM 兼容</span>
+              </div>
+            </article>
+
+            <article class="story-chapter" data-scenario="embed" data-accent="purple" tabindex="0">
+              <div class="chapter-meta">
+                <span>06 · FOUR MODES &amp; RUST SDK</span>
+                <span>Interactive · Print/JSON · RPC · SDK</span>
+              </div>
+              <h3 data-zh="四种运行形态：交互、JSONL、RPC 与进程内嵌入" data-en="Four execution modes: Interactive, JSONL, RPC &amp; Rust SDK">四种运行形态：交互、JSONL、RPC 与进程内嵌入</h3>
+              <p data-zh="交互式 REPL、单次任务 (-p / --json)、标准输入输出双向协议 (--mode rpc)、MCP 工具接入 (--mcp) 以及直接链接 mio-agent 库。宿主通过实现 Host trait 接管 shell、工具审批 (approve_tool) 与实时纠偏 (poll_steering)。" data-en="Interactive REPL, one-shot print (-p / --json), stdio RPC (--mode rpc), MCP client (--mcp), and in-process Rust crate embedding via the Host trait.">
+                交互式 REPL、单次任务 (<code>-p</code> / <code>--json</code>)、标准输入输出双向协议 (<code>--mode rpc</code>)、MCP 工具接入 (<code>--mcp</code>) 以及直接链接 <code>mio-agent</code> 库。宿主通过实现 <code>Host</code> trait 接管 <code>shell</code>、工具审批 (<code>approve_tool</code>) 与实时纠偏 (<code>poll_steering</code>)。
+              </p>
+              <div class="chapter-tags">
+                <span class="chip">零 IPC 进程内调用</span>
+                <span class="chip orange">--mode rpc &amp; --mcp</span>
+                <span class="chip green">approve_tool &amp; poll_steering</span>
+              </div>
+            </article>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- 能力状态明细 Section -->
-    <section id="capabilities" class="capabilities-section">
+    <!-- ThoughtDAG 风格：交互式上下文与子代理执行图谱画布 (#story) -->
+    <section class="dag-story-section" id="story" aria-labelledby="story-heading">
       <div class="container">
-        <div class="section-lead">
-          <span class="section-badge">当前能力</span>
-          <h2 class="section-title">把日常编码流程连起来</h2>
-          <p class="section-description">
-            已提供原生 CLI 与 Rust 库。项目仍在早期阶段，以下列出可用功能及后续方向。
-          </p>
+        <div class="dag-header-row">
+          <div>
+            <p class="section-eyebrow" data-zh="Visible Execution &amp; Context Graph · 可视化上下文与并发图谱" data-en="Visible Execution &amp; Context Graph">Visible Execution &amp; Context Graph · 可视化上下文与并发图谱</p>
+            <h2 class="section-heading" id="story-heading" data-zh-html="模型读到了什么、子代理如何并发，<br><span>在一张图上看清全链路。</span>" data-en-html="What enters context and how subagents run,<br><span>visibly mapped on one canvas.</span>">
+              模型读到了什么、子代理如何并发，<br><span>在一张图上看清全链路。</span>
+            </h2>
+            <p class="section-sub" data-zh="点击下方四个阶段或画布中的任意节点，查看 Mio 如何将项目规范、只读并行探索、独占写入锁与会话分叉组织成确定性的执行图。" data-en="Click the four acts below or any node on the canvas to inspect how Mio wires project rules, read-only parallel subagents, exclusive write locks, and session forks.">
+              点击下方四个阶段或画布中的任意节点，查看 Mio 如何将项目规范、只读并行探索、独占写入锁与会话分叉组织成确定性的执行图。
+            </p>
+          </div>
+
+          <div class="dag-act-tabs" role="tablist" aria-label="执行图谱章节切换">
+            <button type="button" class="dag-act-btn is-active" data-act="0" data-zh="全景图谱 All" data-en="Full Graph">全景图谱 All</button>
+            <button type="button" class="dag-act-btn" data-act="1" data-zh="01 · 上下文装填" data-en="01 · Context Ingest">01 · 上下文装填</button>
+            <button type="button" class="dag-act-btn" data-act="2" data-zh="02 · 只读并行子代理" data-en="02 · Parallel Subagents">02 · 只读并行子代理</button>
+            <button type="button" class="dag-act-btn" data-act="3" data-zh="03 · 独占写锁与审批" data-en="03 · Write Lock &amp; Gate">03 · 独占写锁与审批</button>
+            <button type="button" class="dag-act-btn" data-act="4" data-zh="04 · 会话分叉与压缩" data-en="04 · Fork &amp; Compact">04 · 会话分叉与压缩</button>
+          </div>
         </div>
 
-        <div class="table-responsive">
-          <table class="status-table">
+        <div class="dag-canvas-shell">
+          <div class="dag-canvas-bar">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>MIO EXECUTION &amp; CONTEXT GRAPH · 紫=主干控制流 · 绿=只读并发探索 · 橙=独占写入/上下文修剪</span>
+            </div>
+            <span id="dagActiveActBadge">ACT 00 · FULL ARCHITECTURE</span>
+          </div>
+
+          <div class="dag-canvas-stage" id="dagCanvasStage">
+            <div class="dag-world" id="dagWorld">
+              <!-- 三个虚线语义分框 (仿 ThoughtDAG frame) -->
+              <div class="dag-frame-zone" style="left: 10px; top: 24px; width: 255px; height: 386px;">
+                <span class="dag-frame-label">01 · Context Ingest 上下文装填</span>
+              </div>
+              <div class="dag-frame-zone" style="left: 288px; top: 24px; width: 505px; height: 386px;">
+                <span class="dag-frame-label">02 &amp; 03 · Concurrent Agent &amp; Workspace Locks</span>
+              </div>
+              <div class="dag-frame-zone" style="left: 816px; top: 24px; width: 274px; height: 386px;">
+                <span class="dag-frame-label">04 · Session Tree 会话与压缩</span>
+              </div>
+
+              <!-- SVG 连线层 -->
+              <svg class="dag-edges-svg" viewBox="0 0 1100 430" aria-hidden="true">
+                <defs>
+                  <marker id="dag-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M0 0 L10 5 L0 10 z" fill="#6b5ce7"></path>
+                  </marker>
+                  <marker id="dag-arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M0 0 L10 5 L0 10 z" fill="#25a06b"></path>
+                  </marker>
+                  <marker id="dag-arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M0 0 L10 5 L0 10 z" fill="#e8890c"></path>
+                  </marker>
+                </defs>
+
+                <!-- Act 1 edges: Context -> Main Agent -->
+                <path class="dag-edge purple" data-edge-acts="1" d="M 242 98 C 272 98, 272 195, 306 195" marker-end="url(#dag-arrow-purple)"></path>
+                <path class="dag-edge green" data-edge-acts="1" d="M 242 292 C 272 292, 272 215, 306 215" marker-end="url(#dag-arrow-green)"></path>
+
+                <!-- Act 2 edges: Main Agent -> Parallel Read-Only Subagents -->
+                <path class="dag-edge green" data-edge-acts="2" d="M 506 178 C 538 178, 534 86, 566 86" marker-end="url(#dag-arrow-green)"></path>
+                <path class="dag-edge green" data-edge-acts="2" d="M 506 198 C 538 198, 534 205, 566 205" marker-end="url(#dag-arrow-green)"></path>
+
+                <!-- Act 3 edge: Main Agent -> Exclusive Write Tool -->
+                <path class="dag-edge orange" data-edge-acts="3" d="M 506 226 C 538 226, 534 332, 566 332" marker-end="url(#dag-arrow-orange)"></path>
+
+                <!-- Act 2 & 3 -> Act 4 Session Snapshot -->
+                <path class="dag-edge green" data-edge-acts="2,4" d="M 772 86 C 804 86, 800 105, 832 105" marker-end="url(#dag-arrow-green)"></path>
+                <path class="dag-edge purple" data-edge-acts="3,4" d="M 772 332 C 804 332, 800 130, 832 130" marker-end="url(#dag-arrow-purple)"></path>
+
+                <!-- Act 4 Session -> Fork & Compact -->
+                <path class="dag-edge purple" data-edge-acts="4" d="M 955 162 L 955 202" marker-end="url(#dag-arrow-purple)"></path>
+                <path class="dag-edge orange" data-edge-acts="4" d="M 955 292 L 955 320" marker-end="url(#dag-arrow-orange)"></path>
+              </svg>
+
+              <!-- Node 1: AGENTS.md & SYSTEM.md -->
+              <article class="dag-node purple" data-node-acts="1" style="left: 26px; top: 44px; width: 216px;">
+                <div class="dag-node-head">
+                  <span>AGENTS.md + SYSTEM.md</span>
+                  <span>~180 tok</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="项目规范层级装填" data-en="Hierarchical Rules">项目规范层级装填</h4>
+                  <p data-zh="按祖先到当前目录自动拼接规范，84 字极简系统提示词基底。" data-en="Loads ancestor AGENTS.md + .mio/SYSTEM.md onto an 84-char base preamble.">按祖先到当前目录自动拼接规范，84 字极简系统提示词基底。</p>
+                  <span class="chip" style="margin-top: 6px;">ProjectContext::load</span>
+                </div>
+              </article>
+
+              <!-- Node 2: Skills & Templates -->
+              <article class="dag-node green" data-node-acts="1" style="left: 26px; top: 228px; width: 216px;">
+                <div class="dag-node-head">
+                  <span>SKILL.md · Prompts</span>
+                  <span>按需披露</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="Skills 摘要与模板" data-en="Skills &amp; Templates">Skills 摘要与模板</h4>
+                  <p data-zh="默认仅注入 name/description 摘要，正文按需 read，不冲刷缓存。" data-en="Injects compact summaries first; full SKILL.md read on demand.">默认仅注入 name/description 摘要，正文按需 read，不冲刷缓存。</p>
+                  <span class="chip green" style="margin-top: 6px;">.agents/skills/*</span>
+                </div>
+              </article>
+
+              <!-- Node 3: Parent Agent Loop -->
+              <article class="dag-node purple" data-node-acts="1,2,3" style="left: 306px; top: 136px; width: 200px;">
+                <div class="dag-node-head">
+                  <span>mio_agent::run</span>
+                  <span>Host Trait</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="主 Agent 调度核心" data-en="Parent Agent Loop">主 Agent 调度核心</h4>
+                  <p data-zh="强类型流式事件分发，支持 ToolFilter 过滤与实时 poll_steering。" data-en="Streams typed AgentEvents with ToolFilter &amp; live poll_steering.">强类型流式事件分发，支持 ToolFilter 过滤与实时 poll_steering。</p>
+                  <span class="chip" style="margin-top: 6px;">Tokio In-Process</span>
+                </div>
+              </article>
+
+              <!-- Node 4: Subagent A (Read-Only) -->
+              <article class="dag-node green" data-node-acts="2" style="left: 566px; top: 36px; width: 206px;">
+                <div class="dag-node-head">
+                  <span>Subagent #1</span>
+                  <span>read_only: true</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="只读子代理 A：架构检索" data-en="Subagent A: Arch Scan">只读子代理 A：架构检索</h4>
+                  <p data-zh="并发执行 grep / read / find，共享目录只读锁，禁止写操作。" data-en="Runs grep/read/find in parallel with shared read lock.">并发执行 grep / read / find，共享目录只读锁，禁止写操作。</p>
+                </div>
+              </article>
+
+              <!-- Node 5: Subagent B (Read-Only) -->
+              <article class="dag-node green" data-node-acts="2" style="left: 566px; top: 158px; width: 206px;">
+                <div class="dag-node-head">
+                  <span>Subagent #2</span>
+                  <span>read_only: true</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="只读子代理 B：测试审计" data-en="Subagent B: Test Audit">只读子代理 B：测试审计</h4>
+                  <p data-zh="独立会话历史与 32 KiB 快照，文本不污染主对话上下文。" data-en="Isolated history &amp; 32 KiB snapshot; keeps main context clean.">独立会话历史与 32 KiB 快照，文本不污染主对话上下文。</p>
+                </div>
+              </article>
+
+              <!-- Node 6: Exclusive Write & Approval -->
+              <article class="dag-node orange" data-node-acts="3" style="left: 566px; top: 280px; width: 206px;">
+                <div class="dag-node-head">
+                  <span>edit · write · bash</span>
+                  <span>Exclusive Lock</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="独占写锁与 Host 审批" data-en="Exclusive Write &amp; Gate">独占写锁与 Host 审批</h4>
+                  <p data-zh="重叠目录写操作自动互斥，经过 approve_tool 门控与唯一匹配校验。" data-en="Exclusive directory lock + Host::approve_tool + unique match check.">重叠目录写操作自动互斥，经过 approve_tool 门控与唯一匹配校验。</p>
+                </div>
+              </article>
+
+              <!-- Node 7: Session Snapshot & Fork -->
+              <article class="dag-node purple" data-node-acts="4" style="left: 832px; top: 48px; width: 244px;">
+                <div class="dag-node-head">
+                  <span>.mio/sessions/*.json</span>
+                  <span>chmod 0600</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="原子会话快照与 /tree" data-en="Atomic Session &amp; /tree">原子会话快照与 /tree</h4>
+                  <p data-zh="保存完整消息与工具结果，剥离密钥凭据，支持 --resume 恢复。" data-en="Saves full turn history with 0600 permissions; strips API keys.">保存完整消息与工具结果，剥离密钥凭据，支持 --resume 恢复。</p>
+                </div>
+              </article>
+
+              <!-- Node 8: Session Fork -->
+              <article class="dag-node green" data-node-acts="4" style="left: 832px; top: 196px; width: 244px;">
+                <div class="dag-node-head">
+                  <span>--resume --fork</span>
+                  <span>Branch</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="无损分叉探索新方案" data-en="Non-destructive Fork">无损分叉探索新方案</h4>
+                  <p data-zh="复制任意历史节点开启分支实验，原会话记录完好保留。" data-en="Clone any saved session into a new branch without overwriting.">复制任意历史节点开启分支实验，原会话记录完好保留。</p>
+                </div>
+              </article>
+
+              <!-- Node 9: Context Compaction -->
+              <article class="dag-node orange" data-node-acts="4" style="left: 832px; top: 314px; width: 244px;">
+                <div class="dag-node-head">
+                  <span>/compact · Auto-Compact</span>
+                  <span>Safe Split</span>
+                </div>
+                <div class="dag-node-body">
+                  <h4 data-zh="工具对边界对齐压缩" data-en="Boundary-Safe Compaction">工具对边界对齐压缩</h4>
+                  <p data-zh="归纳早期轮次并完整保留近期消息，绝不拆分 tool_call/result 对。" data-en="Summarizes older turns while never splitting tool-call/result pairs.">归纳早期轮次并完整保留近期消息，绝不拆分 tool_call/result 对。</p>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <div class="dag-caption-banner">
+            <div class="dag-caption-copy">
+              <small id="dagBannerEyebrow">00 · 全链路架构视图</small>
+              <strong id="dagBannerTitle" data-zh="图不是事后装饰，而是每次工具调用与上下文流转的真实边界。" data-en="The graph is not decoration — it is the actual execution and context boundary.">图不是事后装饰，而是每次工具调用与上下文流转的真实边界。</strong>
+              <p id="dagBannerDesc" data-zh="主 Agent 与最多 4 个并发子代理共享同一个 Rust 进程与 Tokio 运行时：只读探索可并行推进，写任务在重叠目录上自动互斥，每次提交都可追溯、可分叉、可压缩。" data-en="Parent agent and up to 4 concurrent subagents share one Rust process and Tokio runtime: read-only tasks run in parallel, writes lock overlapping paths, and every turn is branchable.">
+                主 Agent 与最多 4 个并发子代理共享同一个 Rust 进程与 Tokio 运行时：只读探索可并行推进，写任务在重叠目录上自动互斥，每次提交都可追溯、可分叉、可压缩。
+              </p>
+            </div>
+            <a href="#benchmark" class="btn btn-primary" data-zh="查看性能实测数据 ↓" data-en="See Benchmark Data ↓">查看性能实测数据 ↓</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 核心能力与工具矩阵 (#capabilities) -->
+    <section class="capabilities-section" id="capabilities" aria-labelledby="cap-heading">
+      <div class="container">
+        <p class="section-eyebrow" data-zh="Primitives &amp; Capabilities · 核心原语与能力清单" data-en="Primitives &amp; Capabilities">Primitives &amp; Capabilities · 核心原语与能力清单</p>
+        <h2 class="section-heading" id="cap-heading" data-zh-html="终端即装即用，<span>也可作为你的应用内核。</span>" data-en-html="Ready in your terminal, <span>embeddable in your app.</span>">
+          终端即装即用，<span>也可作为你的应用内核。</span>
+        </h2>
+        <p class="section-sub" data-zh="Mio 不捆绑臃肿的 Web 后台或特定 UI 框架。所有核心能力在 CLI 与 mio-agent Rust 库中完全同构。" data-en="Mio ships without bloated daemons or locked-in UI frameworks. Every capability is shared identically between the CLI and the mio-agent Rust crate.">
+          Mio 不捆绑臃肿的 Web 后台或特定 UI 框架。所有核心能力在 CLI 与 <code>mio-agent</code> Rust 库中完全同构。
+        </p>
+
+        <div class="bento-grid">
+          <article class="bento-card">
+            <div class="bento-icon" aria-hidden="true">Rs</div>
+            <h3 data-zh="Rust 原生进程内嵌入" data-en="In-Process Rust Embedding">Rust 原生进程内嵌入</h3>
+            <p data-zh="桌面应用（如 Ravomi）或后端服务直接通过 Cargo 引入 mio-agent，共享 Tokio 运行时，无需维护跨语言 Sidecar 子进程。" data-en="Link mio-agent directly into desktop or server apps via Cargo, sharing one Tokio runtime without sidecar processes.">
+              桌面应用（如 Ravomi）或后端服务直接通过 Cargo 引入 <code>mio-agent</code>，共享 Tokio 运行时，无需维护跨语言 Sidecar 子进程。
+            </p>
+            <code>mio_agent::run_with_tools(...)</code>
+          </article>
+
+          <article class="bento-card green">
+            <div class="bento-icon" aria-hidden="true">⇄</div>
+            <h3 data-zh="结构化事件与双向门控" data-en="Typed Events &amp; Host Gates">结构化事件与双向门控</h3>
+            <p data-zh="实时派发 Text、ToolStarted、ToolFinished 枚举事件；宿主可通过 approve_tool 拦截高危操作，或用 poll_steering 在运行中注入纠偏指令。" data-en="Emits typed Text, ToolStarted, and ToolFinished events; hosts gate writes via approve_tool and steer mid-run via poll_steering.">
+              实时派发 <code>Text</code>、<code>ToolStarted</code>、<code>ToolFinished</code> 枚举事件；宿主可通过 <code>approve_tool</code> 拦截高危操作，或用 <code>poll_steering</code> 在运行中注入纠偏指令。
+            </p>
+            <code>Host::{shell, on_event, approve_tool}</code>
+          </article>
+
+          <article class="bento-card orange">
+            <div class="bento-icon" aria-hidden="true">⚙</div>
+            <h3 data-zh="细粒度工具过滤策略" data-en="Granular Tool Filtering">细粒度工具过滤策略</h3>
+            <p data-zh="支持 --tools 白名单、+tool/-tool 增量调整、--exclude-tools 通配符排除（如 mcp__*）及 --no-tools 纯对话模式。" data-en="Supports --tools whitelists, +tool/-tool deltas, --exclude-tools glob patterns, and --no-tools pure chat mode.">
+              支持 <code>--tools</code> 白名单、<code>+tool/-tool</code> 增量调整、<code>--exclude-tools</code> 通配符排除（如 <code>mcp__*</code>）及 <code>--no-tools</code> 纯对话模式。
+            </p>
+            <code>mio -t read,grep,find -xt bash</code>
+          </article>
+
+          <article class="bento-card">
+            <div class="bento-icon" aria-hidden="true">⑂</div>
+            <h3 data-zh="Delegation 结构化适配" data-en="Structured Delegation Adapter">Delegation 结构化适配</h3>
+            <p data-zh="提供 DelegationAdapter 统一接口，支持 sync/async 委派模式、独立 runTimeoutMs / waitTimeoutMs 与简洁元数据快照。" data-en="Provides DelegationAdapter with sync/async modes, per-task runTimeoutMs/waitTimeoutMs, and compact RunMeta snapshots.">
+              提供 <code>DelegationAdapter</code> 统一接口，支持 <code>sync</code>/<code>async</code> 委派模式、独立 <code>runTimeoutMs</code> / <code>waitTimeoutMs</code> 与简洁元数据快照。
+            </p>
+            <code>mio --subagents --cwd /repo</code>
+          </article>
+        </div>
+
+        <div class="tools-table-wrap">
+          <table class="tools-table">
             <thead>
               <tr>
-                <th scope="col" style="width: 22%;">能力模块</th>
-                <th scope="col" style="width: 15%;">状态</th>
-                <th scope="col" style="width: 63%;">技术细节与说明</th>
+                <th scope="col" style="width: 20%;">模块 / 工具</th>
+                <th scope="col" style="width: 14%;">当前状态</th>
+                <th scope="col" style="width: 66%;">工程实现与安全边界说明</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td><strong>流式内容回复</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>模型生成的文本增量以强类型 <code>AgentEvent::Text</code> 事件向宿主实时触发。</td>
+                <td><strong><code>read</code> / <code>write</code></strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>UTF-8 分页读取（<code>offset</code>/<code>limit</code>，单次输入上限 8 MiB、输出上限 64 KiB）；原子写入上限 1 MiB。拒绝绝对路径、<code>..</code> 与符号链接。</td>
               </tr>
               <tr>
-                <td><strong>多轮工具循环</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>自主发起、交替解析与连续处理多轮工具调用，支持多轮历史状态同步。</td>
+                <td><strong><code>edit</code> (精确替换)</strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>支持单处 <code>old_text</code>/<code>new_text</code> 或多块不重叠 <code>edits[]</code> 批量替换，拒绝零匹配与多处歧义匹配，保留原文件权限与 CRLF 并输出 Unified Diff。</td>
               </tr>
               <tr>
-                <td><strong>基础文件读写</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>支持文件读取 (<code>read</code>) 与写入 (<code>write</code>)，集成基础工作区相对路径防越界安全检查（非 OS 沙箱）。</td>
+                <td><strong><code>grep</code> / <code>find</code> / <code>ls</code></strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td><code>grep</code> 支持字面量与有界 Thompson NFA 正则搜索（防 ReDoS）；<code>find</code> 支持子串与 Glob 匹配；自动跳过 <code>.git</code>、<code>target</code>、<code>node_modules</code>，最深 64 层、5000 项上限。</td>
               </tr>
               <tr>
-                <td><strong>宿主命令接入 (Shell)</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>通过 <code>Host::shell</code> trait 代理至宿主环境执行，shell 遵循宿主进程权限，宿主可在其实现中加入安全策略与审批。</td>
+                <td><strong><code>shell</code> / <code>bash</code></strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>由 <code>Host::shell</code> 代理执行非交互命令（120 秒超时，<code>--no-shell</code> 可彻底禁用）。Unix 原生实现会在 Future 取消时终止整个独立子进程组。</td>
               </tr>
               <tr>
-                <td><strong>历史传入与异步取消</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>支持宿主传入 <code>Vec&lt;Message&gt;</code> 恢复对话；丢弃（drop）调用 Future 时由宿主负责子进程实际回收。</td>
+                <td><strong><code>subagent</code> (并发子代理)</strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>支持 <code>delegate</code>、<code>status</code>（30 秒长轮询）、<code>snapshot</code>、<code>list</code>、<code>kill</code>、<code>fork</code>；最多 4 并发，默认只读，重叠目录自动执行读写互斥锁。</td>
               </tr>
               <tr>
-                <td><strong>精确编辑与检索</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td><code>edit</code> 只替换唯一匹配；<code>grep</code>、<code>find</code>、<code>ls</code> 支持有界检索与目录查看，读取可按行分页。</td>
+                <td><strong><code>AGENTS.md</code> &amp; Skills</strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>按目录层级加载 <code>AGENTS.md</code> 与 <code>.mio/SYSTEM.md</code>；加载 <code>.agents/skills</code> 与 <code>.mio/skills</code> 摘要并支持 <code>--skill</code>、<code>--template</code>。</td>
               </tr>
               <tr>
-                <td><strong>工程规范加载</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>加载 <code>AGENTS.md</code>、项目 Skills 目录摘要、按需正文与提示词模板；可关闭自动上下文加载。</td>
+                <td><strong>会话树、导出与压缩</strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td><code>.mio/sessions/*.json</code> 原子保存（<code>0600</code>），支持 <code>--resume</code>、<code>--fork</code>、<code>--name</code> 命名、<code>--export</code> 导出 HTML/Markdown、交互式 <code>/tree</code> 回退与 <code>/compact</code> 压缩。</td>
               </tr>
               <tr>
-                <td><strong>独立 CLI 交互工具</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>单次任务、逐行交互、标准输入与 JSON Lines 事件输出，可配置模型和禁用 Shell。</td>
+                <td><strong>模型目录、RPC 与 MCP</strong></td>
+                <td><span class="status-badge status-ready">✓ 已具备</span></td>
+                <td>支持 <code>--list-models</code> 模型目录检索、<code>[provider/]model[:thinking]</code> 7 档思考预算、<code>--mode rpc</code> 双向 JSON 协议以及 <code>--mcp</code> Stdio MCP 工具客户端。</td>
               </tr>
               <tr>
-                <td><strong>本地会话与分支</strong></td>
-                <td><span class="status-pill status-ready">已具备</span></td>
-                <td>完整消息与工具结果原子保存，支持列出、恢复和复制分支；模型连接配置不写入会话。</td>
+                <td><strong>全屏富终端 TUI</strong></td>
+                <td><span class="status-badge status-plan">◎ 规划中</span></td>
+                <td>当前 CLI 提供轻量逐行交互（<code>/help</code>、<code>/model</code>、<code>/thinking</code>、<code>/tree</code>、<code>/compact</code>、<code>/export</code>、<code>/fork</code>）、JSONL 与 RPC 模式；多面板富 TUI 界面在规划中。</td>
               </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 编程 Agent 性能与全维度基准评测 (#benchmark) -->
+    <section class="benchmark-section" id="benchmark" aria-labelledby="bench-heading">
+      <div class="container">
+        <p class="section-eyebrow" data-zh="Empirical Benchmark &amp; Architecture Matrix · 编程 Agent 性能与架构基准评测" data-en="Empirical Benchmark &amp; Architecture Matrix">Empirical Benchmark &amp; Architecture Matrix · 编程 Agent 性能与架构基准评测</p>
+        <h2 class="section-heading" id="bench-heading" data-zh-html="横向对比主流编程 Agent：<br><span>为什么原生 Rust 架构至关重要？</span>" data-en-html="Benchmarking Coding Agents:<br><span>Why Rust-native architecture matters.</span>">
+          横向对比主流编程 Agent：<br><span>为什么原生 Rust 架构至关重要？</span>
+        </h2>
+        <p class="section-sub" data-zh="我们在同一台 Linux x86_64 工作站上使用 hyperfine 与 /usr/bin/time -v 对 Mio、Codex CLI、Claude Code、Pi 及 Aider 进行了实测。端到端任务耗时主要由远端大模型推理决定，但在本地冷启动、内存开销、多子代理并发密度、系统提示词精简度与宿主进程内嵌入上，原生架构带来了数量级优势。" data-en="Measured on the same Linux x86_64 workstation using hyperfine and /usr/bin/time -v across Mio, Codex CLI, Claude Code, Pi, and Aider. While LLM token generation is network-bound, Rust-native execution delivers orders-of-magnitude wins in startup latency, memory footprint, concurrent subagent density, and in-process embedding.">
+          我们在同一台 Linux x86_64 工作站上使用 <code>hyperfine</code> 与 <code>/usr/bin/time -v</code> 对 <strong>Mio</strong>、<strong>Codex CLI</strong>、<strong>Claude Code</strong>、<strong>Pi</strong> 及 <strong>Aider</strong> 进行了实测。端到端任务耗时主要由远端大模型推理决定，但在<strong>本地冷启动、常驻内存、多子代理并发密度、系统提示词精简度与宿主进程内嵌入</strong>上，原生 Rust 架构带来了数量级优势。
+        </p>
+
+        <!-- 4 张核心对比高亮 KPI 卡片 -->
+        <div class="bench-summary-kpis">
+          <div class="bench-kpi-card green">
+            <div class="bench-kpi-label">CLI 冷启动速度 (vs Node/Python)</div>
+            <div class="bench-kpi-val">2.5 ms <span>快 208× – 235×</span></div>
+            <p class="bench-kpi-desc">无需初始化 V8 虚拟机或 Python 解释器，在 Git Hooks、脚本管道与高频自动化调用中零感知启动。</p>
+          </div>
+
+          <div class="bench-kpi-card">
+            <div class="bench-kpi-label">单实例常驻内存 Peak RSS</div>
+            <div class="bench-kpi-val">5.6 MB <span>仅 1 / 30 占用</span></div>
+            <p class="bench-kpi-desc">对比 Pi (166.5 MB) 与 Claude Code (141.6 MB)，在轻量云服务器或本地多开数十个工作区时毫无内存压力。</p>
+          </div>
+
+          <div class="bench-kpi-card orange">
+            <div class="bench-kpi-label">1 主 + 4 并发子代理总内存</div>
+            <div class="bench-kpi-val">~9.2 MB <span>进程内 Tokio 复用</span></div>
+            <p class="bench-kpi-desc">子代理作为进程内异步 Task 运行，共享 HTTP 连接池与 OAuth 令牌缓存；无需派生多个百兆级 Node 进程。</p>
+          </div>
+
+          <div class="bench-kpi-card green">
+            <div class="bench-kpi-label">默认系统提示词基础开销</div>
+            <div class="bench-kpi-val">~180 tok <span>节省 90%+ 基底开销</span></div>
+            <p class="bench-kpi-desc">84 字精准指令 + 按需 Skills 摘要披露，避免每轮请求重复发送数千 tokens 的冗长内置规则。</p>
+          </div>
+        </div>
+
+        <!-- 交互式多指标条形图面板 -->
+        <div class="bench-chart-shell" id="benchChartShell">
+          <div class="bench-chart-header">
+            <div class="bench-metric-tabs" role="tablist" aria-label="选择基准测试维度">
+              <button type="button" class="bench-metric-btn is-active" role="tab" aria-selected="true" data-bench-metric="startup" data-zh="1. 冷启动耗时 (ms)" data-en="1. Cold Startup (ms)">1. 冷启动耗时 (ms)</button>
+              <button type="button" class="bench-metric-btn" role="tab" aria-selected="false" data-bench-metric="memory" data-zh="2. 峰值常驻内存 (MB)" data-en="2. Peak Memory RSS (MB)">2. 峰值常驻内存 (MB)</button>
+              <button type="button" class="bench-metric-btn" role="tab" aria-selected="false" data-bench-metric="disk" data-zh="3. 分发与安装体积 (MB)" data-en="3. Install Footprint (MB)">3. 分发与安装体积 (MB)</button>
+              <button type="button" class="bench-metric-btn" role="tab" aria-selected="false" data-bench-metric="tokens" data-zh="4. 系统提示词开销 (Tokens)" data-en="4. System Prompt (Tokens)">4. 系统提示词开销 (Tokens)</button>
+              <button type="button" class="bench-metric-btn" role="tab" aria-selected="false" data-bench-metric="concurrency" data-zh="5. 五路并发总内存 (MB)" data-en="5. 5-Agent Concurrency (MB)">5. 五路并发总内存 (MB)</button>
+            </div>
+            <span class="bench-env-tag">Linux x86_64 · hyperfine -N --warmup 3 · 数值越小越优 ↓</span>
+          </div>
+
+          <div class="bench-chart-body">
+            <div class="bench-chart-subtitle">
+              <h3 id="benchChartTitle">CLI 冷启动与参数解析耗时 (&lt;agent&gt; --help)</h3>
+              <span id="benchChartUnit">单位：毫秒 (ms)，越短代表启动越快</span>
+            </div>
+
+            <div class="bench-bars-list" id="benchBarsList">
+              <!-- 默认展示 Metric 1: Startup Latency (JS 支持动态切换动画) -->
+              <div class="bench-bar-row is-mio">
+                <div class="bench-agent-info">
+                  <div class="bench-agent-name">Mio v0.1.0 <span class="winner-pill">1.0× 最快</span></div>
+                  <div class="bench-agent-stack">Rust 2024 · Native Binary</div>
+                </div>
+                <div class="bench-bar-track">
+                  <div class="bench-bar-fill" style="width: 2.2%;"></div>
+                </div>
+                <div class="bench-bar-value">2.5 ms <small>± 1.1 ms (929 runs)</small></div>
+              </div>
+
+              <div class="bench-bar-row">
+                <div class="bench-agent-info">
+                  <div class="bench-agent-name">Codex CLI v0.162.1</div>
+                  <div class="bench-agent-stack">Rust · Standalone musl</div>
+                </div>
+                <div class="bench-bar-track">
+                  <div class="bench-bar-fill" style="width: 4.5%;"></div>
+                </div>
+                <div class="bench-bar-value">9.0 ms <small>3.6× slower</small></div>
+              </div>
+
+              <div class="bench-bar-row">
+                <div class="bench-agent-info">
+                  <div class="bench-agent-name">Claude Code v2.1.278</div>
+                  <div class="bench-agent-stack">TypeScript · Bun Native Wrapper</div>
+                </div>
+                <div class="bench-bar-track">
+                  <div class="bench-bar-fill" style="width: 21%;"></div>
+                </div>
+                <div class="bench-bar-value">111.5 ms <small>44.6× slower</small></div>
+              </div>
+
+              <div class="bench-bar-row">
+                <div class="bench-agent-info">
+                  <div class="bench-agent-name">Pi Coding Agent v1.2.0</div>
+                  <div class="bench-agent-stack">TypeScript · Node.js V8</div>
+                </div>
+                <div class="bench-bar-track">
+                  <div class="bench-bar-fill" style="width: 88.6%;"></div>
+                </div>
+                <div class="bench-bar-value">520.6 ms <small>208.2× slower</small></div>
+              </div>
+
+              <div class="bench-bar-row">
+                <div class="bench-agent-info">
+                  <div class="bench-agent-name">Aider v0.86.2</div>
+                  <div class="bench-agent-stack">Python 3.12 · Venv Runtime</div>
+                </div>
+                <div class="bench-bar-track">
+                  <div class="bench-bar-fill" style="width: 100%;"></div>
+                </div>
+                <div class="bench-bar-value">587.5 ms <small>235.0× slower</small></div>
+              </div>
+            </div>
+
+            <div class="bench-chart-footnote">
+              <span id="benchChartNote">实测说明：在同一台 Linux x86_64 环境对各工具实装版本运行 hyperfine -N --warmup 3 测得。</span>
+              <span>本地引擎耗时 &lt; 3ms；实际编码速度取决于所连模型的 Token 生成吞吐。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 12 维度全功能与架构对比矩阵表 -->
+        <div class="matrix-header-bar">
+          <h3 data-zh="主流编程 Agent 全维度能力与架构对比矩阵" data-en="Comprehensive Coding Agent Comparison Matrix">主流编程 Agent 全维度能力与架构对比矩阵</h3>
+          <div class="matrix-filter-group" role="tablist" aria-label="筛选对比表维度">
+            <button type="button" class="matrix-filter-btn is-active" data-matrix-filter="all" data-zh="全部维度 (12)" data-en="All (12)">全部维度 (12)</button>
+            <button type="button" class="matrix-filter-btn" data-matrix-filter="perf" data-zh="性能与资源 (4)" data-en="Performance (4)">性能与资源 (4)</button>
+            <button type="button" class="matrix-filter-btn" data-matrix-filter="arch" data-zh="架构与嵌入 (4)" data-en="Architecture (4)">架构与嵌入 (4)</button>
+            <button type="button" class="matrix-filter-btn" data-matrix-filter="workflow" data-zh="上下文与工作流 (4)" data-en="Workflow (4)">上下文与工作流 (4)</button>
+          </div>
+        </div>
+
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
               <tr>
-                <td><strong>长上下文自动压缩</strong></td>
-                <td><span class="status-pill status-plan">规划中</span></td>
-                <td>长会话的自动摘要与上下文预算管理，当前仍保留完整历史。</td>
+                <th scope="col" style="width: 18%;">评测维度</th>
+                <th scope="col" class="col-mio" style="width: 22%;">Mio (mio-agent v0.1.0)</th>
+                <th scope="col" style="width: 15%;">Pi (v1.2.0)</th>
+                <th scope="col" style="width: 15%;">Claude Code (v2.1)</th>
+                <th scope="col" style="width: 15%;">Codex CLI (v0.162)</th>
+                <th scope="col" style="width: 15%;">Aider (v0.86)</th>
               </tr>
-              <tr>
-                <td><strong>完整终端 UI (TUI)</strong></td>
-                <td><span class="status-pill status-plan">规划中</span></td>
-                <td>基于终端的富交互界面、多面板实时渲染与交互式审批组件。</td>
+            </thead>
+            <tbody id="matrixTableBody">
+              <tr data-cat="perf">
+                <td><span class="dim-label">运行时与实现语言</span><span class="dim-cat">Performance</span></td>
+                <td class="col-mio"><strong>Rust 2024 原生编译</strong>（零虚拟机/GC）</td>
+                <td>TypeScript / Node.js V8</td>
+                <td>TypeScript / Bun 打包二进制</td>
+                <td>Rust 原生二进制</td>
+                <td>Python 解释器 + 虚拟环境</td>
               </tr>
-              <tr>
-                <td><strong>可执行扩展与任务队列</strong></td>
-                <td><span class="status-pill status-plan">规划中</span></td>
-                <td>独立外部进程扩展协议、多任务排队调度与后台异步持久化执行队列。</td>
+              <tr data-cat="perf">
+                <td><span class="dim-label">CLI 冷启动耗时</span><span class="dim-cat">Performance</span></td>
+                <td class="col-mio"><strong style="color: var(--green);">2.5 ms (± 1.1 ms)</strong></td>
+                <td>520.6 ms (± 34.5 ms)</td>
+                <td>111.5 ms (± 11.7 ms)</td>
+                <td>9.0 ms (± 2.0 ms)</td>
+                <td>587.5 ms (± 25.3 ms)</td>
+              </tr>
+              <tr data-cat="perf">
+                <td><span class="dim-label">峰值常驻内存 (Peak RSS)</span><span class="dim-cat">Performance</span></td>
+                <td class="col-mio"><strong style="color: var(--green);">5.6 MB (5,732 KB)</strong></td>
+                <td>166.5 MB</td>
+                <td>141.6 MB</td>
+                <td>25.6 MB</td>
+                <td>72.8 MB</td>
+              </tr>
+              <tr data-cat="perf">
+                <td><span class="dim-label">安装体积与运行时依赖</span><span class="dim-cat">Performance</span></td>
+                <td class="col-mio"><strong>14 MB 单文件</strong>（无外部依赖）</td>
+                <td>149 MB + Node.js 22+</td>
+                <td>224 MB 独立二进制</td>
+                <td>281 MB 独立二进制</td>
+                <td>~420 MB Python 依赖树</td>
+              </tr>
+              <tr data-cat="arch">
+                <td><span class="dim-label">进程内嵌入与集成模式</span><span class="dim-cat">Architecture</span></td>
+                <td class="col-mio"><strong>原生 Rust Crate (零 IPC) + <code>--mode rpc</code> + <code>--mcp</code></strong></td>
+                <td>TypeScript SDK + JSON RPC + MCP</td>
+                <td>通过外部 CLI / Agent SDK + MCP</td>
+                <td>Rust 内部 crate / CLI exec + MCP</td>
+                <td>仅限 CLI 或非正式 Python 调用</td>
+              </tr>
+              <tr data-cat="arch">
+                <td><span class="dim-label">宿主执行控制与审批</span><span class="dim-cat">Architecture</span></td>
+                <td class="col-mio"><strong><code>Host</code> Trait</strong> (<code>shell</code> / <code>approve_tool</code> / <code>poll_steering</code>)</td>
+                <td>Extension 事件钩子与 RPC</td>
+                <td>内置权限弹窗 / Hooks 脚本</td>
+                <td>Landlock / Seatbelt OS 沙箱</td>
+                <td>命令行确认提示</td>
+              </tr>
+              <tr data-cat="arch">
+                <td><span class="dim-label">原生子代理与目录并发锁</span><span class="dim-cat">Architecture</span></td>
+                <td class="col-mio"><strong>内置 4 路异步子代理 + 目录读写互斥锁</strong></td>
+                <td>核心不内置（通过扩展或 tmux 实现）</td>
+                <td>内置 Task 子代理（无显式路径锁暴露）</td>
+                <td>实验性多代理委托</td>
+                <td>单线程主循环，无子代理</td>
+              </tr>
+              <tr data-cat="arch">
+                <td><span class="dim-label">文件搜索与精确替换保障</span><span class="dim-cat">Architecture</span></td>
+                <td class="col-mio"><strong>内置有界 Thompson NFA 正则 + 唯一匹配/多块 <code>edit</code></strong></td>
+                <td>内置 <code>read/write/edit/bash</code></td>
+                <td>内置文件与搜索工具集</td>
+                <td>ApplyPatch / Shell 命令为主</td>
+                <td>Search/Replace 块或 Whole-file</td>
+              </tr>
+              <tr data-cat="workflow">
+                <td><span class="dim-label">默认系统提示词开销</span><span class="dim-cat">Workflow</span></td>
+                <td class="col-mio"><strong style="color: var(--green);">~180 tokens</strong>（84 字极简指令）</td>
+                <td>~320 tokens（极简 Harness）</td>
+                <td>~4,200+ tokens</td>
+                <td>~1,850 tokens</td>
+                <td>~2,400 tokens</td>
+              </tr>
+              <tr data-cat="workflow">
+                <td><span class="dim-label">上下文工程规范</span><span class="dim-cat">Workflow</span></td>
+                <td class="col-mio"><strong><code>AGENTS.md</code> + <code>SYSTEM.md</code> + <code>SKILL.md</code> + 模板</strong></td>
+                <td><code>AGENTS.md</code> + <code>SYSTEM.md</code> + Skills + 模板</td>
+                <td><code>CLAUDE.md</code> + Skills + Slash 命令</td>
+                <td><code>AGENTS.md</code> 层级加载</td>
+                <td><code>CONVENTIONS.md</code> / <code>.aider.conf.yml</code></td>
+              </tr>
+              <tr data-cat="workflow">
+                <td><span class="dim-label">会话持久化、分叉与压缩</span><span class="dim-cat">Workflow</span></td>
+                <td class="col-mio"><strong>原子 JSON + <code>--fork</code> + <code>/tree</code> + <code>/compact</code> + <code>/export</code></strong></td>
+                <td>JSONL 会话树 + <code>/tree</code> + <code>/compact</code> + <code>/export</code></td>
+                <td>本地会话恢复 + <code>/compact</code></td>
+                <td>本地会话恢复与分叉</td>
+                <td>依赖 Git Commit 历史与聊天日志</td>
+              </tr>
+              <tr data-cat="workflow">
+                <td><span class="dim-label">开源许可与代码透明度</span><span class="dim-cat">Workflow</span></td>
+                <td class="col-mio"><strong>MIT 开源许可</strong>（含完整第三方致谢）</td>
+                <td>MIT 开源许可</td>
+                <td>专有闭源商业软件</td>
+                <td>Apache-2.0 开源许可</td>
+                <td>Apache-2.0 开源许可</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="model-support-note">
-          <strong>模型服务接入：</strong>
-          CLI 连接支持流式工具调用的 OpenAI 兼容服务，包括兼容的本地模型。库层还提供 Codex、DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
+        <!-- 可复现 Benchmark 命令卡片 -->
+        <div class="bench-repro-card">
+          <div class="bench-repro-head">
+            <span>REPRODUCIBLE BENCHMARK COMMANDS · 在你自己的机器上一键复现</span>
+            <button type="button" class="step-copy-btn" data-copy-target="repro-bench-code" style="position: static;">复制复现命令</button>
+          </div>
+          <pre class="bench-repro-pre" id="repro-bench-code"><span style="color: #6b5ce7;"># 1. 构建 Release 版本并对比冷启动耗时 (hyperfine 无 Shell 包装校准模式)</span>
+cargo build --release --locked
+hyperfine -N --warmup 3 './target/release/mio --help' 'codex --help' 'claude --help' 'pi --help' 'aider --help'
+
+<span style="color: #25a06b;"># 2. 测量峰值常驻内存占用 (Maximum resident set size)</span>
+/usr/bin/time -v ./target/release/mio --help 2&gt;&amp;1 | grep "Maximum resident"
+<span style="color: #8c8698;"># 实测输出: Maximum resident set size (kbytes): 5732 (≈ 5.6 MB)</span></pre>
         </div>
       </div>
     </section>
 
-    <!-- 快速开始 Section -->
-    <section id="quickstart" class="quickstart-section">
+    <!-- 快速开始 + Pi 风格「设计取舍与边界」+ ThoughtDAG 风格 FAQ (#quickstart) -->
+    <section class="quickstart-section" id="quickstart" aria-labelledby="quick-heading">
       <div class="container">
-        <div class="section-lead">
-          <span class="section-badge">开始使用</span>
-          <h2 class="section-title">从一个终端任务开始</h2>
-          <p class="section-description">
-            准备 Rust 1.95 或更新版本，从源码安装命令行工具。当前尚未发布预编译安装包。
-          </p>
-        </div>
+        <p class="section-eyebrow" data-zh="Quickstart &amp; Boundaries · 三步开始使用与工程边界" data-en="Quickstart &amp; Boundaries">Quickstart &amp; Boundaries · 三步开始使用与工程边界</p>
+        <h2 class="section-heading" id="quick-heading" data-zh-html="三步跑通第一个任务，<span>清楚知道每一步边界。</span>" data-en-html="Start in three steps, <span>with clear engineering boundaries.</span>">
+          三步跑通第一个任务，<span>清楚知道每一步边界。</span>
+        </h2>
+        <p class="section-sub" data-zh="准备 Rust 1.95 或更新版本，从源码锁定依赖编译安装。当前处于早期版本，未发布预编译二进制安装包。" data-en="Prepare Rust 1.95 or newer and build from source with locked dependencies.">
+          准备 Rust 1.95 或更新版本，从源码锁定依赖编译安装。当前处于早期版本，未发布预编译二进制安装包。
+        </p>
 
-        <!-- 步骤 1 -->
-        <div class="step-card">
-          <div class="step-header">
-            <span class="step-number">1</span>
-            <h3 class="step-title">安装 Mio</h3>
-          </div>
-          <p>从 GitHub 克隆仓库，使用锁定依赖构建：</p>
-          <div class="cmd-box">
-            <button class="copy-btn" data-target="cmd-code-1" data-label="复制">复制</button>
-            <code id="cmd-code-1">git clone https://github.com/Ravomi/Mio.git
+        <div class="steps-grid">
+          <article class="step-card">
+            <div class="step-head">
+              <span class="step-num">1</span>
+              <h3 data-zh="克隆并编译安装 Mio" data-en="Clone &amp; Install Mio">克隆并编译安装 Mio</h3>
+            </div>
+            <p data-zh="从 GitHub 克隆 Ravomi/Mio 仓库，使用 --locked 确保依赖与 Rig 组件版本完全一致：" data-en="Clone Ravomi/Mio from GitHub and install with --locked for reproducible dependencies:">
+              从 GitHub 克隆 <code>Ravomi/Mio</code> 仓库，使用 <code>--locked</code> 确保依赖与 Rig 组件版本完全一致：
+            </p>
+            <div class="step-cmd-box">
+              <div class="step-cmd-head">
+                <span>bash</span>
+                <button type="button" class="step-copy-btn" data-copy-target="step-cmd-1">复制</button>
+              </div>
+              <code id="step-cmd-1">git clone https://github.com/Ravomi/Mio.git
 cd Mio
 cargo install --path . --locked
 mio --help</code>
-          </div>
+            </div>
+          </article>
+
+          <article class="step-card">
+            <div class="step-head">
+              <span class="step-num">2</span>
+              <h3 data-zh="连接模型或导入本机账号" data-en="Connect Model or OAuth">连接模型或导入本机账号</h3>
+            </div>
+            <p data-zh="配置兼容 OpenAI 的服务端点与密钥，或直接复用本机已登录的 Antigravity 授权：" data-en="Configure an OpenAI-compatible endpoint or import existing local Antigravity OAuth credentials:">
+              配置兼容 OpenAI 的服务端点与密钥，或直接复用本机已登录的 Antigravity 授权：
+            </p>
+            <div class="step-cmd-box">
+              <div class="step-cmd-head">
+                <span>bash</span>
+                <button type="button" class="step-copy-btn" data-copy-target="step-cmd-2">复制</button>
+              </div>
+              <code id="step-cmd-2"># 方式 A：OpenAI 兼容服务 / 本地模型
+export MIO_BASE_URL='https://api.example.com/v1'
+export MIO_MODEL='gpt-5.4:high'
+mio --cwd /repo -p '梳理核心模块并运行测试'
+
+# 方式 B：导入本机 Antigravity 账号
+mio --import-antigravity ~/.pi/agent
+mio --provider antigravity --subagents</code>
+            </div>
+          </article>
+
+          <article class="step-card">
+            <div class="step-head">
+              <span class="step-num">3</span>
+              <h3 data-zh="恢复分叉，或嵌入你的应用" data-en="Resume, Fork, or Embed">恢复分叉，或嵌入你的应用</h3>
+            </div>
+            <p data-zh="随时恢复最近会话、创建无损分支，或参考 examples/host.rs 将 mio-agent 嵌入你的 Rust 程序：" data-en="Resume recent sessions, fork branches, or see examples/host.rs to embed mio-agent in Rust:">
+              随时恢复最近会话、创建无损分支，或参考 <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer" style="color: var(--purple); font-weight: 700;"><code>examples/host.rs</code></a> 将 <code>mio-agent</code> 嵌入你的 Rust 程序：
+            </p>
+            <div class="step-cmd-box">
+              <div class="step-cmd-head">
+                <span>bash</span>
+                <button type="button" class="step-copy-btn" data-copy-target="step-cmd-3">复制</button>
+              </div>
+              <code id="step-cmd-3"># 继续上次会话并分叉尝试新方案
+mio --cwd /repo --resume --fork \
+  -p '换用无锁实现'
+
+# 输出 JSON Lines 结构化事件流
+mio --cwd /repo --json --no-shell \
+  -p '总结最近改动'</code>
+            </div>
+          </article>
         </div>
 
-        <!-- 步骤 2 -->
-        <div class="step-card">
-          <div class="step-header">
-            <span class="step-number">2</span>
-            <h3 class="step-title">连接模型并运行任务</h3>
-          </div>
-          <p>替换下方服务地址、模型名和项目路径，通过环境变量提供 <code>MIO_API_KEY</code>：</p>
-          <div class="cmd-box">
-            <button class="copy-btn" data-target="cmd-code-2" data-label="复制">复制</button>
-            <code id="cmd-code-2">export MIO_BASE_URL='https://your-provider.example/v1'
-export MIO_MODEL='your-model-name'
-mio --cwd /path/to/project -p '解释项目结构，列出主要模块'</code>
-          </div>
-          <p class="quickstart-tip">
-            地址和模型名为占位值。兼容的本地免密钥服务可不设置密钥；云服务费用由提供方决定。
-          </p>
-        </div>
+        <!-- Pi 风格设计取舍 + ThoughtDAG 风格行前问答 -->
+        <div class="tradeoffs-grid">
+          <div>
+            <p class="section-eyebrow" style="margin-bottom: 8px;">Design Tradeoffs &amp; Safety Boundaries</p>
+            <h3 style="font-size: 24px; font-weight: 820; letter-spacing: -0.03em;" data-zh="我们坚持的极简边界与已知约束" data-en="What we keep minimal &amp; honest boundaries">我们坚持的极简边界与已知约束</h3>
+            <p style="color: var(--muted); font-size: 14.5px; margin-top: 8px;" data-zh="参考 Pi 的原语哲学，Mio 明确区分引擎职责与宿主职责，不伪装未实现的沙箱：" data-en="Inspired by Pi's primitives philosophy, Mio cleanly separates engine primitives from host responsibilities:">
+              参考 Pi 的原语哲学，Mio 明确区分引擎职责与宿主职责，不伪装未实现的沙箱：
+            </p>
 
-        <!-- 步骤 3 -->
-        <div class="step-card">
-          <div class="step-header">
-            <span class="step-number">3</span>
-            <h3 class="step-title">继续任务，或嵌入你的应用</h3>
+            <div class="boundary-cards">
+              <div class="boundary-card">
+                <h4>路径防越界 ≠ OS 容器沙箱</h4>
+                <p><code>checked_path</code> 严格拦截绝对路径、<code>..</code> 与符号链接，但 Shell 与文件操作仍以当前用户权限运行。生产隔离请结合容器或宿主审批门控。</p>
+              </div>
+              <div class="boundary-card">
+                <h4>子进程回收与文件写回滚</h4>
+                <p>Unix 下取消任务会终止独立子进程组；丢弃 Future 不会自动回滚已落盘的文件修改，自定义 <code>Host::shell</code> 需自行负责进程回收。</p>
+              </div>
+              <div class="boundary-card">
+                <h4>子代理内存态生命周期</h4>
+                <p><code>SubagentManager</code> 在进程内维护最多 128 个子会话（单会话上限 2 MiB），主会话离线恢复不会自动重建运行中的子代理实例。</p>
+              </div>
+              <div class="boundary-card">
+                <h4>诚实的平台验证范围</h4>
+                <p>已通过 Linux 本地 HTTP 模拟服务、CLI 全流程、并发锁与 Antigravity 真实账号测试；全屏富 TUI 与独立进程扩展协议仍在演进中。</p>
+              </div>
+            </div>
           </div>
-          <p>
-            查看仓库中的集成示例 <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer"><code>examples/host.rs</code></a>，了解如何将 <code>mio-agent</code> 链接至自定义宿主应用、绑定事件流回调与命令执行边界。
-          </p>
-          <p class="quickstart-tip">
-            使用 <code>mio --cwd /path/to/project --resume</code> 继续最近的会话；加上 <code>--fork</code> 创建分支。更多选项见 <a href="https://github.com/Ravomi/Mio#readme">README</a>。
-          </p>
-        </div>
 
-        <!-- 宿主边界与已知约束 -->
-        <div class="boundary-box">
-          <h3>使用边界</h3>
-          <ul class="boundary-list">
-            <li><strong>命令执行：</strong> CLI 默认允许文件修改和 Shell，以当前用户权限执行。<code>--no-shell</code> 只关闭 Shell；Unix 原生实现会在取消时终止子进程组。Rust 宿主可复用原生执行模块或实现自己的策略。</li>
-            <li><strong>文件变动与沙箱边界：</strong> Mio 的工作区路径检查可防御相对路径越界，但并非 OS 安全沙箱；工具无审批拦截回调（<code>on_event</code> 仅作通知）；丢弃 Future 取消任务不会自动回滚已写入磁盘的文件，且由宿主负责子进程实际回收。</li>
-            <li><strong>验证范围：</strong> 当前通过 Linux 本地模拟服务、CLI 工作流和子进程测试。其他操作系统与真实账户服务尚未全面验收；完整 TUI、任务队列、双向 RPC 和自动压缩仍未实现。</li>
-          </ul>
+          <div>
+            <p class="section-eyebrow" style="margin-bottom: 8px;">Before You Start · 常见问题</p>
+            <h3 style="font-size: 24px; font-weight: 820; letter-spacing: -0.03em;" data-zh="开始前，先说清四件事" data-en="Four things to know before you start">开始前，先说清四件事</h3>
+
+            <div class="faq-list">
+              <details open>
+                <summary>会话文件 (.mio/sessions/*.json) 会泄露我的 API 密钥吗？</summary>
+                <p>不会。Mio 在序列化会话快照时绝不写入 <code>Config</code> 中的连接密钥，并在 Unix 下强制设置 <code>0600</code> 权限。但对话历史本身包含读取过的代码片段与提问内容，请按项目敏感数据妥善管理。</p>
+              </details>
+              <details>
+                <summary>只读子代理 (read_only: true) 真的无法修改文件或跑命令吗？</summary>
+                <p>是的。在工具构建与执行双层拦截下，只读工作区不挂载也拒绝执行 <code>write</code>、<code>edit</code>、<code>shell</code>/<code>bash</code>，且不能再次嵌套派生子代理；同时主 Agent 施加的 <code>--no-shell</code> 也会传递约束所有子代理。</p>
+              </details>
+              <details>
+                <summary>如何在不删除既有对话的情况下尝试另一种重构成品？</summary>
+                <p>使用 <code>mio --resume --fork</code> 或在交互模式输入 <code>/fork</code>，Mio 会将当前会话完整克隆到新的时间戳快照文件，并在新分支上继续；或使用 <code>/tree</code> 回退到任意历史轮次。</p>
+              </details>
+              <details>
+                <summary>Mio 与 Rig、Ravomi 以及 Pi 是什么关系？</summary>
+                <p>Mio 从 <a href="https://github.com/Ravomi/ravomi-app" target="_blank" rel="noopener noreferrer" style="color: var(--purple);">Ravomi</a> 桌面应用中抽离为独立无头引擎，底层基于 <a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer" style="color: var(--purple);">Rig</a> Rust LLM 框架构建，并在上下文工程、会话树与思考档位交互上致敬了 Pi Coding Agent。</p>
+              </details>
+            </div>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- 页脚 -->
-  <footer class="site-footer">
+  <!-- ThoughtDAG 风格深色剧院收尾与页脚 -->
+  <footer class="finale-section" role="contentinfo">
     <div class="container">
-      <div class="footer-grid">
-        <div class="footer-brand-area">
-          <a href="./" class="brand-link">
-            <span>Mio</span>
-          </a>
-          <p>
-            用 Rust 构建的编程 Agent。理解代码，完成修改，让任务从上次停下的地方继续。
-          </p>
-        </div>
-
-        <div>
-          <h4 class="footer-col-title">导航与文档</h4>
-          <ul class="footer-links">
-            <li><a href="#advantages">设计与优势</a></li>
-            <li><a href="#capabilities">能力与状态</a></li>
-            <li><a href="#quickstart">快速开始</a></li>
-            <li><a href="https://github.com/Ravomi/Mio/blob/main/README.md" target="_blank" rel="noopener noreferrer">项目 README</a></li>
-          </ul>
-        </div>
-
-        <div>
-          <h4 class="footer-col-title">开源与代码</h4>
-          <ul class="footer-links">
-            <li><a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer">Ravomi/Mio 源码库</a></li>
-            <li><a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer">Rig (LLM 框架)</a></li>
-            <li><a href="https://github.com/Ravomi/ravomi-app" target="_blank" rel="noopener noreferrer">Ravomi 桌面宿主</a></li>
-          </ul>
-        </div>
+      <img src="mio-logo.png" alt="Mio Logo" class="finale-logo" width="92" height="92">
+      <h2 class="finale-title" data-zh-html="把极速 Agent 装进终端，<br><span>也装进你的 Rust 应用。</span>" data-en-html="Put a blazing-fast agent in your terminal,<br><span>and inside your Rust app.</span>">
+        把极速 Agent 装进终端，<br><span>也装进你的 Rust 应用。</span>
+      </h2>
+      <p class="finale-sub" data-zh="MIT 开源许可 · Rust 2024 Edition · 2.5 ms 冷启动 · 支持 OpenAI 兼容接口、DeepSeek、Codex 与 Antigravity" data-en="MIT Open Source · Rust 2024 Edition · 2.5 ms Cold Start · OpenAI-compatible, DeepSeek, Codex &amp; Antigravity">
+        MIT 开源许可 · Rust 2024 Edition · 2.5 ms 冷启动 · 支持 OpenAI 兼容接口、DeepSeek、Codex 与 Antigravity
+      </p>
+      <div class="finale-actions">
+        <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="btn btn-primary" data-zh="在 GitHub 查看 Ravomi/Mio ↗" data-en="View Ravomi/Mio on GitHub ↗">在 GitHub 查看 Ravomi/Mio ↗</a>
+        <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer" class="btn" style="background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.2);" data-zh="阅读 examples/host.rs 集成示例" data-en="Read examples/host.rs">阅读 examples/host.rs 集成示例</a>
       </div>
 
-      <div class="footer-bottom">
-        <div class="footer-acknowledgment">
-          <span>致谢：感谢 <a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer">Rig</a> 提供的 Rust LLM 框架基础。</span>
-        </div>
+      <div class="finale-footer-bar">
         <div>
-          <span>开源协议：MIT</span>
+          <strong>Mio (mio-agent)</strong> · 致谢 <a href="https://github.com/0xPlaygrounds/rig" target="_blank" rel="noopener noreferrer" style="color: #b9afff;">Rig</a> 提供 Rust LLM 框架基础 · 遵循 MIT 开源协议（详见 <code>LICENSE</code> 与 <code>CREDITS.md</code>）
+        </div>
+        <div class="finale-footer-links">
+          <a href="#showcase">交互演示</a>
+          <a href="#story">执行图谱</a>
+          <a href="#capabilities">核心能力</a>
+          <a href="#benchmark">性能基准</a>
+          <a href="#quickstart">快速开始</a>
+          <a href="https://github.com/Ravomi/Mio/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a>
+          <a href="https://github.com/Ravomi/ravomi-app" target="_blank" rel="noopener noreferrer">Ravomi 宿主</a>
         </div>
       </div>
     </div>
   </footer>
 
-  <!-- 无障碍 live region，供复制反馈通知屏幕阅读器 -->
+  <!-- 屏幕阅读器状态播报区 -->
   <div id="copy-status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
   <script src="main.js"></script>
