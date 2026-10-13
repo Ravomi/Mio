@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-theme-mode="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plugin Catalog · Mio 插件与扩展社区</title>
+  <meta name="description" content="Mio 官方插件目录与扩展社区 (Ravomi/mio-plugins)。探索并一键安装遵循 mio-plugin.json 标准的 Skills、提示词模板、声明式工具与 MCP 服务。">
+  <meta name="theme-color" content="#f8f6fb">
+
+  <meta property="og:title" content="Plugin Catalog · Mio 插件与扩展社区">
+  <meta property="og:description" content="Skills, prompt templates, declarative tools, and MCP servers for Mio Coding Agent & Alacritty-Mio. Install with mio --plugin-install <plugin>.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ravomi.github.io/Mio/packages.html">
+  <meta property="og:image" content="https://ravomi.github.io/Mio/mio-logo.png">
+
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('mio:theme');
+        var mode = (stored === 'dark' || stored === 'light' || stored === 'auto') ? stored : 'light';
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themeMode = mode;
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳至主要内容</a>
+
+  <!-- 顶部导航栏 -->
+  <header class="site-nav" role="banner">
+    <div class="nav-brand-wrap">
+      <a href="index.html" class="brand-link" aria-label="返回 Mio 首页">
+        <img src="mio-logo.png" alt="Mio 图标" class="brand-logo" width="32" height="32">
+        <span>Mio</span>
+        <span class="brand-tag">Packages · v1</span>
+      </a>
+    </div>
+
+    <nav aria-label="主导航">
+      <ul class="nav-links">
+        <li><a href="index.html#showcase" class="nav-link" data-zh="交互演示" data-en="Live Demo">交互演示</a></li>
+        <li><a href="index.html#capabilities" class="nav-link" data-zh="核心能力" data-en="Capabilities">核心能力</a></li>
+        <li><a href="index.html#benchmark" class="nav-link" data-zh="性能基准" data-en="Benchmarks">性能基准</a></li>
+        <li><a href="packages.html" class="nav-link is-active" aria-current="page" data-zh="插件社区" data-en="Packages">插件社区</a></li>
+        <li><a href="#standard" class="nav-link" data-zh="插件标准" data-en="Plugin Spec">插件标准</a></li>
+        <li>
+          <a href="https://github.com/Ravomi/mio-plugins" class="nav-link" target="_blank" rel="noopener noreferrer">
+            mio-plugins ↗
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="nav-controls">
+      <button type="button" class="nav-pill-btn" id="langToggleBtn" aria-label="切换语言 / Switch language">
+        EN
+      </button>
+      <button type="button" class="nav-pill-btn" id="themeToggleBtn" aria-label="切换深浅色主题">
+        <span id="themeIcon" aria-hidden="true">☀</span>
+        <span id="themeLabel" data-zh="浅色" data-en="Light">浅色</span>
+      </button>
+      <a href="https://github.com/Ravomi/mio-plugins/issues/new?template=submit-plugin.yml" target="_blank" rel="noopener noreferrer" class="nav-cta" data-zh="提交新插件 ↗" data-en="Submit Plugin ↗">提交新插件 ↗</a>
+    </div>
+  </header>
+
+  <main id="main-content" class="packages-dashboard">
+    <div class="container">
+      <!-- Hero Header (Pi /packages style) -->
+      <header class="packages-hero">
+        <div class="packages-hero-top">
+          <span class="kicker">
+            <i class="kicker-dot" aria-hidden="true"></i>
+            <span data-zh="Mio Plugin Standard v1 · mio-plugin.json" data-en="Mio Plugin Standard v1 · mio-plugin.json">Mio Plugin Standard v1 · mio-plugin.json</span>
+          </span>
+          <span class="packages-sync-pill" id="liveSyncBadge">
+            <i class="packages-sync-dot" aria-hidden="true"></i>
+            <span id="liveSyncText" data-zh="已连接 Ravomi/mio-plugins 官方注册表" data-en="Synced with Ravomi/mio-plugins registry">已连接 Ravomi/mio-plugins 官方注册表</span>
+          </span>
+        </div>
+
+        <h1 class="packages-title" data-zh="Plugin Catalog · 插件与扩展社区" data-en="Package Catalog">
+          Plugin Catalog · 插件与扩展社区
+        </h1>
+        <p class="packages-description" data-zh-html="汇集为 <strong>Mio</strong> 与 <strong>Alacritty-Mio</strong> 原生终端打造的声明式工具（Tools）、领域技能（Skills）、提示词模板（Prompts）、MCP 服务与上下文规则。使用 <code>mio --plugin-install &lt;plugin&gt;</code> 或终端内 <code>/plugin install &lt;plugin&gt;</code> 一键安装，详见 <a href='https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md' target='_blank' rel='noopener' style='color:var(--purple);font-weight:700;'>《Mio 插件标准规范 v1.0》</a>。" data-en-html="Declarative tools, domain skills, prompt templates, MCP servers, and context rules published to <a href='https://github.com/Ravomi/mio-plugins' target='_blank' rel='noopener' style='color:var(--purple);font-weight:700;'>Ravomi/mio-plugins</a>. Install with <code>mio --plugin-install &lt;plugin&gt;</code> or <code>/plugin install &lt;plugin&gt;</code>. See the <a href='https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md' target='_blank' rel='noopener' style='color:var(--purple);font-weight:700;'>Plugin Standard v1.0 docs</a> for details.">
+          汇集为 <strong>Mio</strong> 与 <strong>Alacritty-Mio</strong> 原生终端打造的声明式工具（Tools）、领域技能（Skills）、提示词模板（Prompts）、MCP 服务与上下文规则。使用 <code>mio --plugin-install &lt;plugin&gt;</code> 或终端内 <code>/plugin install &lt;plugin&gt;</code> 一键安装，详见 <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener" style="color:var(--purple);font-weight:700;">《Mio 插件标准规范 v1.0》</a>。
+        </p>
+
+        <div class="packages-hero-links">
+          <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer" class="btn btn-primary" data-zh="浏览 GitHub 社区仓库 (Ravomi/mio-plugins) ↗" data-en="Browse Ravomi/mio-plugins on GitHub ↗">浏览 GitHub 社区仓库 (Ravomi/mio-plugins) ↗</a>
+          <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener noreferrer" class="btn" data-zh="阅读 mio-plugin.json 标准规范 ↗" data-en="Read mio-plugin.json Specification ↗">阅读 mio-plugin.json 标准规范 ↗</a>
+          <a href="https://github.com/Ravomi/mio-plugins/issues/new?template=submit-plugin.yml" target="_blank" rel="noopener noreferrer" class="btn" data-zh="发布你的插件 ↗" data-en="Publish Your Plugin ↗">发布你的插件 ↗</a>
+          <a href="#standard" class="btn" data-zh="2 分钟创建新插件 ↓" data-en="Create a Plugin in 2 min ↓">2 分钟创建新插件 ↓</a>
+        </div>
+      </header>
+
+      <!-- Recently Published Section (Pi /packages style) -->
+      <section class="packages-surface-card" aria-labelledby="recent-plugins-title">
+        <header class="packages-surface-header">
+          <h2 class="packages-surface-title" id="recent-plugins-title" data-zh="Recently published · 最新与官方精选" data-en="Recently published">
+            Recently published · 最新与官方精选
+          </h2>
+          <span class="packages-count" data-zh="官方认证 · Schema v1" data-en="Official · Schema v1">官方认证 · Schema v1</span>
+        </header>
+        <div class="packages-surface-body">
+          <div class="packages-recent-list" id="recentPluginsGrid">
+            <button type="button" class="packages-recent-item" data-open-plugin="git-workflow">
+              <strong><span>git-workflow</span><span>v0.1.0</span></strong>
+              <span data-zh="Git 状态/变更摘要工具、Conventional Commits 模板与 PR 审查 Skill" data-en="Git status/diff summary tool, commit message template, and PR review skill">Git 状态/变更摘要工具、Conventional Commits 模板与 PR 审查 Skill</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="rust-expert">
+              <strong><span>rust-expert</span><span>v0.1.0</span></strong>
+              <span data-zh="Cargo check/clippy 诊断、unsafe 块扫描工具、所有权与并发审计 Skill 及基准模板" data-en="Cargo check/clippy diagnostic tool, Rust unsafe & ownership audit skill, and benchmark template">Cargo check/clippy 诊断、unsafe 块扫描工具、所有权与并发审计 Skill 及基准模板</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="security-audit">
+              <strong><span>security-audit</span><span>v0.1.0</span></strong>
+              <span data-zh="仓库硬编码密钥泄露扫描器、OWASP Top 10 安全代码审计 Skill 与 STRIDE 威胁建模模板" data-en="Workspace secret scanner tool, OWASP code review skill, and STRIDE threat model prompt">仓库硬编码密钥泄露扫描器、OWASP Top 10 安全代码审计 Skill 与 STRIDE 威胁建模模板</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="mcp-github">
+              <strong><span>mcp-github</span><span>v0.1.0</span></strong>
+              <span data-zh="GitHub MCP 服务桥接、gh PR 状态检查工具、Issue/CI 故障分诊 Skill 与 PR 描述模板" data-en="GitHub CLI & MCP bridge for issues, pull requests, workflow runs, and repository search">GitHub MCP 服务桥接、gh PR 状态检查工具、Issue/CI 故障分诊 Skill 与 PR 描述模板</span>
+              <small>mcp · tool · skill</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="test-runner">
+              <strong><span>test-runner</span><span>v0.1.0</span></strong>
+              <span data-zh="多语言测试框架自动识别与执行工具（Cargo/Pytest/NPM/Go）、TDD 技能与边界回归测试模板" data-en="Polyglot test suite detector & runner (Cargo, Pytest, Vitest/Jest, Go), TDD skill, and regression test prompt">多语言测试框架自动识别与执行工具（Cargo/Pytest/NPM/Go）、TDD 技能与边界回归测试模板</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="perf-profiler">
+              <strong><span>perf-profiler</span><span>v0.1.0</span></strong>
+              <span data-zh="工作区体积与构建产物分析工具、冷启动/RSS 内存峰值审计 Skill 与热点路径优化模板" data-en="Binary size, startup latency, RSS memory footprint analyzer, and hot-path optimization skill">工作区体积与构建产物分析工具、冷启动/RSS 内存峰值审计 Skill 与热点路径优化模板</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="docker-ops">
+              <strong><span>docker-ops</span><span>v0.1.0</span></strong>
+              <span data-zh="Docker/Podman 容器状态巡检工具、多阶段 Dockerfile 安全加固 Skill 与容器化部署模板" data-en="Container & Compose status inspection tool, multi-stage Dockerfile hardening skill, and deployment prompt">Docker/Podman 容器状态巡检工具、多阶段 Dockerfile 安全加固 Skill 与容器化部署模板</span>
+              <small>tool · skill · prompt</small>
+            </button>
+            <button type="button" class="packages-recent-item" data-open-plugin="docs-writer">
+              <strong><span>docs-writer</span><span>v0.1.0</span></strong>
+              <span data-zh="与源码严格对齐的技术文档架构师 Skill 及 ADR（架构决策记录）生成模板" data-en="Technical documentation architect skill and Architecture Decision Record (ADR) prompt template">与源码严格对齐的技术文档架构师 Skill 及 ADR（架构决策记录）生成模板</span>
+              <small>skill · prompt · context</small>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- All Packages Section (Pi /packages style) -->
+      <section class="packages-surface-card" aria-labelledby="all-plugins-title">
+        <header class="packages-surface-header">
+          <h2 class="packages-surface-title" id="all-plugins-title" data-zh="All packages · 全部社区插件" data-en="All packages">
+            All packages · 全部社区插件
+          </h2>
+          <span class="packages-count" id="packagesCountBadge">1-8 / 8</span>
+        </header>
+
+        <div class="packages-surface-body">
+          <!-- Search, Filter, Sort Form -->
+          <form class="packages-action-bar" id="packagesFilterForm" action="packages.html" method="get" role="search">
+            <label>
+              <span class="sr-only">搜索插件名称、描述、工具或标签</span>
+              <input
+                type="search"
+                id="packageSearchInput"
+                name="q"
+                class="packages-input-control"
+                placeholder="搜索插件名称、描述、工具名、Skill 或标签… (如 rust, mcp, git, security)"
+                data-placeholder-zh="搜索插件名称、描述、工具名、Skill 或标签… (如 rust, mcp, git, security)"
+                data-placeholder-en="Filter packages by name, description, tool, skill, or keyword…"
+                autocomplete="off"
+              >
+            </label>
+
+            <label>
+              <span class="sr-only">按扩展能力类型筛选</span>
+              <select id="packageTypeSelect" name="type" class="packages-select-control">
+                <option value="" data-zh="全部类型 (All types)" data-en="All types">全部类型 (All types)</option>
+                <option value="tool" data-zh="tool · 声明式工具" data-en="tool">tool · 声明式工具</option>
+                <option value="skill" data-zh="skill · 领域技能 (SKILL.md)" data-en="skill">skill · 领域技能 (SKILL.md)</option>
+                <option value="prompt" data-zh="prompt · 提示词模板" data-en="prompt">prompt · 提示词模板</option>
+                <option value="mcp" data-zh="mcp · MCP 服务桥接" data-en="mcp">mcp · MCP 服务桥接</option>
+                <option value="context" data-zh="context · 上下文规则" data-en="context">context · 上下文规则</option>
+              </select>
+            </label>
+
+            <label>
+              <span class="sr-only">排序方式</span>
+              <select id="packageSortSelect" name="sort" class="packages-select-control">
+                <option value="featured" data-zh="官方推荐 (Featured)" data-en="Featured">官方推荐 (Featured)</option>
+                <option value="recent" data-zh="最新发布 (Recently published)" data-en="Recently published">最新发布 (Recently published)</option>
+                <option value="name" data-zh="按名称 (A-Z)" data-en="Name (A-Z)">按名称 (A-Z)</option>
+              </select>
+            </label>
+
+            <div class="packages-action-buttons">
+              <button type="submit" class="btn btn-primary" style="padding: 9px 16px;" data-zh="搜索" data-en="Search">搜索</button>
+              <button type="button" id="packageResetBtn" class="btn" style="padding: 9px 14px;" data-zh="重置" data-en="Reset">重置</button>
+            </div>
+          </form>
+
+          <!-- Quick Topic Filter Pills -->
+          <div class="packages-filter-pills" role="toolbar" aria-label="快捷主题筛选">
+            <button type="button" class="packages-filter-pill is-active" data-topic="" data-zh="全部 (8)" data-en="All (8)">全部 (8)</button>
+            <button type="button" class="packages-filter-pill" data-topic="git" data-zh="Git &amp; PR" data-en="Git &amp; PR">Git &amp; PR</button>
+            <button type="button" class="packages-filter-pill" data-topic="rust" data-zh="Rust &amp; Cargo" data-en="Rust &amp; Cargo">Rust &amp; Cargo</button>
+            <button type="button" class="packages-filter-pill" data-topic="security" data-zh="安全审计 (OWASP)" data-en="Security (OWASP)">安全审计 (OWASP)</button>
+            <button type="button" class="packages-filter-pill" data-topic="mcp" data-zh="MCP 桥接" data-en="MCP Bridge">MCP 桥接</button>
+            <button type="button" class="packages-filter-pill" data-topic="testing" data-zh="自动化测试 (TDD)" data-en="Testing (TDD)">自动化测试 (TDD)</button>
+            <button type="button" class="packages-filter-pill" data-topic="performance" data-zh="性能剖析" data-en="Performance">性能剖析</button>
+            <button type="button" class="packages-filter-pill" data-topic="docker" data-zh="容器与 DevOps" data-en="Containers &amp; DevOps">容器与 DevOps</button>
+            <button type="button" class="packages-filter-pill" data-topic="docs" data-zh="技术文档 &amp; ADR" data-en="Docs &amp; ADR">技术文档 &amp; ADR</button>
+          </div>
+
+          <!-- 2-Column Rich Cards Grid (Rendered by HTML + enhanced by packages.js) -->
+          <div class="packages-grid" id="packagesGrid"></div>
+
+          <div class="packages-empty-state" id="packagesEmptyState" hidden>
+            <p data-zh="未找到匹配的插件，请尝试其他关键词或点击「重置」。" data-en="No matching plugins found. Try another keyword or click Reset.">
+              未找到匹配的插件，请尝试其他关键词或点击「重置」。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Plugin Standard & 2-Minute Authoring Guide (#standard) -->
+      <section class="packages-surface-card" id="standard" aria-labelledby="standard-heading">
+        <header class="packages-surface-header">
+          <h2 class="packages-surface-title" id="standard-heading" data-zh="Mio Plugin Standard v1 · 两分钟构建并发布你的插件" data-en="Mio Plugin Standard v1 · Build &amp; Publish Your Plugin in 2 Minutes">
+            Mio Plugin Standard v1 · 两分钟构建并发布你的插件
+          </h2>
+          <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener noreferrer" class="packages-count" style="color: var(--purple); border-color: var(--purple-border);">
+            SPECIFICATION.md ↗
+          </a>
+        </header>
+
+        <div class="packages-surface-body">
+          <div class="steps-grid" style="margin-top: 0;">
+            <article class="step-card">
+              <div class="step-head">
+                <span class="step-num">1</span>
+                <h3 data-zh="脚手架生成标准骨架" data-en="Scaffold Plugin Skeleton">脚手架生成标准骨架</h3>
+              </div>
+              <p data-zh="使用 mio --plugin-init 自动生成包含 mio-plugin.json、SKILL.md、提示词模板与 CONTEXT.md 的合规目录：" data-en="Run mio --plugin-init to generate a compliant plugin directory with mio-plugin.json, SKILL.md, prompts, and CONTEXT.md:">
+                使用 <code>mio --plugin-init</code> 自动生成包含 <code>mio-plugin.json</code>、<code>SKILL.md</code>、提示词模板与 <code>CONTEXT.md</code> 的合规目录：
+              </p>
+              <div class="step-cmd-box">
+                <div class="step-cmd-head">
+                  <span>bash</span>
+                  <button type="button" class="step-copy-btn" data-copy-target="spec-cmd-1">复制</button>
+                </div>
+                <code id="spec-cmd-1">mio --plugin-init ./my-plugin
+mio --plugin-validate ./my-plugin</code>
+              </div>
+            </article>
+
+            <article class="step-card">
+              <div class="step-head">
+                <span class="step-num">2</span>
+                <h3 data-zh="声明式配置 mio-plugin.json" data-en="Declare mio-plugin.json">声明式配置 mio-plugin.json</h3>
+              </div>
+              <p data-zh="无需编写复杂的胶水代码，只需声明 skills、prompts、mcp 与非交互式命令工具（自动暴露为 plugin__<name>__<tool>）：" data-en="Declare skills, prompts, mcp servers, and command tools (exposed as plugin__<name>__<tool>) in clean JSON:">
+                无需编写复杂的胶水代码，只需声明 <code>skills</code>、<code>prompts</code>、<code>mcp</code> 与非交互式命令工具（自动暴露为 <code>plugin__&lt;name&gt;__&lt;tool&gt;</code>）：
+              </p>
+              <div class="step-cmd-box">
+                <div class="step-cmd-head">
+                  <span>mio-plugin.json</span>
+                  <button type="button" class="step-copy-btn" data-copy-target="spec-cmd-2">复制</button>
+                </div>
+                <code id="spec-cmd-2">{
+  "schema_version": 1,
+  "name": "my-plugin",
+  "version": "0.1.0",
+  "description": "Custom workflow plugin",
+  "skills": ["skills"],
+  "prompts": ["prompts"],
+  "context_files": ["CONTEXT.md"],
+  "tools": []
+}</code>
+              </div>
+            </article>
+
+            <article class="step-card">
+              <div class="step-head">
+                <span class="step-num">3</span>
+                <h3 data-zh="本地安装验证并提交至 GitHub" data-en="Test Locally &amp; Submit to GitHub">本地安装验证并提交至 GitHub</h3>
+              </div>
+              <p data-zh="本地安装验证后，向 Ravomi/mio-plugins 提交 PR 或注册你的独立 GitHub 仓库，GitHub Actions 会自动校验合规性：" data-en="Test locally, then open a PR on Ravomi/mio-plugins or register your external GitHub repo in registry.json:">
+                本地安装验证后，向 <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener" style="color:var(--purple);font-weight:700;"><code>Ravomi/mio-plugins</code></a> 提交 PR 或注册你的独立 GitHub 仓库，GitHub Actions 会自动校验合规性：
+              </p>
+              <div class="step-cmd-box">
+                <div class="step-cmd-head">
+                  <span>bash</span>
+                  <button type="button" class="step-copy-btn" data-copy-target="spec-cmd-3">复制</button>
+                </div>
+                <code id="spec-cmd-3"># 本地或直接从 GitHub 仓库安装
+mio --plugin-install ./my-plugin
+mio --plugin-install github:your-org/my-plugin</code>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Interactive Plugin Inspector Modal (<dialog>) -->
+  <dialog id="pluginDetailDialog" class="plugin-modal" aria-labelledby="modalPluginTitle">
+    <div class="plugin-modal-head">
+      <div>
+        <h3 id="modalPluginTitle" style="font-family: var(--font-mono); font-size: 20px; font-weight: 800;">git-workflow</h3>
+        <p id="modalPluginSubtitle" style="font-size: 13px; color: var(--muted); margin-top: 2px;">v0.1.0 · MIT · Ravomi Community</p>
+      </div>
+      <button type="button" class="plugin-modal-close" id="closePluginModalBtn">✕ 关闭</button>
+    </div>
+    <div class="plugin-modal-body" id="modalPluginBody"></div>
+  </dialog>
+
+  <!-- 页脚 -->
+  <footer class="finale-section" role="contentinfo">
+    <div class="container">
+      <img src="mio-logo.png" alt="Mio Logo" class="finale-logo" width="76" height="76">
+      <h2 class="finale-title" data-zh-html="共建开放的 <span>Mio 插件生态。</span>" data-en-html="Build the open <span>Mio Plugin Ecosystem.</span>">
+        共建开放的 <span>Mio 插件生态。</span>
+      </h2>
+      <p class="finale-sub" data-zh="Mio Plugin Standard v1 · 零锁定 JSON 清单 · 原生兼容 Mio CLI 与 Alacritty-Mio 终端" data-en="Mio Plugin Standard v1 · Open JSON Manifest · Native support in Mio CLI &amp; Alacritty-Mio">
+        Mio Plugin Standard v1 · 零锁定 JSON 清单 · 原生兼容 Mio CLI 与 Alacritty-Mio 终端
+      </p>
+      <div class="finale-actions">
+        <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer" class="btn btn-primary" data-zh="前往 Ravomi/mio-plugins 仓库 ↗" data-en="Visit Ravomi/mio-plugins on GitHub ↗">前往 Ravomi/mio-plugins 仓库 ↗</a>
+        <a href="index.html" class="btn" style="background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.2);" data-zh="← 返回 Mio 官网首页" data-en="← Back to Mio Home">← 返回 Mio 官网首页</a>
+      </div>
+
+      <div class="finale-footer-bar">
+        <div>
+          <strong>Mio Plugin Community</strong> · <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer" style="color: #b9afff;">Ravomi/mio-plugins</a> · 遵循 MIT 开源协议
+        </div>
+        <div class="finale-footer-links">
+          <a href="index.html">Mio 首页</a>
+          <a href="packages.html">插件社区</a>
+          <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener noreferrer">标准规范</a>
+          <a href="https://github.com/Ravomi/mio-plugins/blob/main/registry.json" target="_blank" rel="noopener noreferrer">registry.json</a>
+          <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer">Ravomi/Mio</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <div id="copy-status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <script src="packages.js"></script>
+</body>
+</html>

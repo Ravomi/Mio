@@ -169,6 +169,13 @@ impl Antigravity {
         Ok(service)
     }
     pub async fn client(&self, model: &str) -> Result<Gemini, String> {
+        self.client_with_thinking(model, None).await
+    }
+    pub async fn client_with_thinking(
+        &self,
+        model: &str,
+        thinking_override: Option<&str>,
+    ) -> Result<Gemini, String> {
         let _guard = self.0.operation.lock().await;
         let mut stored: Value = serde_json::from_slice(
             &std::fs::read(&self.0.path).map_err(|_| "请先登录 Google Antigravity")?,
@@ -211,7 +218,8 @@ impl Antigravity {
                     .json(&json!({"project":credential.project})),
             )
             .await?;
-            Some(model_plan(model, stored["thinking"].as_str(), &catalog)?)
+            let effort = thinking_override.or_else(|| stored["thinking"].as_str());
+            Some(model_plan(model, effort, &catalog)?)
         } else {
             None
         };

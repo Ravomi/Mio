@@ -14,6 +14,8 @@ pub struct Session {
     pub version: u32,
     pub id: Uuid,
     pub parent_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub cwd: PathBuf,
     pub created: u64,
     pub updated: u64,
@@ -25,6 +27,8 @@ pub struct SessionMetadata {
     pub version: u32,
     pub id: Uuid,
     pub parent_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub cwd: PathBuf,
     pub created: u64,
     pub updated: u64,
@@ -48,11 +52,26 @@ impl Session {
             version: CURRENT_SESSION_VERSION,
             id: Uuid::new_v4(),
             parent_id: None,
+            name: None,
             cwd: canonical_cwd,
             created: now,
             updated: now,
             history: Vec::new(),
         })
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        let trimmed = name.into().trim().to_owned();
+        self.name = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+        self
+    }
+
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.name = name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
     }
 
     pub fn fork(&self) -> Self {
@@ -61,6 +80,7 @@ impl Session {
             version: CURRENT_SESSION_VERSION,
             id: Uuid::new_v4(),
             parent_id: Some(self.id),
+            name: self.name.as_ref().map(|n| format!("{n} (fork)")),
             cwd: self.cwd.clone(),
             created: now,
             updated: now,
@@ -198,6 +218,7 @@ impl Session {
                     version: s.version,
                     id: s.id,
                     parent_id: s.parent_id,
+                    name: s.name,
                     cwd: s.cwd,
                     created: s.created,
                     updated: s.updated,
@@ -212,6 +233,108 @@ impl Session {
         }
         Ok((list, warnings))
     }
+
+    /// Resolve a session selector (`path`, UUID/short-UUID prefix, or session name).
+    /// If `query` looks like a file path (contains `/` or ends with `.json`), returns `cwd.join(query)`
+    /// even if it does not exist yet so `--session path.json` can create a new session at that path.
+    pub fn resolve(directory: &Path, cwd: &Path, query: &str) -> Result<PathBuf, String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Err("Session selector cannot be empty".into());
+        }
+        let direct = cwd.join(trimmed);
+        if direct.exists() {
+            return Ok(direct);
+        }
+        if directory.is_dir() {
+            let (sessions, _) = Self::list(directory)?;
+            let q_lower = trimmed.to_ascii_lowercase();
+            // 1. Exact ID or exact name match
+            for s in &sessions {
+                if s.id.to_string().eq_ignore_ascii_case(trimmed)
+                    || s.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(trimmed))
+                {
+                    return Ok(s.file_path.clone());
+                }
+            }
+            // 2. Prefix UUID match or substring name match
+            let matches: Vec<&SessionMetadata> = sessions
+                .iter()
+                .filter(|s| {
+                    s.id.to_string().to_ascii_lowercase().starts_with(&q_lower)
+                        || s.name
+                            .as_deref()
+                            .is_some_and(|n| n.to_ascii_lowercase().contains(&q_lower))
+                })
+                .collect();
+            if matches.len() == 1 {
+                return Ok(matches[0].file_path.clone());
+            } else if matches.len() > 1 {
+                return Err(format!(
+                    "Ambiguous session selector '{trimmed}' matched {} sessions",
+                    matches.len()
+                ));
+            }
+        }
+        Ok(direct)
+    }
+
+    /// Export this session to a self-contained HTML file.
+    pub fn export_html(&self, output_path: &Path) -> Result<(), String> {
+        if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create export directory: {e}"))?;
+        }
+        let title = self
+            .name
+            .as_deref()
+            .map(escape_html)
+            .unwrap_or_else(|| format!("Session {}", self.id));
+        let mut html = format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Mio — {title}</title>\n\
+            <style>\n\
+            body {{ background:#0d1117; color:#e6edf3; font-family:system-ui,-apple-system,sans-serif; max-width:920px; margin:2rem auto; padding:0 1rem; line-height:1.5; }}\n\
+            header {{ border-bottom:1px solid #30363d; padding-bottom:1rem; margin-bottom:1.5rem; }}\n\
+            .meta {{ color:#8b949e; font-size:0.875rem; font-family:monospace; }}\n\
+            .msg {{ border:1px solid #30363d; border-radius:8px; padding:1rem; margin-bottom:1rem; background:#161b22; }}\n\
+            .role {{ font-weight:600; font-size:0.85rem; text-transform:uppercase; margin-bottom:0.5rem; color:#58a6ff; }}\n\
+            .role.assistant {{ color:#3fb950; }}\n\
+            pre {{ white-space:pre-wrap; word-break:break-word; background:#0d1117; padding:0.75rem; border-radius:6px; overflow-x:auto; margin:0.5rem 0 0; font-size:0.875rem; }}\n\
+            </style>\n</head>\n<body>\n<header>\n<h1>{title}</h1>\n\
+            <div class=\"meta\">ID: {} · Workspace: {} · Messages: {}</div>\n</header>\n<main>\n",
+            self.id,
+            escape_html(&self.cwd.display().to_string()),
+            self.history.len()
+        );
+        for msg in &self.history {
+            let val = serde_json::to_value(msg).unwrap_or_default();
+            let role = val["role"].as_str().unwrap_or("message");
+            let role_class = if role == "assistant" {
+                "role assistant"
+            } else {
+                "role"
+            };
+            let content_pretty =
+                serde_json::to_string_pretty(&val["content"]).unwrap_or_else(|_| val.to_string());
+            html.push_str(&format!(
+                "<section class=\"msg\"><div class=\"{role_class}\">{}</div><pre>{}</pre></section>\n",
+                escape_html(role),
+                escape_html(&content_pretty)
+            ));
+        }
+        html.push_str("</main>\n</body>\n</html>\n");
+        fs::write(output_path, html)
+            .map_err(|e| format!("Failed to write HTML export {}: {e}", output_path.display()))
+    }
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn now_secs() -> u64 {

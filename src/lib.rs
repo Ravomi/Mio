@@ -5,10 +5,16 @@
 
 pub mod accounts;
 pub mod antigravity;
+pub mod compact;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
+pub mod delegation;
+pub mod mcp;
+pub mod pattern;
+pub mod plugin;
 pub mod profile;
+pub mod rpc;
 pub mod session;
 pub mod shell;
 pub mod subagent;
@@ -16,7 +22,11 @@ pub mod subagent;
 pub mod test_http;
 pub mod workspace;
 
-pub use workspace::{Arguments, Workspace, checked_path};
+pub use pattern::ToolFilter;
+pub use workspace::{
+    Arguments, BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, Workspace, WriteTool,
+    checked_path,
+};
 
 use futures_util::StreamExt;
 use rig_agent::{AgentBuilder, agent::MultiTurnStreamItem};
@@ -28,7 +38,7 @@ use rig_core::{
     streaming::{Item, StreamEvent},
 };
 use serde::{Deserialize, Serialize};
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, str::FromStr, sync::Arc};
 
 /// 异步 Shell 任务的 Boxed Future。
 pub type HostFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -45,6 +55,16 @@ pub trait Host: Send + Sync {
 
     /// 接收 Agent 派发的结构化事件。
     fn on_event(&self, event: AgentEvent);
+
+    /// 轮询用户在当前工具循环中注入的实时引导消息（steering）。
+    fn poll_steering(&self) -> Option<String> {
+        None
+    }
+
+    /// 可选的写文件/执行命令前审批钩子。
+    fn approve_tool(&self, _operation: &str, _target: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Agent 执行过程中发出的结构化事件。
@@ -73,6 +93,87 @@ pub enum Provider {
     Deepseek,
     Antigravity,
     DeepseekWeb,
+}
+
+/// 思考预算等级（对齐 Pi `--thinking` 等级）。
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ThinkingLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl FromStr for ThinkingLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" => Ok(Self::Off),
+            "minimal" | "min" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" | "med" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => Err(format!(
+                "Invalid thinking level '{other}'; expected off, minimal, low, medium, high, xhigh, or max"
+            )),
+        }
+    }
+}
+
+/// Parse `[provider/]model[:thinking]` shorthand into `(provider, model, thinking)`.
+pub fn parse_model_spec(raw: &str) -> (Option<String>, String, Option<ThinkingLevel>) {
+    let trimmed = raw.trim();
+    let (before_thinking, thinking) = match trimmed.rsplit_once(':') {
+        Some((prefix, suffix)) if !prefix.is_empty() => match ThinkingLevel::from_str(suffix) {
+            Ok(level) => (prefix, Some(level)),
+            Err(_) => (trimmed, None),
+        },
+        _ => (trimmed, None),
+    };
+    if let Some((prov, rest)) = before_thinking.split_once('/') {
+        let lower = prov.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "custom"
+                | "openai"
+                | "anthropic"
+                | "google"
+                | "gemini"
+                | "deepseek"
+                | "antigravity"
+                | "codex"
+                | "openrouter"
+                | "groq"
+                | "mistral"
+                | "xai"
+                | "ollama"
+        ) && !rest.trim().is_empty()
+        {
+            return (Some(lower), rest.trim().to_owned(), thinking);
+        }
+    }
+    (None, before_thinking.to_owned(), thinking)
 }
 
 /// Agent 运行配置。
@@ -111,6 +212,8 @@ pub struct Services<'a> {
 pub struct RunOptions {
     pub instructions: String,
     pub max_turns: usize,
+    pub thinking: Option<ThinkingLevel>,
+    pub auto_compact_bytes: Option<usize>,
 }
 
 impl Default for RunOptions {
@@ -118,6 +221,8 @@ impl Default for RunOptions {
         Self {
             instructions: String::new(),
             max_turns: 32,
+            thinking: None,
+            auto_compact_bytes: None,
         }
     }
 }
@@ -171,6 +276,8 @@ pub struct RunTools {
     pub options: RunOptions,
     pub read_only: bool,
     pub subagents: Option<Arc<subagent::SubagentManager>>,
+    pub tool_filter: ToolFilter,
+    pub extra_tools: Vec<rig_agent::tool::DynamicTool>,
 }
 
 impl From<RunOptions> for RunTools {
@@ -199,9 +306,11 @@ pub async fn run_with_tools(
     if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
         return Err("输入需为 1–65536 字节".into());
     }
-    if config.model.trim().is_empty() {
+    let (_, clean_model, inline_thinking) = parse_model_spec(&config.model);
+    if clean_model.trim().is_empty() {
         return Err("请先在模型设置中填写模型名和服务地址".into());
     }
+    let effective_thinking = options.thinking.or(inline_thinking);
     let canonical_cwd = cwd
         .canonicalize()
         .map_err(|e| format!("工作目录不可用：{e}"))?;
@@ -213,30 +322,30 @@ pub async fn run_with_tools(
         Provider::Antigravity => services
             .antigravity
             .ok_or("Google 账号服务不可用")?
-            .client(&config.model)
+            .client_with_thinking(&clean_model, effective_thinking.map(|t| t.as_str()))
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::DeepseekWeb => services
             .deepseek
             .ok_or("DeepSeek 账号服务不可用")?
             .client()
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::Codex => services
             .accounts
             .ok_or("账号服务不可用")?
             .codex()
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::Custom | Provider::Deepseek => {
             let client = OpenAIConfig::new(config.api_key)
                 .with_route(Route::Chat)
                 .with_base_url(config.base_url)
                 .client();
-            client.completion(config.model).into()
+            client.completion(clean_model).into()
         }
     };
 
@@ -249,7 +358,8 @@ pub async fn run_with_tools(
         Workspace::new_read_only(&canonical_cwd, host.clone())?
     } else {
         Workspace::new(&canonical_cwd, host.clone())?
-    };
+    }
+    .with_tool_filter(tools.tool_filter.clone());
     workspace_tool.subagents = tools.subagents.clone();
 
     let preamble = format!(
@@ -258,11 +368,55 @@ pub async fn run_with_tools(
     );
     let mut builder = AgentBuilder::new(model)
         .preamble(preamble)
-        .tool(workspace_tool);
-    if let Some(manager) = tools.subagents {
-        builder = builder.tool(subagent::SubagentTool::new(manager, host.clone()));
+        .dynamic_tools(Vec::new());
+    if !tools.tool_filter.is_disabled() {
+        if tools.tool_filter.allows("workspace") {
+            builder = builder.tool(workspace_tool.clone());
+        }
+        if tools.tool_filter.allows("read") {
+            builder = builder.tool(ReadTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("grep") {
+            builder = builder.tool(GrepTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("find") {
+            builder = builder.tool(FindTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("ls") {
+            builder = builder.tool(LsTool(workspace_tool.clone()));
+        }
+        if !tools.read_only {
+            if tools.tool_filter.allows("write") {
+                builder = builder.tool(WriteTool(workspace_tool.clone()));
+            }
+            if tools.tool_filter.allows("edit") {
+                builder = builder.tool(EditTool(workspace_tool.clone()));
+            }
+            if tools.tool_filter.allows("bash") {
+                builder = builder.tool(BashTool(workspace_tool.clone()));
+            }
+        }
+        if let Some(manager) = tools.subagents
+            && tools.tool_filter.allows("subagent")
+        {
+            builder = builder.tool(subagent::SubagentTool::new(manager, host.clone()));
+        }
+        if !tools.extra_tools.is_empty() {
+            builder = builder.dynamic_tools(tools.extra_tools);
+        }
     }
     let agent = builder.build();
+
+    let history = if let Some(threshold) = options.auto_compact_bytes
+        && threshold > 0
+        && compact::history_bytes(&history) > threshold
+    {
+        let (compacted, _) =
+            compact::compact_history(&history, compact::DEFAULT_KEEP_RECENT_MESSAGES, None);
+        compacted
+    } else {
+        history
+    };
 
     // Rig's FinalResponse contains only this run's new messages, not input history.
     let mut complete_history = history.clone();

@@ -79,6 +79,7 @@
         <li><a href="#story" class="nav-link" data-zh="执行图谱" data-en="Context Graph">执行图谱</a></li>
         <li><a href="#capabilities" class="nav-link" data-zh="核心能力" data-en="Capabilities">核心能力</a></li>
         <li><a href="#benchmark" class="nav-link" data-zh="性能基准" data-en="Benchmarks">性能基准</a></li>
+        <li><a href="packages.html" class="nav-link is-active" data-zh="插件社区" data-en="Packages">插件社区</a></li>
         <li><a href="#quickstart" class="nav-link" data-zh="快速开始" data-en="Quickstart">快速开始</a></li>
         <li>
           <a href="https://github.com/Ravomi/Mio" class="nav-link" target="_blank" rel="noopener noreferrer">
@@ -130,8 +131,8 @@
 
         <div class="hero-actions">
           <a href="#showcase" class="btn btn-primary" data-zh="查看交互演示 ↓" data-en="Interactive Demo ↓">查看交互演示 ↓</a>
-          <a href="#benchmark" class="btn btn-dark" data-zh="Agent 性能基准对比" data-en="Agent Benchmarks">Agent 性能基准对比</a>
-          <a href="#story" class="btn" data-zh="探索上下文与子代理图谱" data-en="Explore Context Graph">探索上下文与子代理图谱</a>
+          <a href="packages.html" class="btn btn-dark" data-zh="浏览插件社区 (Packages) →" data-en="Plugin Catalog (Packages) →">浏览插件社区 (Packages) →</a>
+          <a href="#benchmark" class="btn" data-zh="Agent 性能基准对比" data-en="Agent Benchmarks">Agent 性能基准对比</a>
           <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="btn" data-zh="GitHub 源码 ↗" data-en="GitHub Source ↗">GitHub 源码 ↗</a>
         </div>
 
@@ -940,6 +941,54 @@ hyperfine -N --warmup 3 './target/release/mio --help' 'codex --help' 'claude --h
       </div>
     </section>
 
+    <!-- 插件社区与标准预览 (#plugins) -->
+    <section class="quickstart-section" id="plugins" aria-labelledby="plugins-heading" style="padding-bottom: 24px;">
+      <div class="container">
+        <p class="section-eyebrow" data-zh="Plugin Catalog &amp; Community · 开放插件标准与社区目录" data-en="Plugin Catalog &amp; Community">Plugin Catalog &amp; Community · 开放插件标准与社区目录</p>
+        <h2 class="section-heading" id="plugins-heading" data-zh-html="像 Pi Packages 一样开放，<span>一行命令扩展工具、Skills 与 MCP。</span>" data-en-html="Open like Pi Packages, <span>install tools, skills &amp; MCP in one command.</span>">
+          像 Pi Packages 一样开放，<span>一行命令扩展工具、Skills 与 MCP。</span>
+        </h2>
+        <p class="section-sub" data-zh="遵循 mio-plugin.json (v1) 开放规范，从官方社区仓库 Ravomi/mio-plugins 或任意 GitHub 仓库一键安装插件，同时兼容 mio CLI 与 Alacritty-Mio 原生终端。" data-en="Built on the open mio-plugin.json (v1) specification. Install plugins from Ravomi/mio-plugins or any GitHub repository in both mio CLI and Alacritty-Mio.">
+          遵循 <code>mio-plugin.json</code> (v1) 开放规范，从官方社区仓库 <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener" style="color:var(--purple);font-weight:700;"><code>Ravomi/mio-plugins</code></a> 或任意 GitHub 仓库一键安装插件，同时兼容 <code>mio</code> CLI 与 <code>Alacritty-Mio</code> 原生终端。
+        </p>
+
+        <div class="packages-surface-card" style="margin-top: 28px;">
+          <header class="packages-surface-header">
+            <h3 class="packages-surface-title" data-zh="Featured Official Plugins · 官方精选插件" data-en="Featured Official Plugins">
+              Featured Official Plugins · 官方精选插件
+            </h3>
+            <a href="packages.html" class="btn btn-primary" style="padding: 7px 14px; font-size: 13px;" data-zh="进入完整插件社区目录 (8 个插件) →" data-en="Open Full Package Catalog (8 plugins) →">
+              进入完整插件社区目录 (8 个插件) →
+            </a>
+          </header>
+          <div class="packages-surface-body">
+            <div class="packages-recent-list">
+              <a href="packages.html?q=git-workflow" class="packages-recent-item">
+                <strong><span>git-workflow</span><span>v0.1.0</span></strong>
+                <span data-zh="Git 状态/变更统计工具、Conventional Commits 模板与 PR 审查 Skill" data-en="Git status/diff summary tool, commit message template, and PR review skill">Git 状态/变更统计工具、Conventional Commits 模板与 PR 审查 Skill</span>
+                <small>$ mio --plugin-install git-workflow</small>
+              </a>
+              <a href="packages.html?q=rust-expert" class="packages-recent-item">
+                <strong><span>rust-expert</span><span>v0.1.0</span></strong>
+                <span data-zh="Cargo clippy 诊断、unsafe 扫描工具、Rust 并发与所有权审计 Skill" data-en="Cargo clippy diagnostics, unsafe scanner tool, and Rust audit skill">Cargo clippy 诊断、unsafe 扫描工具、Rust 并发与所有权审计 Skill</span>
+                <small>$ mio --plugin-install rust-expert</small>
+              </a>
+              <a href="packages.html?q=security-audit" class="packages-recent-item">
+                <strong><span>security-audit</span><span>v0.1.0</span></strong>
+                <span data-zh="硬编码密钥泄露扫描器、OWASP Top 10 代码审计 Skill 与 STRIDE 威胁建模" data-en="Secret scanner tool, OWASP Top 10 review skill, and STRIDE threat model">硬编码密钥泄露扫描器、OWASP Top 10 代码审计 Skill 与 STRIDE 威胁建模</span>
+                <small>$ mio --plugin-install security-audit</small>
+              </a>
+              <a href="packages.html?q=mcp-github" class="packages-recent-item">
+                <strong><span>mcp-github</span><span>v0.1.0</span></strong>
+                <span data-zh="GitHub MCP 服务桥接、PR 状态检查工具与 Issue/CI 故障分诊 Skill" data-en="GitHub MCP server bridge, PR status tool, and CI triage skill">GitHub MCP 服务桥接、PR 状态检查工具与 Issue/CI 故障分诊 Skill</span>
+                <small>$ mio --plugin-install mcp-github</small>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 快速开始 + Pi 风格「设计取舍与边界」+ ThoughtDAG 风格 FAQ (#quickstart) -->
     <section class="quickstart-section" id="quickstart" aria-labelledby="quick-heading">
       <div class="container">
@@ -1089,6 +1138,7 @@ mio --cwd /repo --json --no-shell \
       </p>
       <div class="finale-actions">
         <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="btn btn-primary" data-zh="在 GitHub 查看 Ravomi/Mio ↗" data-en="View Ravomi/Mio on GitHub ↗">在 GitHub 查看 Ravomi/Mio ↗</a>
+        <a href="packages.html" class="btn" style="background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.2);" data-zh="浏览插件社区 (Packages) →" data-en="Browse Plugin Catalog →">浏览插件社区 (Packages) →</a>
         <a href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs" target="_blank" rel="noopener noreferrer" class="btn" style="background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.2);" data-zh="阅读 examples/host.rs 集成示例" data-en="Read examples/host.rs">阅读 examples/host.rs 集成示例</a>
       </div>
 
@@ -1101,7 +1151,9 @@ mio --cwd /repo --json --no-shell \
           <a href="#story">执行图谱</a>
           <a href="#capabilities">核心能力</a>
           <a href="#benchmark">性能基准</a>
+          <a href="packages.html">插件社区</a>
           <a href="#quickstart">快速开始</a>
+          <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer">mio-plugins</a>
           <a href="https://github.com/Ravomi/Mio/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a>
           <a href="https://github.com/Ravomi/ravomi-app" target="_blank" rel="noopener noreferrer">Ravomi 宿主</a>
         </div>

@@ -52,106 +52,92 @@ mio --cwd /path/to/project --json --no-shell -p '阅读 README 并总结'
 
 CLI 默认允许文件修改和 Shell 执行。`--no-shell` 仅禁用 Shell，文件工具仍可修改文件。Shell 使用当前用户权限、空标准输入，超时为 120 秒；不是交互式终端或操作系统沙箱。Unix 下取消时终止独立子进程组；其他平台仅处理直接子进程，尚未完成全面验收。
 
-## 工作区工具
+## 工作区工具与 MCP 扩展
 
-模型通过 `workspace` 工具的 `operation` 参数选择操作。
+模型既可通过聚合的 `workspace` 工具调用操作，也可直接调用与 `pi-coding-agent` 对齐的 7 个独立一级工具（`read`、`write`、`edit`、`bash`、`grep`、`find`、`ls`）。
 
-| 操作 | 用途与边界 |
+| 工具 / 操作 | 用途与边界 |
 |---|---|
 | `read` | UTF-8 文本读取，`offset` 从第一行起、`limit` 限定行数；输出上限 64 KiB，输入上限 8 MiB。 |
 | `write` | 原子写入，单次上限 1 MiB；父目录须已存在。 |
-| `edit` | `old_text` / `new_text` 精确替换，拒绝零匹配、多处或重叠匹配；保留原文件权限，不自动转换换行符。 |
-| `grep` | 字面文本搜索，支持目录或单文件；不是正则搜索。 |
-| `find` | 按相对路径或文件名的子串查找；不是 glob。 |
+| `edit` | `old_text` / `new_text` 精确替换，拒绝零匹配、多处或重叠匹配；保留原文件权限，返回标准 Unified Diff（`--- a/path` / `+++ b/path`）。 |
+| `grep` | 支持字面子串、正则表达式（`regex: true`）与大小写不敏感（`case_insensitive: true`）检索。 |
+| `find` | 支持相对路径子串及 Glob 通配符（`*`、`**`、`?`）查找。 |
 | `ls` | 有界、排序的目录列表。 |
-| `shell` | 交给宿主执行非交互命令；CLI 提供原生执行实现。 |
+| `bash` / `shell` | 交给宿主执行非交互命令；CLI 提供原生执行实现。 |
 
-文件工具拒绝绝对路径、`..` 和符号链接路径。递归搜索跳过 `.git`、`target`、`node_modules` 等目录，不遍历符号链接，最多访问 5000 项、深度 64；`grep` 每文件上限 2 MiB、最多 500 条匹配，截断时返回说明。它不实现 `.gitignore` 规则。
+CLI 支持细粒度工具白名单与黑名单控制：
+- `--tools` / `-t <list>`：仅启用指定工具（如 `-t read,grep,find,ls` 进入纯只读探索模式）
+- `--exclude-tools` / `-xt <list>`：排除指定工具
+- `--no-tools` / `-nt`：禁用全部内置工作区工具
+- `--approve`：执行写操作或 Shell 前要求终端交互式确认（`[y/N]`）
 
-## 项目指令、Skills 与模板
+若工作区存在 `.mio/mcp.json`（或 `~/.config/mio/mcp.json`），Mio 会通过 JSON-RPC 2.0 over stdio 自动握手外部 MCP Server 并动态注册 `mcp__<server>__<tool>` 工具（`--no-mcp` 可禁用）。
 
-CLI 自动按祖先到当前目录的顺序加载 `AGENTS.md`，再附加当前项目 `.mio/SYSTEM.md`。`--no-context` 可关闭加载。库调用方使用 `ProjectContext::load` 和 `run_with_options` 显式接入。
+文件工具拒绝绝对路径、`..` 和符号链接路径。递归搜索跳过 `.git`、`target`、`node_modules` 等目录，不遍历符号链接，最多访问 5000 项、深度 64；`grep` 每文件上限 2 MiB、最多 500 条匹配，截断时返回说明。
 
-项目 Skills 存放于 `.agents/skills/<name>/SKILL.md` 或 `.mio/skills/<name>/SKILL.md`。默认向模型提供目录摘要，正文按需读取；`--skill <name>` 可显式附加正文。当前支持单行 `name`、`description` 元数据，不提供完整 YAML 解析、全局安装或可执行扩展兼容。
+## 项目指令、Skills、模板与 `@file` 展开
 
-```markdown
----
-name: review
-description: 检查代码修改与测试覆盖
----
-先阅读改动涉及的代码，再分析行为变化与测试缺口。
-```
+CLI 自动按祖先到当前目录的顺序加载 `AGENTS.md` 与 `CLAUDE.md`，再附加当前项目 `.mio/SYSTEM.md`。可通过 `--no-context`、`--no-context-files`、`--no-skills`、`--no-prompt-templates`、`--system-prompt`、`--append-system-prompt` 精细控制。
 
-提示词模板存放于 `.mio/prompts/<name>.md`，其中 `$ARGUMENTS` 替换为本次输入：
-
-```bash
-mio --template review -p '检查最近的错误处理修改'
-```
-
-单个上下文文件上限 32 KiB，总附加指令上限 128 KiB。模板只进行文本替换，不执行脚本。
-
-## 会话与事件
-
-会话在成功完成一轮后原子保存至 `.mio/sessions/*.json`，默认已被本仓库忽略。`--session <path>` 指定保存或恢复的文件，`--resume` 选择当前工作区最近保存的会话，`--fork` 创建新分支，`--list-sessions` 离线列出会话。
-
-会话包含完整对话和工具输出，但不保存 `Config` 中的模型连接凭据。对话本身仍可能包含文件内容或用户输入的敏感信息，请按项目数据管理。文件采用版本化 JSON 快照，大小上限 16 MiB；Unix 保存权限为 `0600`。失败或取消时保留上次成功落盘的会话，不回滚已经发生的文件修改。
-
-JSON Lines 事件形状示例：
-
-```json
-{"type":"text","data":"正在查看文件"}
-{"type":"tool_started","data":{"operation":"read","target":"Cargo.toml"}}
-{"type":"tool_finished","data":{"operation":"read","target":"Cargo.toml","result":{"Ok":"..."}}}
-```
-
-成功结束输出 `done`（包含会话路径与消息数量），错误输出 `error` 并返回非零状态码。逐行交互支持 `/help`、`/new`、`/fork`、`/sessions`、`/exit`，Ctrl-C 取消并退出。JSON 模式用于单次任务，不是双向 RPC 协议。
-
-## Rust 集成与模型接入
-
-`run` 保留简洁入口；`run_with_options` 可附加项目指令与配置工具轮次。`Host` 负责 `shell` 和 `on_event`。原生宿主可复用 `mio_agent::shell::execute`，也可自行提供执行策略、PTY 或隔离环境。回调仅为通知，不能拦截文件工具。
-
-完整示例见 [`examples/host.rs`](examples/host.rs)。示例 Shell 明确返回“未实现”，不会伪造执行结果。`Config`、`Services` 支持库层的 OpenAI 兼容接口、Codex 与 DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
-
-CLI 支持导入已有本机 Antigravity OAuth 登录及默认模型：
+- **内联文件引用（`@file`）**：在提示词或命令行参数中使用 `@path/to/file` 或 `@path/to/file:10-50`，Mio 会在发送前自动内联展开对应文件或行区间内容。
+- **项目 Skills**：自动发现 `.agents/skills/<name>/SKILL.md`、`.mio/skills/<name>/SKILL.md` 与 `.claude/skills/<name>/SKILL.md`。默认提供目录摘要，正文按需读取；`--skill <name>` 可显式附加正文。
+- **提示词模板**：存放于 `.mio/prompts/<name>.md`，其中 `$ARGUMENTS` 替换为本次输入：
 
 ```bash
-mio --import-antigravity ~/.pi/agent
-mio --provider antigravity --subagents --cwd /path/to/project -p '委派只读子任务分析项目，收集结果后汇总'
+mio --template review -p '检查 @src/workspace.rs:1-120 的错误处理修改'
 ```
 
-导入目录须包含兼容的 `auth.json`、`settings.json`，以及已安装提供方的 OAuth 应用元数据。导入过程只解析数据，不启动外部 Agent 或执行插件 JavaScript。也可用 `MIO_GOOGLE_CLIENT_ID`、`MIO_GOOGLE_CLIENT_SECRET` 显式提供与原授权对应的 OAuth 应用信息。
+## 会话管理、上下文压缩、HTML 导出与双向 RPC
 
-授权、默认模型和思考档位保存到 `$MIO_CONFIG_DIR/antigravity-profile.json`；目录默认是 `$XDG_CONFIG_HOME/mio` 或 `~/.config/mio`。文件在 Unix 下为 `0600`，不修改原授权文件。主 Agent 和子代理共享账户服务及串行令牌刷新；刷新后的凭据只写入 Mio 配置。请求前读取实时模型目录，匹配模型及思考档位；不可用时明确报错，不换供应商。
+会话在成功完成一轮后原子保存至 `.mio/sessions/*.json`。
+- `--name` / `-n <name>`：为会话设置易读名称
+- `-c` / `--continue` 或 `-r` / `--resume [id|name|path]`：恢复最近会话，或按 UUID 前缀、会话名、路径恢复指定会话
+- `--fork [id|name|path]`：从现有会话分叉新分支
+- `--no-session`：临时无痕运行，不落盘会话文件
+- `--export <out.html>` 或交互式 `/export [out.html]`：将会话导出为单文件自包含 HTML 报告
+- `--auto-compact` 或交互式 `/compact [instructions]`：将早期历史消息归纳压缩为结构化摘要并保留最近上下文
 
-导入后 CLI 默认使用该账户；`--provider` / `MIO_PROVIDER` 可显式选择供应商，`--model` / `MIO_MODEL` 可覆盖模型。显式提供兼容 API 的 `--base-url` / `MIO_BASE_URL` 且未指定供应商时选择 `custom`。Antigravity 使用固定服务端点，不接受自定义 `--base-url`。此功能复用已有登录，不提供新的交互式登录向导。
+支持三种运行模式（`--mode text|json|rpc`）：
+- `text`：默认终端交互模式，内置 `/help`、`/new`、`/fork`、`/sessions`、`/name`、`/compact`、`/export`、`/model`、`/thinking`、`/subagents`、`/status`、`/clear`、`/exit` 斜杠命令。
+- `json`：单次任务 JSON Lines 事件流输出。
+- `rpc`：双向 JSONL RPC 协议（支持 `prompt`、`steer`、`follow_up`、`abort`、`compact`、`get_state`、`set_model`、`set_session_name`、`export_html`、`new_session`、`fork_session`），并在工具执行间隙支持实时 `Host::poll_steering` 引导注入。
 
-Antigravity 需要宿主显式注入 `OAuthConfig { client_id, client_secret }`。例如宿主自行读取 `MIO_GOOGLE_CLIENT_ID`、`MIO_GOOGLE_CLIENT_SECRET` 后传入；库不会自动读取它们。仓库不内置 OAuth 客户端凭据，也不保证任意 OAuth 应用均可使用对应服务。
+## 多供应商目录与思考深度调节
 
-## 原生子代理
+- 支持通过 `--thinking <off|minimal|low|medium|high|xhigh>` 或 `--model [provider/]model[:thinking]`（如 `deepseek/deepseek-reasoner:high`）统一控制推理深度。
+- 支持 `--list-models [search]` 列出内置多供应商目录（`antigravity`、`openai`、`anthropic`、`google`、`deepseek`、`openrouter`、`groq`、`xai`、`mistral`、`ollama`）及对应环境变量配置状态。
+
+## 插件标准（`mio-plugin.json`）与 GitHub 插件社区
+
+Mio 提供开放的插件标准 v1（`mio-plugin.json`）与官方 GitHub 插件社区仓库 **[Ravomi/mio-plugins](https://github.com/Ravomi/mio-plugins)**。每个插件可声明并打包：
+- **Skills**（`skills/<name>/SKILL.md`）
+- **提示词模板**（`prompts/<name>.md`）
+- **上下文规则文件**（`context_files`）
+- **MCP 服务配置**（`mcp`）
+- **声明式命令工具**（`tools`，自动以 `plugin__<plugin>__<tool>` 暴露给模型并受 `--tools` / `--approve` 管控）
+
+常用插件管理命令（同时支持交互式 `/plugins` 与 `/plugin` 斜杠命令）：
 
 ```bash
-mio --subagents --cwd /path/to/project -p '委派两个只读子任务分别分析模块结构和测试缺口，等待结果后汇总'
+# 搜索官方社区注册表 (https://github.com/Ravomi/mio-plugins)
+mio --plugin-search
+
+# 从官方社区一键安装插件（如 git-workflow / rust-expert / security-audit / docs-writer）
+mio --plugin-install git-workflow
+
+# 从任意 GitHub 仓库（或子目录）或本地目录安装
+mio --plugin-install github:Ravomi/mio-plugins#plugins/rust-expert
+mio --plugin-install ./my-plugin
+
+# 列出已安装插件 / 卸载插件
+mio --plugin-list
+mio --plugin-remove git-workflow
+
+# 脚手架创建新插件并校验标准合规性
+mio --plugin-init ./my-plugin
+mio --plugin-validate ./my-plugin
 ```
-
-`--subagents` 为主模型增加 `subagent` 工具，支持 `delegate`、`status`、`snapshot`、`list`、`kill`、`fork`。每次委派返回独立 `run_id`，用它查询或取消该次运行；同名会话继续最后一次成功的历史，失败不会清空已有成功历史。子任务不会收到再次委派的工具。子代理文本保留在任务结果中，不混入主回答；主 Agent 的委派和查询操作仍输出工具事件。
-
-默认最多同时运行 4 个任务，每个任务超时 600 秒。`status` 支持最多 30 秒长轮询；状态区分 `running`、`completed`、`failed`、`cancelled`、`timed_out`。快照提供当前文本和最近工具名，文本上限 32 KiB，截断时 `output_truncated` 为真。`completed` 表示执行结束，任务结果仍需主 Agent 检查。
-
-委派参数示例：
-
-```json
-{"operation":"delegate","task":{"session":"review-tests","goal":"检查测试缺口","prompt":"只阅读测试及其对应实现，列出未覆盖的行为","read_only":true}}
-```
-
-子任务默认只读，执行层禁止 `write`、`edit`、`shell`；明确设置 `read_only: false` 可修改文件。CLI 的 `--no-shell` 同时约束子代理。工作目录须在父工作区内；同名会话不可并发，续接时目标、目录和访问模式不能改变。重叠目录中的任务只允许只读并行，写任务独占；主 Agent 的工作区工具也遵守这些占用规则。Shell 仍使用宿主权限，不受文件路径限制，这些规则不是操作系统沙箱。
-
-Rust 宿主通过 `subagent::SubagentManager` 管理会话，将其放入 `RunTools.subagents` 后调用 `run_with_tools`；原有 `run`、`run_with_options` 不变。`RunTools.read_only` 也可独立用于只读主 Agent。子任务共用模型配置、附加指令和轮次上限，不继承主会话历史；模型不能通过委派参数修改服务地址或密钥。`new` 支持 `Custom`、`Deepseek` API；Antigravity 使用 `new_with_antigravity` 注入与主 Agent 共用的账户实例。其他账户服务需宿主自行提供执行器。宿主须保留同一管理器才能续接子会话。
-
-子代理通过进程内异步任务运行，没有进程隔离。会话和运行记录仅在内存保存，每个管理器最多 128 个会话及 128 次运行，达到上限后需创建新管理器；每个子会话成功历史上限 2 MiB。管理器释放会取消运行中的任务。CLI 若主模型在子任务仍运行时结束，将取消未完成任务并报告错误。取消不回滚文件改动，已开始的阻塞文件操作仍可能完成。主会话恢复不会恢复子代理管理器。当前未提供持久化调度、自动多阶段重派或对外 MCP 服务。
-
-## 当前边界
-
-完整 TUI、运行中指令插入和任务队列、双向 RPC、自动上下文压缩、可执行扩展与扩展包生态仍未实现。当前的会话分支是完整快照复制，不是交互式会话树编辑。取消阻塞文件操作不会撤销已开始的写入。Ravomi 桌面宿主尚未完成接入。
 
 ## 开发与验证
 

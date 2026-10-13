@@ -193,3 +193,176 @@ fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     assert!(list.status.success());
     assert_eq!(String::from_utf8(list.stdout).unwrap().lines().count(), 2);
 }
+
+#[test]
+fn cli_list_models_session_naming_export_and_rpc_mode() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // 1. Test --list-models
+    let models_out = cli()
+        .args(["--list-models", "deepseek", "--json"])
+        .output()
+        .unwrap();
+    assert!(models_out.status.success());
+    let models_text = String::from_utf8(models_out.stdout).unwrap();
+    assert!(models_text.contains("deepseek-reasoner"));
+
+    // 2. Create a named session and export it to HTML
+    let sessions_dir = dir.path().join(".mio/sessions");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let mut named_session = mio_agent::session::Session::new(dir.path()).unwrap();
+    named_session.name = Some("alpha-feature".into());
+    named_session
+        .history
+        .push(mio_agent::Message::user("Build alpha feature"));
+    named_session
+        .history
+        .push(mio_agent::Message::assistant("Alpha feature complete."));
+    let session_path = sessions_dir.join(format!("{}.json", named_session.id));
+    named_session.save(&session_path).unwrap();
+
+    let html_out = dir.path().join("alpha.html");
+    let export_res = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args([
+            "-r",
+            "alpha-feature",
+            "--export",
+            html_out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        export_res.status.success(),
+        "export stderr={}",
+        String::from_utf8_lossy(&export_res.stderr)
+    );
+    let html_content = std::fs::read_to_string(&html_out).unwrap();
+    assert!(html_content.contains("alpha-feature"));
+    assert!(html_content.contains("Build alpha feature"));
+    assert!(html_content.contains("Alpha feature complete."));
+
+    // 3. Test --mode rpc
+    let mut child = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args([
+            "--model",
+            "test-model",
+            "-r",
+            "alpha-feature",
+            "--mode",
+            "rpc",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"id":"1","type":"get_state"}}"#).unwrap();
+        writeln!(
+            stdin,
+            r#"{{"id":"2","type":"set_session_name","name":"beta-feature"}}"#
+        )
+        .unwrap();
+        writeln!(stdin, r#"{{"id":"3","type":"compact"}}"#).unwrap();
+        writeln!(stdin, r#"{{"id":"4","type":"new_session"}}"#).unwrap();
+    }
+    let rpc_out = child.wait_with_output().unwrap();
+    assert!(rpc_out.status.success());
+    let lines: Vec<Value> = String::from_utf8(rpc_out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0]["id"], "1");
+    assert_eq!(lines[0]["success"], true);
+    assert_eq!(lines[0]["data"]["session_name"], "alpha-feature");
+    assert_eq!(lines[1]["id"], "2");
+    assert_eq!(lines[1]["data"]["session_name"], "beta-feature");
+    assert_eq!(lines[2]["id"], "3");
+    assert_eq!(lines[2]["command"], "compact");
+    assert_eq!(lines[3]["id"], "4");
+    assert_eq!(lines[3]["command"], "new_session");
+}
+
+#[test]
+fn cli_plugin_lifecycle_init_validate_install_list_search_remove() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_plugin = dir.path().join("demo-plugin");
+
+    // 1. --plugin-init
+    let init_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-init", src_plugin.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    assert!(src_plugin.join("mio-plugin.json").is_file());
+
+    // 2. --plugin-validate
+    let val_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-validate", src_plugin.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(val_out.status.success());
+
+    // 3. --plugin-install (local path)
+    let inst_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-install", src_plugin.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(inst_out.status.success());
+    assert!(
+        dir.path()
+            .join(".mio/plugins/demo-plugin/mio-plugin.json")
+            .is_file()
+    );
+
+    // 4. --plugin-list --json
+    let list_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-list", "--json"])
+        .output()
+        .unwrap();
+    assert!(list_out.status.success());
+    let list_str = String::from_utf8(list_out.stdout).unwrap();
+    assert!(list_str.contains("demo-plugin"));
+
+    // 5. --plugin-search
+    let search_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-search", "rust"])
+        .output()
+        .unwrap();
+    assert!(search_out.status.success());
+    assert!(
+        String::from_utf8(search_out.stdout)
+            .unwrap()
+            .contains("rust-expert")
+    );
+
+    // 6. --plugin-remove
+    let rm_out = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--plugin-remove", "demo-plugin"])
+        .output()
+        .unwrap();
+    assert!(rm_out.status.success());
+    assert!(!dir.path().join(".mio/plugins/demo-plugin").exists());
+}

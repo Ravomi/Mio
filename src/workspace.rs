@@ -40,6 +40,7 @@ pub struct Workspace {
     pub(crate) host: Arc<dyn Host>,
     pub(crate) read_only: bool,
     pub(crate) subagents: Option<Arc<crate::subagent::SubagentManager>>,
+    pub(crate) tool_filter: crate::pattern::ToolFilter,
 }
 
 impl Workspace {
@@ -57,6 +58,7 @@ impl Workspace {
             host,
             read_only: false,
             subagents: None,
+            tool_filter: crate::pattern::ToolFilter::all(),
         })
     }
 
@@ -66,6 +68,12 @@ impl Workspace {
         let mut workspace = Self::new(cwd, host)?;
         workspace.read_only = true;
         Ok(workspace)
+    }
+
+    /// 配置工具过滤器。
+    pub fn with_tool_filter(mut self, tool_filter: crate::pattern::ToolFilter) -> Self {
+        self.tool_filter = tool_filter;
+        self
     }
 
     /// 是否为只读模式
@@ -80,35 +88,46 @@ impl Workspace {
 
     /// 执行 Workspace 工具操作。
     pub async fn execute(&self, args: Arguments) -> Result<String, String> {
+        let op = args.operation.as_str();
+        let is_write = matches!(op, "write" | "edit" | "shell" | "bash");
         let _lease = self
             .subagents
             .as_ref()
-            .map(|manager| {
-                manager.parent_operation(matches!(
-                    args.operation.as_str(),
-                    "write" | "edit" | "shell"
-                ))
-            })
+            .map(|manager| manager.parent_operation(is_write))
             .transpose()?;
-        if self.read_only {
-            match args.operation.as_str() {
-                "write" | "edit" | "shell" => {
-                    return Err(format!("只读工作区禁止执行 '{}' 操作", args.operation));
-                }
-                _ => {}
+        if !self.tool_filter.allows(op) && !self.tool_filter.allows("workspace") {
+            return Err(format!("工具过滤策略禁止执行 '{op}' 操作"));
+        }
+        if !self.tool_filter.allows(op) && self.tool_filter.is_read_only_only() && is_write {
+            return Err(format!("工具过滤策略禁止执行 '{op}' 操作"));
+        }
+        if self.read_only && is_write {
+            return Err(format!("只读工作区禁止执行 '{op}' 操作"));
+        }
+        if is_write {
+            self.host.approve_tool(op, &args.target())?;
+        }
+
+        let mut output = match op {
+            "read" => self.execute_read(args).await?,
+            "write" => self.execute_write(args).await?,
+            "edit" => self.execute_edit(args).await?,
+            "grep" => self.execute_grep(args).await?,
+            "find" => self.execute_find(args).await?,
+            "ls" => self.execute_ls(args).await?,
+            "shell" | "bash" => self.execute_shell(args).await?,
+            _ => return Err("未知工具操作".into()),
+        };
+
+        if let Some(steering) = self.host.poll_steering() {
+            let trimmed = steering.trim();
+            if !trimmed.is_empty() {
+                output.push_str("\n\n[User Steering Message]: ");
+                output.push_str(trimmed);
             }
         }
 
-        match args.operation.as_str() {
-            "read" => self.execute_read(args).await,
-            "write" => self.execute_write(args).await,
-            "edit" => self.execute_edit(args).await,
-            "grep" => self.execute_grep(args).await,
-            "find" => self.execute_find(args).await,
-            "ls" => self.execute_ls(args).await,
-            "shell" => self.execute_shell(args).await,
-            _ => Err("未知工具操作".into()),
-        }
+        Ok(output)
     }
 
     async fn execute_read(&self, args: Arguments) -> Result<String, String> {
@@ -219,7 +238,10 @@ impl Workspace {
 
     async fn execute_write(&self, args: Arguments) -> Result<String, String> {
         let path_str = args.path.ok_or("write 操作缺少 path 参数")?;
-        let value = args.value.ok_or("write 操作缺少 value 参数")?;
+        let value = args
+            .value
+            .or(args.content)
+            .ok_or("write 操作缺少 value 或 content 参数")?;
         if value.len() > MAX_WRITE_BYTES {
             return Err("写入内容超过 1 MiB".into());
         }
@@ -324,6 +346,11 @@ impl Workspace {
             }
 
             let match_idx = match_indices[0];
+            let start_line = original_text[..match_idx]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count()
+                + 1;
             let mut modified = String::with_capacity(
                 original_text.len() + new_text.len().saturating_sub(old_text.len()),
             );
@@ -349,7 +376,8 @@ impl Workspace {
                 .persist(&path)
                 .map_err(|e| format!("原子更新文件失败: {e}"))?;
 
-            Ok("文件已成功编辑".into())
+            let diff = crate::pattern::unified_diff(&path_str, start_line, &old_text, &new_text);
+            Ok(format!("文件已成功编辑\n{diff}"))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -360,9 +388,9 @@ impl Workspace {
             .pattern
             .or(args.value)
             .ok_or("grep 操作缺少 pattern 或 value 参数")?;
-        if pattern.is_empty() {
-            return Err("搜索内容 pattern 不能为空".into());
-        }
+        let use_regex = args.regex.unwrap_or(false);
+        let case_insensitive = args.case_insensitive.unwrap_or(false);
+        let matcher = crate::pattern::LineMatcher::new(&pattern, use_regex, case_insensitive)?;
 
         let cwd = self.cwd.clone();
         let subpath = args.path.unwrap_or_default();
@@ -451,7 +479,7 @@ impl Workspace {
                 let effective_budget = MAX_GREP_TOTAL_BYTES.saturating_sub(notice_budget);
 
                 for (idx, line) in text.lines().enumerate() {
-                    if line.contains(&pattern) {
+                    if matcher.is_match(line) {
                         let prefix = format!("{}:{}: ", rel_path, idx + 1);
                         let prefix_len = prefix.len();
 
@@ -545,6 +573,7 @@ impl Workspace {
 
         let cwd = self.cwd.clone();
         let subpath = args.path.unwrap_or_default();
+        let is_glob = crate::pattern::has_glob_meta(&pattern);
 
         tokio::task::spawn_blocking(move || {
             let start_dir = if subpath.trim().is_empty() {
@@ -584,7 +613,15 @@ impl Workspace {
                     .map(|f| f.to_string_lossy())
                     .unwrap_or_default();
 
-                if file_name.contains(&pattern) || rel_path.contains(&pattern) {
+                let matched = if is_glob {
+                    crate::pattern::matches_glob(&pattern, &rel_path)
+                        || (!pattern.contains('/')
+                            && crate::pattern::matches_glob(&pattern, &file_name))
+                } else {
+                    file_name.contains(&pattern) || rel_path.contains(&pattern)
+                };
+
+                if matched {
                     matched_entries.push(rel_path.to_string());
                     if matched_entries.len() >= MAX_FIND_MATCHES {
                         hit_limit = true;
@@ -690,7 +727,10 @@ impl Workspace {
     }
 
     async fn execute_shell(&self, args: Arguments) -> Result<String, String> {
-        let command = args.value.ok_or("shell 操作缺少 value 参数")?;
+        let command = args
+            .value
+            .or(args.command)
+            .ok_or("shell 操作缺少 value 或 command 参数")?;
         let shell_fut = self.host.shell(&command, &self.cwd);
         tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), shell_fut)
             .await
@@ -823,11 +863,19 @@ pub struct Arguments {
     #[serde(default)]
     pub value: Option<String>,
     #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
     pub old_text: Option<String>,
     #[serde(default)]
     pub new_text: Option<String>,
     #[serde(default)]
     pub pattern: Option<String>,
+    #[serde(default)]
+    pub regex: Option<bool>,
+    #[serde(default)]
+    pub case_insensitive: Option<bool>,
     #[serde(default)]
     pub offset: Option<u64>,
     #[serde(default)]
@@ -840,12 +888,7 @@ impl Arguments {
         Self {
             operation: "read".into(),
             path: Some(path.into()),
-            value: None,
-            old_text: None,
-            new_text: None,
-            pattern: None,
-            offset: None,
-            limit: None,
+            ..Self::default()
         }
     }
 
@@ -854,12 +897,9 @@ impl Arguments {
         Self {
             operation: "read".into(),
             path: Some(path.into()),
-            value: None,
-            old_text: None,
-            new_text: None,
-            pattern: None,
             offset: Some(offset),
             limit: Some(limit),
+            ..Self::default()
         }
     }
 
@@ -869,11 +909,7 @@ impl Arguments {
             operation: "write".into(),
             path: Some(path.into()),
             value: Some(value.into()),
-            old_text: None,
-            new_text: None,
-            pattern: None,
-            offset: None,
-            limit: None,
+            ..Self::default()
         }
     }
 
@@ -886,12 +922,9 @@ impl Arguments {
         Self {
             operation: "edit".into(),
             path: Some(path.into()),
-            value: None,
             old_text: Some(old_text.into()),
             new_text: Some(new_text.into()),
-            pattern: None,
-            offset: None,
-            limit: None,
+            ..Self::default()
         }
     }
 
@@ -900,12 +933,25 @@ impl Arguments {
         Self {
             operation: "grep".into(),
             path,
-            value: None,
-            old_text: None,
-            new_text: None,
             pattern: Some(pattern.into()),
-            offset: None,
-            limit: None,
+            ..Self::default()
+        }
+    }
+
+    /// 构造带正则/大小写选项的 grep 操作参数
+    pub fn grep_with_options(
+        pattern: impl Into<String>,
+        path: Option<String>,
+        regex: bool,
+        case_insensitive: bool,
+    ) -> Self {
+        Self {
+            operation: "grep".into(),
+            path,
+            pattern: Some(pattern.into()),
+            regex: Some(regex),
+            case_insensitive: Some(case_insensitive),
+            ..Self::default()
         }
     }
 
@@ -914,12 +960,8 @@ impl Arguments {
         Self {
             operation: "find".into(),
             path,
-            value: None,
-            old_text: None,
-            new_text: None,
             pattern: Some(pattern.into()),
-            offset: None,
-            limit: None,
+            ..Self::default()
         }
     }
 
@@ -928,12 +970,7 @@ impl Arguments {
         Self {
             operation: "ls".into(),
             path,
-            value: None,
-            old_text: None,
-            new_text: None,
-            pattern: None,
-            offset: None,
-            limit: None,
+            ..Self::default()
         }
     }
 
@@ -941,13 +978,24 @@ impl Arguments {
     pub fn shell(command: impl Into<String>) -> Self {
         Self {
             operation: "shell".into(),
-            path: None,
             value: Some(command.into()),
-            old_text: None,
-            new_text: None,
-            pattern: None,
-            offset: None,
-            limit: None,
+            ..Self::default()
+        }
+    }
+
+    /// 提取当前操作的目标标识（路径、模式或命令）
+    pub fn target(&self) -> String {
+        if matches!(self.operation.as_str(), "shell" | "bash") {
+            self.value
+                .clone()
+                .or_else(|| self.command.clone())
+                .unwrap_or_default()
+        } else if let Some(ref p) = self.path {
+            p.clone()
+        } else if let Some(ref pat) = self.pattern {
+            pat.clone()
+        } else {
+            self.value.clone().unwrap_or_default()
         }
     }
 }
@@ -968,7 +1016,7 @@ impl PortableTool for Workspace {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["read", "write", "edit", "grep", "find", "ls", "shell"],
+                    "enum": ["read", "write", "edit", "grep", "find", "ls", "shell", "bash"],
                     "description": "The workspace operation to perform"
                 },
                 "path": {
@@ -978,6 +1026,14 @@ impl PortableTool for Workspace {
                 "value": {
                     "type": "string",
                     "description": "File content for write or shell command"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "File content alias for write"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Command alias for shell/bash"
                 },
                 "old_text": {
                     "type": "string",
@@ -989,7 +1045,15 @@ impl PortableTool for Workspace {
                 },
                 "pattern": {
                     "type": "string",
-                    "description": "Substring to search for in grep or find"
+                    "description": "Substring, regex, or glob pattern to search for in grep or find"
+                },
+                "regex": {
+                    "type": "boolean",
+                    "description": "Enable regular expression matching for grep"
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "Enable case-insensitive matching for grep"
                 },
                 "offset": {
                     "type": "integer",
@@ -1008,8 +1072,11 @@ impl PortableTool for Workspace {
     }
 
     async fn call(&self, args: Arguments) -> Result<Value, Self::Error> {
-        let target = if args.operation == "shell" {
-            args.value.clone().unwrap_or_default()
+        let target = if matches!(args.operation.as_str(), "shell" | "bash") {
+            args.value
+                .clone()
+                .or_else(|| args.command.clone())
+                .unwrap_or_default()
         } else if let Some(ref p) = args.path {
             p.clone()
         } else if let Some(ref pat) = args.pattern {
@@ -1037,6 +1104,281 @@ impl PortableTool for Workspace {
         };
 
         Ok(value)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadArgs {
+    pub path: String,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Clone)]
+pub struct ReadTool(pub Workspace);
+impl PortableTool for ReadTool {
+    const NAME: &'static str = "read";
+    type Args = ReadArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Read UTF-8 file contents relative to workspace root, with optional 1-based line offset and limit.".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path"},
+                "offset": {"type": "integer", "minimum": 1, "description": "1-based starting line number"},
+                "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines to read"}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: ReadArgs) -> Result<Value, Self::Error> {
+        self.0
+            .call(Arguments {
+                operation: "read".into(),
+                path: Some(args.path),
+                offset: args.offset,
+                limit: args.limit,
+                ..Arguments::default()
+            })
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WriteArgs {
+    pub path: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct WriteTool(pub Workspace);
+impl PortableTool for WriteTool {
+    const NAME: &'static str = "write";
+    type Args = WriteArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Atomically write UTF-8 content to a relative file path (parent directory must exist, max 1 MiB).".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path"},
+                "content": {"type": "string", "description": "File content to write"},
+                "value": {"type": "string", "description": "Alias for content"}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: WriteArgs) -> Result<Value, Self::Error> {
+        self.0
+            .call(Arguments {
+                operation: "write".into(),
+                path: Some(args.path),
+                content: args.content,
+                value: args.value,
+                ..Arguments::default()
+            })
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EditArgs {
+    pub path: String,
+    pub old_text: String,
+    pub new_text: String,
+}
+
+#[derive(Clone)]
+pub struct EditTool(pub Workspace);
+impl PortableTool for EditTool {
+    const NAME: &'static str = "edit";
+    type Args = EditArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Edit a file by replacing an exact, uniquely matching old_text with new_text.".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path"},
+                "old_text": {"type": "string", "description": "Exact existing text to replace (must match uniquely)"},
+                "new_text": {"type": "string", "description": "Replacement text"}
+            },
+            "required": ["path", "old_text", "new_text"],
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: EditArgs) -> Result<Value, Self::Error> {
+        self.0
+            .call(Arguments::edit(args.path, args.old_text, args.new_text))
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BashArgs {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct BashTool(pub Workspace);
+impl PortableTool for BashTool {
+    const NAME: &'static str = "bash";
+    type Args = BashArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Execute a noninteractive shell command in the workspace directory (120s timeout).".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "value": {"type": "string", "description": "Alias for command"}
+            },
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: BashArgs) -> Result<Value, Self::Error> {
+        self.0
+            .call(Arguments {
+                operation: "shell".into(),
+                command: args.command,
+                value: args.value,
+                ..Arguments::default()
+            })
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrepArgs {
+    pub pattern: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub regex: Option<bool>,
+    #[serde(default)]
+    pub case_insensitive: Option<bool>,
+}
+
+#[derive(Clone)]
+pub struct GrepTool(pub Workspace);
+impl PortableTool for GrepTool {
+    const NAME: &'static str = "grep";
+    type Args = GrepArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Search file contents by literal string or regular expression within the workspace.".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Search pattern (literal or regex)"},
+                "path": {"type": "string", "description": "Optional relative file or directory path"},
+                "regex": {"type": "boolean", "description": "Treat pattern as a regular expression"},
+                "case_insensitive": {"type": "boolean", "description": "Case-insensitive search"}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: GrepArgs) -> Result<Value, Self::Error> {
+        self.0
+            .call(Arguments {
+                operation: "grep".into(),
+                pattern: Some(args.pattern),
+                path: args.path,
+                regex: args.regex,
+                case_insensitive: args.case_insensitive,
+                ..Arguments::default()
+            })
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FindArgs {
+    pub pattern: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct FindTool(pub Workspace);
+impl PortableTool for FindTool {
+    const NAME: &'static str = "find";
+    type Args = FindArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "Find files or directories by glob pattern (e.g. '**/*.rs', '*.toml') or substring.".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern or substring to match"},
+                "path": {"type": "string", "description": "Optional relative starting directory"}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: FindArgs) -> Result<Value, Self::Error> {
+        self.0.call(Arguments::find(args.pattern, args.path)).await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LsArgs {
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct LsTool(pub Workspace);
+impl PortableTool for LsTool {
+    const NAME: &'static str = "ls";
+    type Args = LsArgs;
+    type Output = Value;
+    type Error = std::convert::Infallible;
+    fn description(&self) -> String {
+        "List directory contents in the workspace (sorted, bounded).".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Optional relative directory path"}
+            },
+            "additionalProperties": false
+        })
+    }
+    async fn call(&self, args: LsArgs) -> Result<Value, Self::Error> {
+        self.0.call(Arguments::ls(args.path)).await
     }
 }
 
