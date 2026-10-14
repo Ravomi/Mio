@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+
+<html data-theme="light" data-theme-mode="light" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Model Catalog · Mio 模型生态与预设速查</title>
+<meta content="Mio 源码内置提供商预设与模型清单。支持 OpenAI、DeepSeek、Google、Antigravity、Anthropic 网关接入与本地 Ollama。" name="description"/>
+<link href="favicon.svg" rel="icon" type="image/svg+xml"/>
+<link href="styles.css" rel="stylesheet"/>
+<link href="reference.css" rel="stylesheet"/>
+</head>
+<body class="ref-page-wrap">
+<a class="skip-link" href="#main-content">跳转到正文内容 (Skip to main content)</a>
+<header class="site-header" role="banner">
+<div style="display: flex; align-items: center; gap: 1rem;">
+<a class="brand" href="index.html">
+<img alt="Mio Logo" height="30" src="mio-logo.png" width="30"/>
+<span>Mio</span>
+<span class="brand-badge" data-en="Models" data-zh="模型预设">模型预设</span>
+</a>
+</div>
+<nav aria-label="主导航">
+<ul class="nav-links"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a class="nav-link" data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a class="nav-link" data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a class="nav-link" data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a aria-current="page" class="nav-link is-active" data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a class="nav-link" data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li>
+<a class="nav-link" href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">
+            GitHub ↗
+          </a>
+</li>
+</ul>
+</nav>
+<div class="nav-controls">
+<button aria-label="切换语言 / Switch language" class="nav-pill-btn" id="langToggleBtn" type="button">EN</button>
+<button aria-label="切换深浅色主题" class="nav-pill-btn" id="themeToggleBtn" type="button">
+<span aria-hidden="true" id="themeIcon">☀</span>
+<span data-en="Light" data-zh="浅色" id="themeLabel">浅色</span>
+</button>
+<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button">☰</button>
+</div>
+</header>
+<!-- Mobile Navigation Drawer -->
+<div aria-label="移动端导航" class="mobile-nav-drawer" id="mobileNavDrawer">
+<ul class="mobile-nav-list"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a class="is-active" data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li><a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a></li>
+</ul>
+</div>
+<main class="ref-main" id="main-content">
+<div class="ref-container">
+<article class="ref-article">
+<h1 class="ref-title" data-en="Supported Models Catalog" data-zh="支持模型目录">支持模型目录</h1>
+<p class="ref-lead" data-en="Built-in preset snapshot covering 10 providers and 27 models in Mio source. Selectable at runtime via CLI flags or config file." data-zh="Mio 源码预设的 10 个提供商及 27 个模型快照。可在运行时通过命令行选项或配置文件选择模型。">
+            Mio 源码预设的 10 个提供商及 27 个模型快照。可在运行时通过命令行选项或配置文件选择模型。
+          </p>
+<div class="ref-filter-bar" style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:center; margin:1.5rem 0; padding:1rem; background:var(--ref-bg-elevated, #f8f9fa); border:1px solid var(--ref-border, #e5e7eb); border-radius:8px;">
+<input aria-label="Search models / 搜索模型" data-i18n-en="Filter by model ID, provider or env..." data-i18n-zh="搜索模型名、提供商或环境变量..." id="modelQuery" placeholder="搜索模型名、提供商或环境变量..." style="flex:1; min-width:200px; padding:0.4rem 0.6rem; border:1px solid var(--ref-border, #d1d5db); border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);" type="text"/>
+<select aria-label="Filter providers / 筛选提供商" id="modelProvider" style="padding:0.4rem 0.6rem; border:1px solid var(--ref-border, #d1d5db); border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);">
+<option value="all">全部提供商</option>
+</select>
+<button class="ref-btn" data-en="Reset" data-zh="重置" id="modelReset" style="padding:0.4rem 0.8rem; border-radius:6px; border:1px solid var(--ref-border, #d1d5db); background:var(--ref-bg, #fff); cursor:pointer; color:var(--ref-text, #111827);" type="button">重置</button>
+<div aria-live="polite" id="modelCount" style="font-size:0.875rem; color:var(--ref-text-muted, #6b7280); margin-left:auto;">加载中...</div>
+</div>
+<div class="table-scroll-wrap">
+<table class="ref-table wrapped">
+<thead>
+<tr>
+<th data-en="Model" data-zh="模型">模型</th>
+<th data-en="Provider" data-zh="提供商">提供商</th>
+<th data-en="Reasoning" data-zh="思考">思考</th>
+<th data-en="Credentials" data-zh="凭据">凭据</th>
+<th data-en="Command" data-zh="命令">命令</th>
+</tr>
+</thead>
+<tbody id="modelRows">
+<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--ref-text-muted, #737373);">加载模型目录中...</td></tr>
+</tbody>
+</table>
+</div>
+<div style="margin-top:2rem;">
+<details style="border:1px solid var(--ref-border, #e5e7eb); border-radius:8px; padding:1rem; background:var(--ref-bg-elevated, #f9fafb);">
+<summary data-en="Credential Configuration &amp; Provider Notes" data-zh="配置凭据与提供商说明" style="font-weight:600; cursor:pointer;">配置凭据与提供商说明</summary>
+<div style="margin-top:0.75rem; line-height:1.6; font-size:0.9rem;">
+<p data-en-html="• Environment Credentials: In API key routing, &lt;code&gt;MIO_API_KEY&lt;/code&gt; takes highest priority, falling back to provider-specific variables (e.g. &lt;code&gt;OPENAI_API_KEY&lt;/code&gt;)." data-zh-html="• 环境变量凭据：在 API 密钥路由中，统一环境变量 &lt;code&gt;MIO_API_KEY&lt;/code&gt; 拥有更高优先级；若未设定则依次读取提供商专属变量（如 &lt;code&gt;OPENAI_API_KEY&lt;/code&gt;）。">
+                  • 环境变量凭据：在 API 密钥路由中，统一环境变量 <code>MIO_API_KEY</code> 拥有更高优先级；若未设定则依次读取提供商专属变量（如 <code>OPENAI_API_KEY</code>）。
+                </p>
+<p data-en="• Antigravity Provider: Operates via Google Cloud Code PA OAuth independent of standard API keys. Can import existing credentials directly:" data-zh="• Antigravity 提供商：基于 Google Cloud Code PA 的 OAuth 机制运行，完全独立于标准 API Key，支持通过命令直接导入已有凭据：">
+                  • Antigravity 提供商：基于 Google Cloud Code PA 的 OAuth 机制运行，完全独立于标准 API Key，支持通过命令直接导入已有凭据：
+                </p>
+<p style="margin:0.5rem 0;">
+<code>mio --import-antigravity ~/.pi/agent</code>
+</p>
+<p data-en-html="• Config search precedence: &lt;code&gt;MIO_CONFIG_DIR&lt;/code&gt; &gt; &lt;code&gt;XDG_CONFIG_HOME/mio&lt;/code&gt; &gt; &lt;code&gt;~/.config/mio&lt;/code&gt;. Imported configuration can also specify default models." data-zh-html="• 配置目录查找优先级：&lt;code&gt;MIO_CONFIG_DIR&lt;/code&gt; &gt; &lt;code&gt;XDG_CONFIG_HOME/mio&lt;/code&gt; &gt; &lt;code&gt;~/.config/mio&lt;/code&gt;。导入配置时亦可指定默认模型。">
+                  • 配置目录查找优先级：<code>MIO_CONFIG_DIR</code> &gt; <code>XDG_CONFIG_HOME/mio</code> &gt; <code>~/.config/mio</code>。导入配置时亦可指定默认模型。
+                </p>
+<p data-en="• Reasoning capability: Only handled in Antigravity adapter depending on account entitlement; other providers depend on model selection or gateway forwarding." data-zh="• 思考能力说明：仅在 Antigravity 适配器中启用且依赖具体账号权限，其他提供商按需选择对应思考型模型或通过网关透传。">
+                  • 思考能力说明：仅在 Antigravity 适配器中启用且依赖具体账号权限，其他提供商按需选择对应思考型模型或通过网关透传。
+                </p>
+</div>
+</details>
+</div>
+</article>
+</div>
+</main>
+<footer class="ref-footer" role="contentinfo">
+<div class="ref-footer-content">
+<div class="ref-footer-top">
+<div data-en-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · Built on &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT License" data-zh-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · 基于 &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT 许可"><strong>Mio (mio-agent)</strong> · 基于 <a href="https://github.com/0xPlaygrounds/rig">Rig</a> · MIT 许可</div>
+<div class="ref-footer-links">
+<a data-en="Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a>
+<a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a>
+<a data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a>
+<a data-en="Models" data-zh="模型生态" href="models.html">模型生态</a>
+<a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a>
+<a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a>
+</div>
+</div>
+</div>
+</footer>
+<div aria-atomic="true" aria-live="polite" class="sr-only" id="copy-status-live"></div>
+<script src="reference.js"></script>
+<script src="models.js"></script>
+</body>
+</html>
