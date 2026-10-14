@@ -10,7 +10,7 @@ use tokio::{
 
 const STREAM_LIMIT: usize = 32 * 1024;
 
-struct Process(Child, Option<u32>);
+struct Process(Option<Child>, Option<u32>);
 
 impl Drop for Process {
     fn drop(&mut self) {
@@ -22,8 +22,16 @@ impl Drop for Process {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
         }
-        let _ = self.0.start_kill();
-        // kill_on_drop also schedules direct-child reaping through Tokio.
+        if let Some(mut child) = self.0.take() {
+            let _ = child.start_kill();
+            // Keep polling wait even when the RPC runtime is idle after abort.
+            // kill_on_drop remains the fallback during runtime shutdown.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
     }
 }
 
@@ -78,11 +86,12 @@ async fn execute_inner(command: &str, cwd: &Path) -> Result<String, String> {
         .spawn()
         .map_err(|e| format!("Cannot start shell: {e}"))?;
     let pid = child.id();
-    let mut process = Process(child, pid);
-    let stdout = process.0.stdout.take().ok_or("Missing stdout pipe")?;
-    let stderr = process.0.stderr.take().ok_or("Missing stderr pipe")?;
+    let mut process = Process(Some(child), pid);
+    let child = process.0.as_mut().expect("owned child");
+    let stdout = child.stdout.take().ok_or("Missing stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("Missing stderr pipe")?;
     let (status, stdout, stderr) = tokio::try_join!(
-        async { process.0.wait().await.map_err(|e| e.to_string()) },
+        async { child.wait().await.map_err(|e| e.to_string()) },
         capture(stdout),
         capture(stderr)
     )?;

@@ -1270,12 +1270,6 @@ struct CliHost {
     steering_queue: Mutex<VecDeque<String>>,
 }
 
-impl CliHost {
-    fn push_steering(&self, msg: String) {
-        self.steering_queue.lock().unwrap().push_back(msg);
-    }
-}
-
 impl Host for CliHost {
     fn shell(&self, command: &str, cwd: &Path) -> HostFuture<Result<String, String>> {
         let (command, cwd, disabled) = (command.to_owned(), cwd.to_owned(), self.no_shell);
@@ -1324,12 +1318,7 @@ impl Host for CliHost {
 
     fn poll_steering(&self) -> Option<String> {
         let mut guard = self.steering_queue.lock().unwrap();
-        if guard.is_empty() {
-            None
-        } else {
-            let combined: Vec<String> = guard.drain(..).collect();
-            Some(combined.join("\n"))
-        }
+        guard.pop_front()
     }
 
     fn approve_tool(&self, operation: &str, target: &str) -> Result<(), String> {
@@ -1553,63 +1542,202 @@ impl Runner {
     }
 }
 
-async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Result<(), String> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut follow_up_queue: VecDeque<String> = VecDeque::new();
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+const RPC_QUEUE_LIMIT: usize = 64;
+
+fn rpc_state(runner: &Runner, running: bool, queued: usize) -> serde_json::Value {
+    json!({
+        "sessionId": runner.session.id,
+        "sessionName": runner.session.name,
+        "session_name": runner.session.name,
+        "sessionFile": if runner.no_session { serde_json::Value::Null } else { json!(runner.path) },
+        "model": runner.config.model,
+        "provider": runner.config.provider,
+        "thinkingLevel": runner.options.thinking,
+        "messageCount": runner.session.history.len(),
+        "isStreaming": running,
+        "followUpCount": queued,
+    })
+}
+
+fn rpc_message_valid(message: &str) -> bool {
+    !message.trim().is_empty() && message.len() <= 65536
+}
+
+fn rpc_parse(line: &str) -> Option<RpcCommand> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str(line) {
+        Ok(command) => Some(command),
+        Err(error) => {
+            println!(
+                "{}",
+                rpc_response("parse", None, false, json!({"error": error.to_string()}))
+            );
+            None
         }
-        let cmd: RpcCommand = match serde_json::from_str(trimmed) {
-            Ok(c) => c,
-            Err(err) => {
-                println!(
-                    "{}",
-                    rpc_response("parse", None, false, json!({"error": err.to_string()}))
-                );
-                continue;
+    }
+}
+
+async fn cancel_children(manager: Option<&Arc<SubagentManager>>) -> Result<(), String> {
+    if let Some(manager) = manager {
+        for run in manager
+            .list()
+            .into_iter()
+            .filter(|run| run.status == mio_coding_agent::subagent::Status::Running)
+        {
+            manager.kill(run.run_id).await?;
+        }
+    }
+    Ok(())
+}
+
+enum RpcTurnEnd {
+    Finished(Result<(), String>),
+    Abort(Option<String>),
+    Closed,
+    InputError(String),
+}
+
+// The turn future borrows Runner exclusively; control input uses an immutable
+// state snapshot and the shared host. Dropping the future cancels model I/O and
+// the shell process guard before cancellation is acknowledged.
+async fn run_rpc_tasks(
+    runner: &mut Runner,
+    lines: &mut tokio::io::Lines<BufReader<tokio::io::Stdin>>,
+    initial: String,
+) -> Result<bool, String> {
+    let mut follow_ups = VecDeque::new();
+    let mut message = initial;
+    loop {
+        let host = runner.host.clone();
+        let mut state = rpc_state(runner, true, follow_ups.len());
+        let end = {
+            let turn = runner.turn(&message);
+            tokio::pin!(turn);
+            loop {
+                tokio::select! {
+                    biased;
+                    line = lines.next_line() => {
+                        let line = match line {
+                            Ok(Some(line)) => line,
+                            Ok(None) => break RpcTurnEnd::Closed,
+                            Err(error) => break RpcTurnEnd::InputError(error.to_string()),
+                        };
+                        let Some(command) = rpc_parse(&line) else { continue };
+                        match command {
+                            RpcCommand::Abort { id } => break RpcTurnEnd::Abort(id),
+                            RpcCommand::Steer { id, message } => {
+                                let mut queue = host.steering_queue.lock().unwrap();
+                                if !rpc_message_valid(&message) || queue.len() >= RPC_QUEUE_LIMIT {
+                                    println!("{}", rpc_response("steer", id.as_deref(), false, json!({"error":"Message must be 1–65536 bytes and steering queue must have space"})));
+                                } else {
+                                    queue.push_back(message);
+                                    println!("{}", rpc_response("steer", id.as_deref(), true, json!({"queued":true})));
+                                }
+                            }
+                            RpcCommand::FollowUp { id, message } => {
+                                if !rpc_message_valid(&message) || follow_ups.len() >= RPC_QUEUE_LIMIT {
+                                    println!("{}", rpc_response("follow_up", id.as_deref(), false, json!({"error":"Message must be 1–65536 bytes and follow-up queue must have space"})));
+                                } else {
+                                    follow_ups.push_back(message);
+                                    println!("{}", rpc_response("follow_up", id.as_deref(), true, json!({"queued":follow_ups.len()})));
+                                }
+                            }
+                            RpcCommand::GetState { id } => {
+                                state["followUpCount"] = json!(follow_ups.len());
+                                state["steeringCount"] = json!(host.steering_queue.lock().unwrap().len());
+                                println!("{}", rpc_response("get_state", id.as_deref(), true, state.clone()));
+                            }
+                            other => {
+                                let value = serde_json::to_value(other).expect("RPC serialization");
+                                println!("{}", rpc_response(value["type"].as_str().unwrap_or("unknown"), value["id"].as_str().or(value["request_id"].as_str()), false, json!({"error":"Agent is running; use steer, follow_up, abort or get_state"})));
+                            }
+                        }
+                    }
+                    result = &mut turn => break RpcTurnEnd::Finished(result),
+                }
             }
         };
-        match cmd {
-            RpcCommand::Prompt { id, message } => {
-                println!(
-                    "{}",
-                    rpc_response("prompt", id.as_deref(), true, json!({"status": "started"}))
-                );
-                if let Err(err) = runner.turn(&message).await {
-                    println!("{}", json!({"type": "error", "error": err}));
+        match end {
+            RpcTurnEnd::Finished(Ok(())) => {
+                // Tool-free responses (and failed tools) may leave steering
+                // unconsumed. Continue with it before normal follow-up work.
+                if let Some(next) = host.poll_steering().or_else(|| follow_ups.pop_front()) {
+                    message = next;
+                    continue;
                 }
-                while let Some(next_msg) = follow_up_queue.pop_front() {
-                    if let Err(err) = runner.turn(&next_msg).await {
-                        println!("{}", json!({"type": "error", "error": err}));
-                        break;
+                println!("{}", json!({"type":"agent_settled", "status":"completed"}));
+                return Ok(true);
+            }
+            other => {
+                host.steering_queue.lock().unwrap().clear();
+                follow_ups.clear();
+                cancel_children(runner.subagents.as_ref()).await?;
+                match other {
+                    RpcTurnEnd::Abort(id) => {
+                        host.reporter.cancelled.store(true, Ordering::SeqCst);
+                        println!(
+                            "{}",
+                            rpc_response("abort", id.as_deref(), true, json!({"aborted":true}))
+                        );
+                        println!("{}", json!({"type":"agent_settled", "status":"cancelled"}));
+                        return Ok(true);
                     }
+                    RpcTurnEnd::Closed => return Ok(false),
+                    RpcTurnEnd::InputError(error) => return Err(error),
+                    RpcTurnEnd::Finished(Err(error)) => {
+                        println!("{}", json!({"type":"error", "error":error}));
+                        println!("{}", json!({"type":"agent_settled", "status":"error"}));
+                        return Ok(true);
+                    }
+                    RpcTurnEnd::Finished(Ok(())) => unreachable!(),
                 }
             }
-            RpcCommand::Steer { id, message } => {
-                runner.host.push_steering(message);
+        }
+    }
+}
+
+async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Result<(), String> {
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+        let Some(cmd) = rpc_parse(&line) else {
+            continue;
+        };
+        match cmd {
+            RpcCommand::Prompt { id, message }
+            | RpcCommand::Steer { id, message }
+            | RpcCommand::FollowUp { id, message } => {
+                let name = serde_json::from_str::<serde_json::Value>(&line)
+                    .expect("parsed command")["type"]
+                    .as_str()
+                    .unwrap_or("prompt")
+                    .to_owned();
+                if !rpc_message_valid(&message) {
+                    println!(
+                        "{}",
+                        rpc_response(
+                            &name,
+                            id.as_deref(),
+                            false,
+                            json!({"error":"Message must be 1–65536 bytes"})
+                        )
+                    );
+                    continue;
+                }
                 println!(
                     "{}",
-                    rpc_response("steer", id.as_deref(), true, json!({"queued": true}))
+                    rpc_response(&name, id.as_deref(), true, json!({"status":"started"}))
                 );
-            }
-            RpcCommand::FollowUp { id, message } => {
-                follow_up_queue.push_back(message);
-                println!(
-                    "{}",
-                    rpc_response(
-                        "follow_up",
-                        id.as_deref(),
-                        true,
-                        json!({"queued": follow_up_queue.len()})
-                    )
-                );
+                if !run_rpc_tasks(runner, &mut lines, message).await? {
+                    return Ok(());
+                }
             }
             RpcCommand::Abort { id } => {
+                runner.host.steering_queue.lock().unwrap().clear();
                 println!(
                     "{}",
-                    rpc_response("abort", id.as_deref(), true, json!({"aborted": true}))
+                    rpc_response("abort", id.as_deref(), true, json!({"aborted":false}))
                 );
             }
             RpcCommand::Compact { id, instructions } => {
@@ -1632,16 +1760,7 @@ async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Resu
                         "get_state",
                         id.as_deref(),
                         true,
-                        json!({
-                            "sessionId": runner.session.id,
-                            "sessionName": runner.session.name,
-                            "session_name": runner.session.name,
-                            "sessionFile": if runner.no_session { serde_json::Value::Null } else { json!(runner.path) },
-                            "model": runner.config.model,
-                            "provider": runner.config.provider,
-                            "thinkingLevel": runner.options.thinking,
-                            "messageCount": runner.session.history.len(),
-                        })
+                        rpc_state(runner, false, 0)
                     )
                 );
             }
