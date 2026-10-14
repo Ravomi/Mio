@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-theme-mode="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>插件目录 · Mio</title>
+  <meta name="description" content="Mio 官方插件目录与扩展社区 (Ravomi/mio-plugins)。探索并安装遵循 mio-plugin.json 标准的 Skills、提示词模板、声明式工具与 MCP 服务。">
+  <meta name="theme-color" content="#1b1d20">
+
+  <meta property="og:title" content="插件目录 · Mio">
+  <meta property="og:description" content="Skills, prompt templates, declarative tools, and MCP servers for Mio Coding Agent. Install with mio --plugin-install <plugin>.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ravomi.github.io/Mio/packages.html">
+  <meta property="og:image" content="https://ravomi.github.io/Mio/mio-logo.png">
+
+  <link rel="preconnect" href="https://api.fontshare.com">
+  <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+  <link href="https://api.fontshare.com/v2/css?f[]=clash-grotesk@400,500&display=swap" rel="stylesheet">
+
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+
+  <script>
+    document.documentElement.classList.add('js');
+    (function () {
+      try {
+        var stored = localStorage.getItem('mio:theme');
+        var mode = (stored === 'light' || stored === 'dark') ? stored : 'dark';
+        document.documentElement.dataset.theme = mode;
+        document.documentElement.dataset.themeMode = mode;
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳至主要内容</a>
+
+  <header class="wrap" style="padding-top: var(--margin); padding-bottom: 1rem;" role="banner">
+    <div class="hero-top-row">
+      <a href="index.html" class="brand-mark" aria-label="返回 Mio 首页">
+        <img src="mio-logo.png" alt="Mio 图标" width="28" height="28">
+        <span>Mio</span>
+      </a>
+
+      <nav aria-label="站点导航" class="top-links">
+        <a href="index.html#showcase" data-zh="状态流" data-en="States">状态流</a>
+        <a href="index.html#capabilities" data-zh="原语" data-en="Primitives">原语</a>
+        <a href="index.html#benchmark" data-zh="基准" data-en="Benchmarks">基准</a>
+        <a href="packages.html" aria-current="page" style="color: var(--ink);" data-zh="插件目录" data-en="Packages">插件目录</a>
+        <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer">Ravomi/mio-plugins</a>
+        <button type="button" id="langToggleBtn" aria-label="切换语言">EN</button>
+        <button type="button" id="themeToggleBtn" aria-label="切换深浅外观" data-zh="浅灰台面" data-en="Light slate">浅灰台面</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content" class="wrap">
+    <section class="packages-header-block">
+      <div class="grid">
+        <div style="grid-column: 1 / 9;">
+          <h1 class="display" data-zh="开放插件目录与社区规范" data-en="Open plugin catalog">开放插件目录与社区规范</h1>
+          <p class="muted" style="margin-top: 1rem;" data-zh="汇集为 Mio 与 Alacritty-Mio 打造的声明式工具、领域 Skills、提示词模板与 MCP 桥接配置。使用 mio --plugin-install <name> 即可从官方注册表一键安装。" data-en="Declarative tools, domain skills, prompt templates, and MCP bridges for Mio. Install any entry with mio --plugin-install <name>.">
+            汇集为 Mio 与 Alacritty-Mio 打造的声明式工具、领域 Skills、提示词模板与 MCP 桥接配置。使用 <code>mio --plugin-install &lt;name&gt;</code> 即可从官方注册表一键安装。
+          </p>
+          <div class="hero-cta-row">
+            <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer" class="button" data-zh="浏览 GitHub 社区仓库" data-en="Browse GitHub registry">浏览 GitHub 社区仓库</a>
+            <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener noreferrer" class="text-action" data-zh="阅读 mio-plugin.json 规范" data-en="Read specification">阅读 mio-plugin.json 规范</a>
+            <span class="small muted" id="liveSyncText" data-zh="已同步 Ravomi/mio-plugins (8 个官方插件)" data-en="Synced with Ravomi/mio-plugins (8 official plugins)">已同步 Ravomi/mio-plugins (8 个官方插件)</span>
+          </div>
+        </div>
+      </div>
+
+      <form class="packages-filter-bar" id="packagesFilterForm" action="packages.html" method="get" role="search">
+        <label>
+          <span class="sr-only">搜索插件名称、描述或标签</span>
+          <input
+            type="search"
+            id="packageSearchInput"
+            name="q"
+            class="packages-input"
+            style="width: 100%;"
+            placeholder="搜索插件名称、工具、Skill 或标签 (如 rust, git, security, mcp)"
+            data-placeholder-zh="搜索插件名称、工具、Skill 或标签 (如 rust, git, security, mcp)"
+            data-placeholder-en="Filter by name, tool, skill, or keyword..."
+            autocomplete="off"
+          >
+        </label>
+
+        <label>
+          <span class="sr-only">按能力类型筛选</span>
+          <select id="packageTypeSelect" name="type" class="packages-select">
+            <option value="" data-zh="全部类型" data-en="All types">全部类型</option>
+            <option value="tool" data-zh="tool · 声明式工具" data-en="tool">tool · 声明式工具</option>
+            <option value="skill" data-zh="skill · 领域技能" data-en="skill">skill · 领域技能</option>
+            <option value="prompt" data-zh="prompt · 提示词模板" data-en="prompt">prompt · 提示词模板</option>
+            <option value="mcp" data-zh="mcp · MCP 桥接" data-en="mcp">mcp · MCP 桥接</option>
+            <option value="context" data-zh="context · 上下文规则" data-en="context">context · 上下文规则</option>
+          </select>
+        </label>
+
+        <label>
+          <span class="sr-only">排序方式</span>
+          <select id="packageSortSelect" name="sort" class="packages-select">
+            <option value="featured" data-zh="官方推荐" data-en="Featured">官方推荐</option>
+            <option value="recent" data-zh="最近更新" data-en="Recent">最近更新</option>
+            <option value="name" data-zh="按名称排序" data-en="Name (A-Z)">按名称排序</option>
+          </select>
+        </label>
+
+        <div style="display: flex; gap: 0.5rem;">
+          <button type="button" id="packageResetBtn" class="choice-btn" data-zh="重置" data-en="Reset">重置</button>
+          <span class="small muted nums" id="packagesCountBadge" style="align-self: center; padding-inline: 0.5rem;">8 / 8</span>
+        </div>
+      </form>
+
+      <div class="packages-topic-strip" role="toolbar" aria-label="按主题筛选">
+        <button type="button" class="choice-btn is-active" data-topic="" data-zh="全部 (8)" data-en="All (8)">全部 (8)</button>
+        <button type="button" class="choice-btn" data-topic="git">git</button>
+        <button type="button" class="choice-btn" data-topic="rust">rust</button>
+        <button type="button" class="choice-btn" data-topic="security">security</button>
+        <button type="button" class="choice-btn" data-topic="mcp">mcp</button>
+        <button type="button" class="choice-btn" data-topic="testing">testing</button>
+        <button type="button" class="choice-btn" data-topic="performance">performance</button>
+        <button type="button" class="choice-btn" data-topic="docker">docker</button>
+        <button type="button" class="choice-btn" data-topic="docs">docs</button>
+      </div>
+
+      <div class="packages-catalog-grid" id="packagesGrid"></div>
+
+      <div id="packagesEmptyState" hidden style="padding: 3rem 0;">
+        <p class="muted" data-zh="未找到匹配的插件，请尝试其他关键词或点击重置。" data-en="No matching plugins found. Try another keyword or reset.">未找到匹配的插件，请尝试其他关键词或点击重置。</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="pluginDetailDialog" class="package-dialog" aria-labelledby="modalPluginTitle">
+    <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem;">
+      <div>
+        <h2 class="head" id="modalPluginTitle">git-workflow</h2>
+        <p class="small muted" id="modalPluginSubtitle" style="margin-top: 0.25rem;">v0.1.0 · MIT · Ravomi Community</p>
+      </div>
+      <button type="button" class="choice-btn" id="closePluginModalBtn" data-zh="关闭" data-en="Close">关闭</button>
+    </div>
+    <div id="modalPluginBody" style="display: flex; flex-direction: column; gap: 1.25rem;"></div>
+  </dialog>
+
+  <footer class="wrap quiet-footer" role="contentinfo">
+    <div class="footer-single-line">
+      <div>Mio · Plugin Standard v1</div>
+      <div class="footer-center-links">
+        <a href="index.html" data-zh="返回首页" data-en="Home">返回首页</a>
+        <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer">Ravomi/mio-plugins</a>
+        <a href="https://github.com/Ravomi/mio-plugins/blob/main/SPECIFICATION.md" target="_blank" rel="noopener noreferrer">SPECIFICATION.md</a>
+      </div>
+      <div class="footer-right">
+        <span>2026 Ravomi · </span>
+        <a href="https://github.com/Ravomi/Mio/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
+      </div>
+    </div>
+  </footer>
+
+  <div id="copy-status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <script src="packages.js"></script>
+</body>
+</html>

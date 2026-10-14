@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html data-theme="light" data-theme-mode="light" lang="zh-CN">
+<html data-theme="dark" data-theme-mode="dark" lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
@@ -37,10 +37,10 @@
 <div class="nav-controls">
 <button aria-label="切换语言 / Switch language" class="nav-pill-btn" id="langToggleBtn" type="button">EN</button>
 <button aria-label="切换深浅色主题" class="nav-pill-btn" id="themeToggleBtn" type="button">
-<span aria-hidden="true" id="themeIcon">☀</span>
+<span aria-hidden="true" id="themeIcon"></span>
 <span data-en="Light" data-zh="浅色" id="themeLabel">浅色</span>
 </button>
-<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button">☰</button>
+<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button"></button>
 </div>
 </header>
 <!-- Mobile Navigation Drawer -->
@@ -61,12 +61,12 @@
 <p class="ref-lead" data-en="Built-in preset snapshot covering 10 providers and 27 models in Mio source. Selectable at runtime via CLI flags or config file." data-zh="Mio 源码预设的 10 个提供商及 27 个模型快照。可在运行时通过命令行选项或配置文件选择模型。">
             Mio 源码预设的 10 个提供商及 27 个模型快照。可在运行时通过命令行选项或配置文件选择模型。
           </p>
-<div class="ref-filter-bar" style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:center; margin:1.5rem 0; padding:1rem; background:var(--ref-bg-elevated, #f8f9fa); border:1px solid var(--ref-border, #e5e7eb); border-radius:8px;">
-<input aria-label="Search models / 搜索模型" data-i18n-en="Filter by model ID, provider or env..." data-i18n-zh="搜索模型名、提供商或环境变量..." id="modelQuery" placeholder="搜索模型名、提供商或环境变量..." style="flex:1; min-width:200px; padding:0.4rem 0.6rem; border:1px solid var(--ref-border, #d1d5db); border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);" type="text"/>
-<select aria-label="Filter providers / 筛选提供商" id="modelProvider" style="padding:0.4rem 0.6rem; border:1px solid var(--ref-border, #d1d5db); border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);">
+<div class="ref-filter-bar" style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:center; margin:1.5rem 0; padding:1rem; background:var(--ref-bg-elevated, #f8f9fa); border:0; border-radius:8px;">
+<input aria-label="Search models / 搜索模型" data-i18n-en="Filter by model ID, provider or env..." data-i18n-zh="搜索模型名、提供商或环境变量..." id="modelQuery" placeholder="搜索模型名、提供商或环境变量..." style="flex:1; min-width:200px; padding:0.4rem 0.6rem; border:0; border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);" type="text"/>
+<select aria-label="Filter providers / 筛选提供商" id="modelProvider" style="padding:0.4rem 0.6rem; border:0; border-radius:6px; background:var(--ref-bg, #fff); color:var(--ref-text, #111827);">
 <option value="all">全部提供商</option>
 </select>
-<button class="ref-btn" data-en="Reset" data-zh="重置" id="modelReset" style="padding:0.4rem 0.8rem; border-radius:6px; border:1px solid var(--ref-border, #d1d5db); background:var(--ref-bg, #fff); cursor:pointer; color:var(--ref-text, #111827);" type="button">重置</button>
+<button class="ref-btn" data-en="Reset" data-zh="重置" id="modelReset" style="padding:0.4rem 0.8rem; border-radius:6px; border:0; background:var(--ref-bg, #fff); cursor:pointer; color:var(--ref-text, #111827);" type="button">重置</button>
 <div aria-live="polite" id="modelCount" style="font-size:0.875rem; color:var(--ref-text-muted, #6b7280); margin-left:auto;">加载中...</div>
 </div>
 <div class="table-scroll-wrap">
@@ -86,7 +86,7 @@
 </table>
 </div>
 <div style="margin-top:2rem;">
-<details style="border:1px solid var(--ref-border, #e5e7eb); border-radius:8px; padding:1rem; background:var(--ref-bg-elevated, #f9fafb);">
+<details style="border:0; border-radius:8px; padding:1rem; background:var(--ref-bg-elevated, #f9fafb);">
 <summary data-en="Credential Configuration &amp; Provider Notes" data-zh="配置凭据与提供商说明" style="font-weight:600; cursor:pointer;">配置凭据与提供商说明</summary>
 <div style="margin-top:0.75rem; line-height:1.6; font-size:0.9rem;">
 <p data-en-html="• Environment Credentials: In API key routing, &lt;code&gt;MIO_API_KEY&lt;/code&gt; takes highest priority, falling back to provider-specific variables (e.g. &lt;code&gt;OPENAI_API_KEY&lt;/code&gt;)." data-zh-html="• 环境变量凭据：在 API 密钥路由中，统一环境变量 &lt;code&gt;MIO_API_KEY&lt;/code&gt; 拥有更高优先级；若未设定则依次读取提供商专属变量（如 &lt;code&gt;OPENAI_API_KEY&lt;/code&gt;）。">
