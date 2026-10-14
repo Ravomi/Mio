@@ -4,7 +4,7 @@
 use crate::mcp::McpServerSpec;
 use crate::pattern::ToolFilter;
 use crate::{AgentEvent, Host};
-use rig_core::{
+use mio_core::{
     message::ToolName,
     tool::{DynamicTool, ToolOutput},
 };

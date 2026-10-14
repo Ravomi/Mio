@@ -5,7 +5,7 @@
 //! and exposes tools as `mcp__<server>__<tool>` [`DynamicTool`] instances.
 
 use crate::{AgentEvent, Host, ToolFilter};
-use rig_core::{
+use mio_core::{
     message::ToolName,
     tool::{DynamicTool, ToolOutput},
 };
@@ -111,7 +111,7 @@ impl McpClient {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
                     "clientInfo": {
-                        "name": "mio-agent",
+                        "name": "mio-coding-agent",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
