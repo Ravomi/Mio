@@ -8,6 +8,7 @@ pub mod antigravity;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
+pub mod pattern;
 pub mod profile;
 pub mod session;
 pub mod shell;
@@ -16,7 +17,11 @@ pub mod subagent;
 pub mod test_http;
 pub mod workspace;
 
-pub use workspace::{Arguments, Workspace, checked_path};
+pub use pattern::ToolFilter;
+pub use workspace::{
+    Arguments, BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, Workspace, WriteTool,
+    checked_path,
+};
 
 use futures_util::StreamExt;
 use mio_agent::{AgentBuilder, agent::MultiTurnStreamItem};
@@ -45,6 +50,16 @@ pub trait Host: Send + Sync {
 
     /// 接收 Agent 派发的结构化事件。
     fn on_event(&self, event: AgentEvent);
+
+    /// 轮询用户在当前工具循环中注入的实时引导消息（steering）。
+    fn poll_steering(&self) -> Option<String> {
+        None
+    }
+
+    /// 可选的写文件/执行命令前审批钩子。
+    fn approve_tool(&self, _operation: &str, _target: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Agent 执行过程中发出的结构化事件。
@@ -171,6 +186,8 @@ pub struct RunTools {
     pub options: RunOptions,
     pub read_only: bool,
     pub subagents: Option<Arc<subagent::SubagentManager>>,
+    pub tool_filter: ToolFilter,
+    pub extra_tools: Vec<mio_agent::tool::DynamicTool>,
 }
 
 impl From<RunOptions> for RunTools {
@@ -249,7 +266,8 @@ pub async fn run_with_tools(
         Workspace::new_read_only(&canonical_cwd, host.clone())?
     } else {
         Workspace::new(&canonical_cwd, host.clone())?
-    };
+    }
+    .with_tool_filter(tools.tool_filter.clone());
     workspace_tool.subagents = tools.subagents.clone();
 
     let preamble = format!(
@@ -258,9 +276,42 @@ pub async fn run_with_tools(
     );
     let mut builder = AgentBuilder::new(model)
         .preamble(preamble)
-        .tool(workspace_tool);
-    if let Some(manager) = tools.subagents {
-        builder = builder.tool(subagent::SubagentTool::new(manager, host.clone()));
+        .dynamic_tools(Vec::new());
+    if !tools.tool_filter.is_disabled() {
+        if tools.tool_filter.allows("workspace") {
+            builder = builder.tool(workspace_tool.clone());
+        }
+        if tools.tool_filter.allows("read") {
+            builder = builder.tool(ReadTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("grep") {
+            builder = builder.tool(GrepTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("find") {
+            builder = builder.tool(FindTool(workspace_tool.clone()));
+        }
+        if tools.tool_filter.allows("ls") {
+            builder = builder.tool(LsTool(workspace_tool.clone()));
+        }
+        if !tools.read_only {
+            if tools.tool_filter.allows("write") {
+                builder = builder.tool(WriteTool(workspace_tool.clone()));
+            }
+            if tools.tool_filter.allows("edit") {
+                builder = builder.tool(EditTool(workspace_tool.clone()));
+            }
+            if tools.tool_filter.allows("bash") {
+                builder = builder.tool(BashTool(workspace_tool.clone()));
+            }
+        }
+        if let Some(manager) = tools.subagents
+            && tools.tool_filter.allows("subagent")
+        {
+            builder = builder.tool(subagent::SubagentTool::new(manager, host.clone()));
+        }
+        if !tools.extra_tools.is_empty() {
+            builder = builder.dynamic_tools(tools.extra_tools);
+        }
     }
     let agent = builder.build();
 

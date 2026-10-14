@@ -104,6 +104,7 @@ fn execute_task(
                 options: task.options,
                 read_only: task.read_only,
                 subagents: None,
+                ..RunTools::default()
             },
         )
         .await

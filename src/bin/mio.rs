@@ -213,7 +213,7 @@ impl Runner {
         let history = tokio::select! {
             result = run_with_tools(self.config.clone(), self.session.history.clone(), prompt,
                 &self.session.cwd, self.host.clone(), Services { antigravity: self.antigravity.as_ref(), ..Services::default() }, RunTools {
-                    options: self.options.clone(), read_only: false, subagents: self.subagents.clone(),
+                    options: self.options.clone(), read_only: false, subagents: self.subagents.clone(), ..RunTools::default()
                 }) => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal.map_err(|e| e.to_string())?;

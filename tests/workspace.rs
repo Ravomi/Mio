@@ -376,3 +376,75 @@ async fn test_search_match_truncation_and_ls_sorting() {
     assert_eq!(ls_lines[1], "dir_b/");
     assert_eq!(ls_lines[2], "file_a.txt");
 }
+
+#[tokio::test]
+async fn test_regex_grep_glob_find_unified_diff_and_tool_filter() {
+    let folder = tempfile::tempdir().unwrap();
+    let host = Arc::new(DummyHost);
+    let ws = Workspace::new(folder.path(), host.clone()).unwrap();
+
+    std::fs::create_dir_all(folder.path().join("src/nested")).unwrap();
+    std::fs::write(
+        folder.path().join("src/lib.rs"),
+        "pub fn alpha() {}\nfn beta_helper() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.path().join("src/nested/mod.rs"),
+        "PUB FN GAMMA() {}\n",
+    )
+    .unwrap();
+    std::fs::write(folder.path().join("README.md"), "docs\n").unwrap();
+
+    // Regex grep
+    let mut regex_grep = Arguments::grep(r"^pub\s+fn\s+\w+", None);
+    regex_grep.regex = Some(true);
+    let out = ws.execute(regex_grep).await.unwrap();
+    assert!(out.contains("src/lib.rs:1: pub fn alpha() {}"));
+    assert!(!out.contains("beta_helper"));
+
+    // Case-insensitive regex grep
+    let mut ci_grep = Arguments::grep(r"pub\s+fn\s+gamma", None);
+    ci_grep.regex = Some(true);
+    ci_grep.case_insensitive = Some(true);
+    let out_ci = ws.execute(ci_grep).await.unwrap();
+    assert!(out_ci.contains("src/nested/mod.rs:1: PUB FN GAMMA() {}"));
+
+    // Glob find
+    let glob_out = ws.execute(Arguments::find("**/*.rs", None)).await.unwrap();
+    assert!(glob_out.contains("src/lib.rs"));
+    assert!(glob_out.contains("src/nested/mod.rs"));
+    assert!(!glob_out.contains("README.md"));
+
+    // Unified diff on edit
+    let diff_out = ws
+        .execute(Arguments::edit(
+            "src/lib.rs",
+            "pub fn alpha() {}",
+            "pub fn alpha_v2() {}",
+        ))
+        .await
+        .unwrap();
+    assert!(diff_out.contains("--- a/src/lib.rs"));
+    assert!(diff_out.contains("+++ b/src/lib.rs"));
+    assert!(diff_out.contains("-pub fn alpha() {}"));
+    assert!(diff_out.contains("+pub fn alpha_v2() {}"));
+
+    // ToolFilter enforcement
+    let filter = mio_coding_agent::ToolFilter::from_cli(Some("read,grep"), None, false).unwrap();
+    let filtered_ws = Workspace::new(folder.path(), host)
+        .unwrap()
+        .with_tool_filter(filter);
+    assert!(
+        filtered_ws
+            .execute(Arguments::read("README.md"))
+            .await
+            .is_ok()
+    );
+    assert!(
+        filtered_ws
+            .execute(Arguments::write("blocked.txt", "no"))
+            .await
+            .is_err()
+    );
+}
