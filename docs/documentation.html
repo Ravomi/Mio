@@ -397,20 +397,23 @@ mio --plugin-list</code></pre>
 <span data-en="9. JSONL &amp; RPC Mode (--mode rpc)" data-zh="9. JSONL 与 RPC 协议模式 (--mode rpc)">9. JSONL 与 RPC 协议模式 (--mode rpc)</span>
 <a aria-label="Permalink" class="header-anchor" href="#rpc-protocol">#</a>
 </h2>
-<div class="ref-callout danger">
+<div class="ref-callout note">
 <div class="ref-callout-title">
 <span></span>
-<span data-en="RPC Implementation Boundaries &amp; Limitations" data-zh="RPC 运行循环边界与实验性限制">RPC 运行循环边界与实验性限制</span>
+<span data-en="RPC Implementation &amp; Execution Lifecycle" data-zh="RPC 运行控制与生命周期规范">RPC 运行控制与生命周期规范</span>
 </div>
 <ul class="ref-ul" style="margin-bottom: 0;">
-<li class="ref-li" data-en-html="&lt;strong&gt;Prompt Turn Blocks Stdin Loop&lt;/strong&gt;: run_rpc_loop awaits runner.turn() during a turn. Additional commands are not processed concurrently." data-zh-html="&lt;strong&gt;单轮 Turn 阻塞等待&lt;/strong&gt;：在 run_rpc_loop 中，接收到 prompt 指令后会直接 await runner.turn(&amp;message)。在此期间标准输入的新指令不会并发执行。">
-<strong>单轮 Turn 阻塞等待</strong>：在 <code>run_rpc_loop</code> 中，接收到 prompt 指令后会直接 <code>await runner.turn(&amp;message)</code>。在此期间标准输入的新指令不会并发执行。
+<li class="ref-li" data-en-html="&lt;strong&gt;Live Steering &amp; Queueing&lt;/strong&gt;: In idle state, prompt, steer, and follow_up start a turn immediately. During an active turn, steer is enqueued and injected at tool result safe points (unconsumed steer runs before FIFO follow_up); follow_up queues in FIFO order." data-zh-html="&lt;strong&gt;实时引导与排队机制&lt;/strong&gt;：空闲状态下，prompt、steer 与 follow_up 均会立即启动回合。运行期间 steer 安全点注入（未消费 steer 先于 FIFO follow_up 启动新回合）；follow_up 按先进先出（FIFO）队列在回合完成后自动顺延执行。">
+<strong>实时引导与排队机制</strong>：空闲状态下，<code>prompt</code>、<code>steer</code> 与 <code>follow_up</code> 均会立即启动回合。运行期间 <code>steer</code> 安全点注入（未消费 steer 先于 FIFO follow_up 启动新回合）；<code>follow_up</code> 按先进先出（FIFO）队列在回合完成后自动顺延执行。
                 </li>
-<li class="ref-li" data-en-html="&lt;strong&gt;steer &amp; abort Cannot Interrupt In-Flight Requests&lt;/strong&gt;: Because the loop awaits the turn, steer/abort commands cannot interrupt actively running HTTP requests; abort currently returns an acknowledgment." data-zh-html="&lt;strong&gt;steer 与 abort 无法实时打断运行中的请求&lt;/strong&gt;：因为 Turn 执行期间主循环正处于 await 阻塞状态，steer 或 abort 指令必须在当前 turn 结束后或在命令间隙被处理；abort 当前仅返回成功确认，尚未接入实时取消通道。">
-<strong>steer 与 abort 无法实时打断运行中的请求</strong>：因为 Turn 执行期间主循环正处于 await 阻塞状态，steer 或 abort 指令无法实时中断正在向模型发送的 HTTP 请求；<code>abort</code> 当前仅返回成功确认 JSON。
+<li class="ref-li" data-en-html="&lt;strong&gt;Abort &amp; Teardown Safety&lt;/strong&gt;: abort cancels the active task and child subagents, clears steering and follow-up queues, and resets status to idle. Previously completed turns and saved history are retained, and modified files are not rolled back." data-zh-html="&lt;strong&gt;取消与清理边界&lt;/strong&gt;：abort 取消当前任务与正在运行的子代理，清空引导与 follow_up 队列并将状态恢复为空闲。此前已完成轮次的历史完整保留，已执行的文件写入不作回滚；遇到输入 EOF 或错误同样会清理排队。">
+<strong>取消与清理边界</strong>：<code>abort</code> 取消当前任务与正在运行的子代理，清空引导与 follow_up 队列并将状态恢复为空闲。此前已完成轮次的历史完整保留，已执行的文件写入不作回滚；遇到输入 EOF 或错误同样会清理排队。
                 </li>
-<li class="ref-li" data-en-html="&lt;strong&gt;approve_response Has No Interactive Wire-up&lt;/strong&gt;: approve_response returns an empty ACK but is not yet wired to approve_tool()." data-zh-html="&lt;strong&gt;approve_response 暂无交互接入实现&lt;/strong&gt;：approve_response 命令接收后仅返回空响应确认，未与底层 approve_tool() 交互渠道打通。外部宿主应标注其为实验性边界。">
-<strong>approve_response 暂无交互接入实现</strong>：<code>approve_response</code> 命令接收后仅返回空响应确认，未与底层 <code>approve_tool()</code> 交互渠道打通。外部宿主应标注其为实验性边界。
+<li class="ref-li" data-en-html="&lt;strong&gt;Busy State &amp; get_state Snapshot&lt;/strong&gt;: While busy, mutating commands (prompt, set_model, compact, session operations) are rejected. get_state reflects session snapshot taken at the start of the current turn along with real-time queue counts." data-zh-html="&lt;strong&gt;繁忙状态拦截与快照&lt;/strong&gt;：繁忙期间状态变更指令（如新 prompt、set_model、compact、会话分支等）会被直接拒绝；get_state 返回本轮开始时的历史快照以及实时的 steer/follow_up 待处理队列计数。">
+<strong>繁忙状态拦截与快照</strong>：繁忙期间状态变更指令（如新 prompt、set_model、compact、会话分支等）会被直接拒绝；<code>get_state</code> 返回本轮开始时的历史快照以及实时的 steer/follow_up 待处理队列计数。
+                </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;approve_response Boundary&lt;/strong&gt;: --approve in RPC rejects actions requiring interactive approval as there is no interactive approval dialog over stdio RPC." data-zh-html="&lt;strong&gt;approve_response 边界&lt;/strong&gt;：RPC 模式下暂未接入交互式审批对话流，--approve 遇到需交互审批的操作将直接拒绝执行。">
+<strong>approve_response 边界</strong>：RPC 模式下暂未接入交互式审批对话流，<code>--approve</code> 遇到需交互审批的操作将直接拒绝执行。
                 </li>
 </ul>
 </div>
@@ -435,20 +438,20 @@ mio --plugin-list</code></pre>
 <tr>
 <td><code>steer</code></td>
 <td><code>{"id": "...", "message": "..."}</code></td>
-<td data-en="Enqueue steering for a later turn; cannot interrupt the active stdin-blocking turn." data-zh="推入宿主引导队列 (CliHost.push_steering)">推入宿主引导队列 (CliHost.push_steering)</td>
-<td><span class="badge badge-orange">回合间隙消费</span></td>
+<td data-en="Inject steering at safe points during run (or start turn if idle); unconsumed steer runs before follow_up." data-zh="运行中在工具结果安全点注入（空闲则立即启动）；未消费引导先于 follow_up 执行">运行中在工具结果安全点注入（空闲则立即启动）；未消费引导先于 follow_up 执行</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
 </tr>
 <tr>
 <td><code>follow_up</code></td>
 <td><code>{"id": "...", "message": "..."}</code></td>
-<td data-en="Queue until the next prompt finishes; does not start a turn by itself." data-zh="先加入队列，等下一次 prompt 执行完成后消费；不会自行启动回合。">先加入队列，等下一次 prompt 执行完成后消费；不会自行启动回合。</td>
+<td data-en="Queue for FIFO execution after active turn/steering completes; starts turn immediately if idle." data-zh="当前任务及引导完成后按 FIFO 顺延执行；空闲时立即启动回合">当前任务及引导完成后按 FIFO 顺延执行；空闲时立即启动回合</td>
 <td data-en="Implemented" data-zh="已实现">已实现</td>
 </tr>
 <tr>
 <td><code>abort</code></td>
 <td><code>{"id": "..."}</code></td>
-<td data-en="Acknowledgment only; does not cancel an active turn." data-zh="仅返回确认；不取消正在执行的回合。">仅返回确认；不取消正在执行的回合。</td>
-<td><span class="badge badge-orange">实验性/非实时</span></td>
+<td data-en="Cancel active task and subagents, clear steer/follow-up queues, and return to idle." data-zh="取消当前任务及子代理，清空引导与 follow_up 队列并重置为空闲">取消当前任务及子代理，清空引导与 follow_up 队列并重置为空闲</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
 </tr>
 <tr>
 <td><code>compact</code></td>
@@ -465,7 +468,7 @@ mio --plugin-list</code></pre>
 <tr>
 <td><code>set_model</code></td>
 <td><code>{"id": "...", "model": "...", "thinking": "..."}</code></td>
-<td data-en="Update model name and thinking level, retaining provider and base URL." data-zh="更新模型名与思考等级，不改变提供商或 base URL。">更新模型名与思考等级，不改变提供商或 base URL。</td>
+<td data-en="When idle, update the model; a provider prefix switches endpoint, credentials and future child tasks atomically. Failure preserves the old configuration." data-zh="空闲时更新模型；供应商前缀同步切换端点、凭据与后续子任务配置，失败则保留原配置。">空闲时更新模型；供应商前缀同步切换端点、凭据与后续子任务配置，失败则保留原配置。</td>
 <td data-en="Implemented" data-zh="已实现">已实现</td>
 </tr>
 <tr>
