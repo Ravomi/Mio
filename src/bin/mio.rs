@@ -1,8 +1,9 @@
 use mio_coding_agent::{
-    AgentEvent, Config, Host, HostFuture, Provider, RunOptions, RunTools, Services, ThinkingLevel,
-    ToolFilter,
+    AgentEvent, BlockedKind, Config, Host, HostFuture, ProgramState, Provider, RunOptions,
+    RunTools, Services, ThinkingLevel, ToolFilter,
     compact::{DEFAULT_AUTO_COMPACT_BYTES, DEFAULT_KEEP_RECENT_MESSAGES, compact_history},
     context::{ContextOptions, ProjectContext, expand_at_files},
+    format_osc7501,
     mcp::load_dynamic_tools,
     parse_model_spec,
     rpc::{RpcCommand, list_catalog_models, resolve_provider_endpoint, rpc_response},
@@ -17,7 +18,10 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -443,6 +447,7 @@ fn compute_ghost_suggestion(
 
 enum ReadOutcome {
     Line(String),
+    Interrupted,
     Exit,
 }
 
@@ -907,7 +912,7 @@ impl InteractiveEditor {
                         let current = String::from_utf8_lossy(&self.buf);
                         eprint!("\r\x1b[2K\x1b[Jmio> {current}^C\r\n");
                         let _ = io::stderr().flush();
-                        return Ok(ReadOutcome::Exit);
+                        return Ok(ReadOutcome::Interrupted);
                     }
                     4 => {
                         // Ctrl-D: exit when empty, otherwise delete char under cursor
@@ -1226,10 +1231,42 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
     Ok(parsed)
 }
 
+struct StatusReporter {
+    enabled: bool,
+    cancelled: AtomicBool,
+    last_seq: Mutex<Option<String>>,
+}
+
+impl StatusReporter {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            cancelled: AtomicBool::new(false),
+            last_seq: Mutex::new(None),
+        }
+    }
+
+    fn report(&self, state: ProgramState, msg: Option<&str>) {
+        if !self.enabled {
+            return;
+        }
+        let seq = format_osc7501(&state, msg);
+        let mut guard = self.last_seq.lock().unwrap();
+        if guard.as_ref() == Some(&seq) {
+            return;
+        }
+        *guard = Some(seq.clone());
+        let mut stderr = io::stderr().lock();
+        let _ = stderr.write_all(seq.as_bytes());
+        let _ = stderr.flush();
+    }
+}
+
 struct CliHost {
     json: bool,
     no_shell: bool,
     approve: bool,
+    reporter: Arc<StatusReporter>,
     steering_queue: Mutex<VecDeque<String>>,
 }
 
@@ -1259,17 +1296,24 @@ impl Host for CliHost {
         } else {
             match event {
                 AgentEvent::Text(text) => {
+                    self.reporter
+                        .report(ProgramState::Working, Some("Responding"));
                     print!("{text}");
                     if let Err(e) = io::stdout().flush() {
                         eprintln!("Output error: {e}");
                     }
                 }
                 AgentEvent::ToolStarted { operation, target } => {
+                    let msg = format!("{operation} {target}");
+                    self.reporter
+                        .report(ProgramState::Working, Some(msg.trim()));
                     eprintln!("\n[{operation}] {target}")
                 }
                 AgentEvent::ToolFinished {
                     operation, result, ..
                 } => {
+                    self.reporter
+                        .report(ProgramState::Working, Some("Waiting for model"));
                     if let Err(error) = result {
                         eprintln!("[{operation} failed] {error}");
                     }
@@ -1297,12 +1341,21 @@ impl Host for CliHost {
                 "Tool '{operation}' ({target}) requires interactive approval (--approve)"
             ));
         }
+        let msg = format!("{operation} {target}");
+        self.reporter.report(
+            ProgramState::Blocked {
+                kind: BlockedKind::Permission,
+            },
+            Some(msg.trim()),
+        );
         eprint!("\nApprove [{operation}] {target}? [y/N]: ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
-        io::stdin()
+        let res = io::stdin()
             .read_line(&mut answer)
-            .map_err(|e| format!("Failed to read approval input: {e}"))?;
+            .map_err(|e| format!("Failed to read approval input: {e}"));
+        self.reporter.report(ProgramState::Working, None);
+        res?;
         if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             Ok(())
         } else {
@@ -1407,12 +1460,40 @@ impl Runner {
     }
 
     async fn turn(&mut self, prompt: &str) -> Result<(), String> {
+        self.host.reporter.cancelled.store(false, Ordering::SeqCst);
+        self.host
+            .reporter
+            .report(ProgramState::Working, Some("Waiting for model"));
+        let res = self.turn_inner(prompt).await;
+        match res {
+            Ok(cancelled) => {
+                if cancelled {
+                    self.host.reporter.cancelled.store(true, Ordering::SeqCst);
+                    self.host.reporter.report(ProgramState::Idle, None);
+                    Err(
+                        "Cancelled; previous session retained. File changes are not rolled back."
+                            .into(),
+                    )
+                } else {
+                    self.host.reporter.report(ProgramState::Done, None);
+                    Ok(())
+                }
+            }
+            Err(e) => {
+                self.host.reporter.report(ProgramState::Error, Some(&e));
+                Err(e)
+            }
+        }
+    }
+
+    async fn turn_inner(&mut self, prompt: &str) -> Result<bool, String> {
         let expanded_prompt = expand_at_files(&self.session.cwd, prompt)?;
         let extra_tools = if self.no_mcp {
             Vec::new()
         } else {
             load_dynamic_tools(&self.session.cwd, self.host.clone(), &self.tool_filter).await?
         };
+        let mut cancelled = false;
         let history = tokio::select! {
             result = run_with_tools(
                 self.config.clone(),
@@ -1431,9 +1512,13 @@ impl Runner {
             ) => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal.map_err(|e| e.to_string())?;
-                return Err("Cancelled; previous session retained. File changes are not rolled back.".into());
+                cancelled = true;
+                Vec::new()
             }
         };
+        if cancelled {
+            return Ok(true);
+        }
         if let Some(manager) = &self.subagents {
             let active: Vec<_> = manager
                 .list()
@@ -1464,7 +1549,7 @@ impl Runner {
                 eprintln!("Session: {}", self.path.display());
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -1673,7 +1758,7 @@ async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Resu
     Ok(())
 }
 
-async fn execute(args: Args) -> Result<(), String> {
+async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String> {
     if args.list_models {
         print_models(args.list_models_query.as_deref(), args.json);
         return Ok(());
@@ -2008,6 +2093,7 @@ async fn execute(args: Args) -> Result<(), String> {
             json: args.json,
             no_shell: args.no_shell,
             approve: args.approve,
+            reporter: reporter.clone(),
             steering_queue: Mutex::new(VecDeque::new()),
         }),
         session,
@@ -2065,8 +2151,19 @@ async fn execute(args: Args) -> Result<(), String> {
         if args.no_shell { "disabled" } else { "enabled" },
         cwd.display()
     );
+    reporter.report(ProgramState::Idle, None);
     let mut editor = InteractiveEditor::new();
-    while let ReadOutcome::Line(line) = editor.read_line(&cwd)? {
+    loop {
+        let line = match editor.read_line(&cwd)? {
+            ReadOutcome::Line(line) => line,
+            ReadOutcome::Interrupted => {
+                reporter.report(ProgramState::Idle, None);
+                break;
+            }
+            ReadOutcome::Exit => break,
+        };
+        reporter.cancelled.store(false, Ordering::SeqCst);
+        reporter.report(ProgramState::Idle, None);
         let trimmed = line.trim();
         match trimmed {
             "" => continue,
@@ -2332,16 +2429,28 @@ async fn main() -> ExitCode {
         println!("Mio {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    let json = arguments
-        .iter()
-        .any(|arg| arg == "--json" || arg == "json" || arg == "rpc");
-    let result = match parse(arguments.into_iter()) {
-        Ok(args) => execute(args).await,
-        Err(error) => Err(error),
+    let result = match parse(arguments.iter().cloned()) {
+        Ok(args) => {
+            let json = args.json;
+            let reporter_enabled = args.mode == OutputMode::Text && io::stderr().is_terminal();
+            let reporter = Arc::new(StatusReporter::new(reporter_enabled));
+            (execute(args, reporter.clone()).await, reporter, json)
+        }
+        Err(error) => {
+            let json = arguments
+                .iter()
+                .any(|arg| arg == "--json" || arg == "json" || arg == "rpc");
+            let reporter_enabled = !json && io::stderr().is_terminal();
+            let reporter = Arc::new(StatusReporter::new(reporter_enabled));
+            (Err(error), reporter, json)
+        }
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
+        (Ok(()), _, _) => ExitCode::SUCCESS,
+        (Err(error), reporter, json) => {
+            if !reporter.cancelled.load(Ordering::SeqCst) {
+                reporter.report(ProgramState::Error, Some(&error));
+            }
             if json {
                 println!("{}", serde_json::json!({"type":"error", "error":error}));
             } else {
