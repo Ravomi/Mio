@@ -13,7 +13,7 @@ use mio_coding_agent::{
 };
 use serde_json::json;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -1426,6 +1426,8 @@ fn print_models(query: Option<&str>, json: bool) {
 
 struct Runner {
     config: Config,
+    provider_name: String,
+    connections: BTreeMap<String, Config>,
     options: RunOptions,
     tool_filter: ToolFilter,
     no_mcp: bool,
@@ -1438,6 +1440,67 @@ struct Runner {
 }
 
 impl Runner {
+    fn set_model(&mut self, spec: &str, thinking: Option<ThinkingLevel>) -> Result<(), String> {
+        let (provider, model, inline_thinking) = parse_model_spec(spec);
+        if model.trim().is_empty() || model.len() > 1024 || model.ends_with('/') {
+            return Err("Model must be nonempty and at most 1024 bytes".into());
+        }
+        let name = provider.unwrap_or_else(|| self.provider_name.clone());
+        let name = if name == "gemini" {
+            "google".to_owned()
+        } else {
+            name
+        };
+        let mut config = if name == self.provider_name {
+            self.config.clone()
+        } else if let Some(saved) = self.connections.get(&name) {
+            saved.clone()
+        } else {
+            if name == "anthropic" {
+                return Err("Native Anthropic protocol is not supported by this CLI route; configure an OpenAI-compatible custom endpoint".into());
+            }
+            let explicit_base = if name == "custom" {
+                std::env::var("MIO_BASE_URL").ok()
+            } else {
+                None
+            };
+            let (provider, base_url, api_key) = resolve_provider_endpoint(&name, explicit_base)?;
+            Config {
+                provider,
+                base_url,
+                api_key,
+                model: model.clone(),
+            }
+        };
+        config.model = model;
+        let account = if config.provider == Provider::Antigravity {
+            Some(match self.antigravity.clone() {
+                Some(account) => account,
+                None => mio_coding_agent::antigravity::Antigravity::from_profile(
+                    mio_coding_agent::profile::config_directory()?,
+                )?,
+            })
+        } else {
+            None
+        };
+        let mut options = self.options.clone();
+        if let Some(level) = thinking.or(inline_thinking) {
+            options.thinking = Some(level);
+        }
+        if let Some(manager) = self.subagents.as_mut() {
+            Arc::get_mut(manager)
+                .ok_or("Cannot switch a shared or active subagent manager")?
+                .reconfigure(config.clone(), options.clone(), account.clone())?;
+        }
+        // Commit the entire connection only after all validation succeeds.
+        self.connections.insert(name.clone(), config.clone());
+        self.config = config;
+        self.provider_name = name;
+        self.options = options;
+        self.antigravity = account;
+        Ok(())
+    }
+
     fn save_session(&mut self) -> Result<(), String> {
         if self.no_session {
             return Ok(());
@@ -1551,7 +1614,7 @@ fn rpc_state(runner: &Runner, running: bool, queued: usize) -> serde_json::Value
         "session_name": runner.session.name,
         "sessionFile": if runner.no_session { serde_json::Value::Null } else { json!(runner.path) },
         "model": runner.config.model,
-        "provider": runner.config.provider,
+        "provider": runner.provider_name,
         "thinkingLevel": runner.options.thinking,
         "messageCount": runner.session.history.len(),
         "isStreaming": running,
@@ -1617,7 +1680,6 @@ async fn run_rpc_tasks(
             tokio::pin!(turn);
             loop {
                 tokio::select! {
-                    biased;
                     line = lines.next_line() => {
                         let line = match line {
                             Ok(Some(line)) => line,
@@ -1677,6 +1739,7 @@ async fn run_rpc_tasks(
                 match other {
                     RpcTurnEnd::Abort(id) => {
                         host.reporter.cancelled.store(true, Ordering::SeqCst);
+                        runner.host.reporter.report(ProgramState::Idle, None);
                         println!(
                             "{}",
                             rpc_response("abort", id.as_deref(), true, json!({"aborted":true}))
@@ -1768,25 +1831,22 @@ async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Resu
                 id,
                 model,
                 thinking,
-            } => {
-                let (_, clean_model, inline_thinking) = parse_model_spec(&model);
-                runner.config.model = clean_model;
-                if let Some(t) = thinking.or(inline_thinking) {
-                    runner.options.thinking = Some(t);
-                }
-                println!(
+            } => match runner.set_model(&model, thinking) {
+                Ok(()) => println!(
                     "{}",
                     rpc_response(
                         "set_model",
                         id.as_deref(),
                         true,
-                        json!({
-                            "model": runner.config.model,
-                            "thinkingLevel": runner.options.thinking,
-                        })
+                        json!({"model":runner.config.model,"provider":runner.provider_name,"thinkingLevel":runner.options.thinking})
                     )
-                );
-            }
+                ),
+                Err(error) => println!(
+                    "{}",
+                    rpc_response("set_model", id.as_deref(), false, json!({"error":error}))
+                ),
+            },
+
             RpcCommand::NewSession { id, name } => {
                 let mut s = Session::new(cwd)?;
                 s.set_name(name);
@@ -2200,7 +2260,15 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     } else {
         None
     };
+    let provider_name = if provider_str == "gemini" {
+        "google"
+    } else {
+        provider_str
+    }
+    .to_owned();
     let mut runner = Runner {
+        connections: BTreeMap::from([(provider_name.clone(), config.clone())]),
+        provider_name,
         config,
         options,
         tool_filter,
@@ -2402,12 +2470,13 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                 if arg.is_empty() {
                     eprintln!("Current model: {}", runner.config.model);
                 } else {
-                    let (_, clean_model, inline_thinking) = parse_model_spec(arg);
-                    runner.config.model = clean_model;
-                    if let Some(t) = inline_thinking {
-                        runner.options.thinking = Some(t);
+                    match runner.set_model(arg, None) {
+                        Ok(()) => eprintln!(
+                            "Switched model to {}/{}",
+                            runner.provider_name, runner.config.model
+                        ),
+                        Err(error) => eprintln!("Cannot switch model: {error}"),
                     }
-                    eprintln!("Switched model to {}", runner.config.model);
                 }
                 continue;
             }

@@ -215,6 +215,43 @@ impl SubagentManager {
             state: Arc::new(Mutex::new(State::default())),
         })
     }
+    /// Change the model for future tasks without discarding child sessions.
+    /// Requires exclusive ownership and no active task or parent operation.
+    pub fn reconfigure(
+        &mut self,
+        config: Config,
+        options: RunOptions,
+        account: Option<crate::antigravity::Antigravity>,
+    ) -> Result<(), String> {
+        let executor: Arc<dyn Executor> = match (config.provider, account) {
+            (Provider::Antigravity, Some(account)) => Arc::new(AntigravityExecutor(account)),
+            (Provider::Custom | Provider::Deepseek, _) => Arc::new(NativeExecutor),
+            _ => return Err("Provider requires an available account service".into()),
+        };
+        let mut replacement = Self::with_executor(
+            &self.root,
+            config,
+            options,
+            self.concurrency,
+            self.timeout,
+            executor,
+        )?;
+        let state = self.state.lock().unwrap();
+        if state.parent_operations != 0
+            || state
+                .runs
+                .values()
+                .any(|run| run.snapshot.status == Status::Running)
+        {
+            return Err("Cannot switch model while child tasks are running".into());
+        }
+        drop(state);
+        std::mem::swap(&mut self.config, &mut replacement.config);
+        std::mem::swap(&mut self.options, &mut replacement.options);
+        std::mem::swap(&mut self.executor, &mut replacement.executor);
+        Ok(())
+    }
+
     pub fn root_cwd(&self) -> &Path {
         &self.root
     }

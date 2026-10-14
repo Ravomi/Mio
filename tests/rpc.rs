@@ -16,7 +16,7 @@ mod test_http;
 struct RpcClient {
     child: Child,
     events: mpsc::Receiver<Value>,
-    requests: mpsc::Receiver<(TcpStream, Value)>,
+    requests: mpsc::Receiver<(TcpStream, Value, String)>,
     stop: Arc<AtomicBool>,
     _dir: tempfile::TempDir,
 }
@@ -32,6 +32,9 @@ impl RpcClient {
         Self::with_subagents(false)
     }
     fn with_subagents(subagents: bool) -> Self {
+        Self::configured(subagents, "custom", &[])
+    }
+    fn configured(subagents: bool, provider: &str, environment: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -46,8 +49,8 @@ impl RpcClient {
                         stream
                             .set_read_timeout(Some(Duration::from_secs(5)))
                             .unwrap();
-                        let (_, request) = test_http::read_json(&mut stream);
-                        if request_tx.send((stream, request)).is_err() {
+                        let (header, request) = test_http::read_json(&mut stream);
+                        if request_tx.send((stream, request, header)).is_err() {
                             break;
                         }
                     }
@@ -76,6 +79,7 @@ impl RpcClient {
             .env("HOME", dir.path())
             .env("MIO_CONFIG_DIR", dir.path())
             .env("MIO_API_KEY", "local-test-credential")
+            .envs(environment.iter().copied())
             .args([
                 "--mode",
                 "rpc",
@@ -83,7 +87,7 @@ impl RpcClient {
                 "--no-mcp",
                 "--no-session",
                 "--provider",
-                "custom",
+                provider,
                 "--model",
                 "test",
                 "--base-url",
@@ -141,6 +145,10 @@ impl RpcClient {
         );
     }
     fn request(&self) -> (TcpStream, Value) {
+        let (stream, value, _) = self.request_with_headers();
+        (stream, value)
+    }
+    fn request_with_headers(&self) -> (TcpStream, Value, String) {
         self.requests
             .recv_timeout(Duration::from_secs(5))
             .expect("Model request deadline")
@@ -390,4 +398,83 @@ fn abort_cancels_active_child_model_request() {
     let (stream, _) = prompt(&mut client, "after children cancelled");
     reply(stream, None);
     client.settled("completed");
+}
+
+#[test]
+fn model_switch_is_atomic_and_restores_configured_connections() {
+    let mut client = RpcClient::with_subagents(true);
+    client.send(json!({"type":"set_model","id":"switch","model":"deepseek/deepseek-chat:high"}));
+    let switched = client.response("switch");
+    assert_eq!(switched["success"], true);
+    assert_eq!(switched["data"]["provider"], "deepseek");
+    assert_eq!(switched["data"]["thinkingLevel"], "high");
+    for invalid in [
+        "",
+        "openai/",
+        "anthropic/claude",
+        "antigravity/missing-profile",
+        "codex/test",
+    ] {
+        client.send(json!({"type":"set_model","id":"bad","model":invalid}));
+        assert_eq!(client.response("bad")["success"], false, "{invalid}");
+        client.send(json!({"type":"get_state","id":"state"}));
+        let state = client.response("state");
+        assert_eq!(state["data"]["provider"], "deepseek");
+        assert_eq!(state["data"]["model"], "deepseek-chat");
+    }
+    client.send(json!({"type":"set_model","id":"back","model":"custom/restored"}));
+    assert_eq!(client.response("back")["success"], true);
+    let (stream, request) = prompt(&mut client, "uses original local endpoint");
+    assert_eq!(request["model"], "restored");
+    reply(stream, None);
+    client.settled("completed");
+}
+
+#[test]
+fn cross_provider_switch_uses_target_endpoint_and_credentials() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let target_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let (headers, body) = test_http::read_json(&mut stream);
+                tx.send((stream, headers, body)).unwrap();
+                break;
+            }
+            assert!(Instant::now() < deadline, "new endpoint not used");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let mut client = RpcClient::configured(
+        false,
+        "deepseek",
+        &[
+            ("MIO_BASE_URL", &target_url),
+            ("DEEPSEEK_API_KEY", "old-provider-test-key"),
+            ("MIO_API_KEY", "target-provider-test-key"),
+        ],
+    );
+    client.send(json!({"type":"prompt","id":"start","message":"original endpoint"}));
+    assert_eq!(client.response("start")["success"], true);
+    let (stream, _, headers) = client.request_with_headers();
+    assert!(headers.contains("Bearer old-provider-test-key"));
+    reply(stream, None);
+    client.settled("completed");
+    client.send(json!({"type":"set_model","id":"switch","model":"custom/target-model"}));
+    assert_eq!(client.response("switch")["success"], true);
+    client.send(json!({"type":"prompt","id":"next","message":"new endpoint"}));
+    assert_eq!(client.response("next")["success"], true);
+    let (stream, headers, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(headers.contains("Bearer target-provider-test-key"));
+    assert!(!headers.contains("old-provider-test-key"));
+    assert_eq!(body["model"], "target-model");
+    reply(stream, None);
+    client.settled("completed");
+    server.join().unwrap();
 }
