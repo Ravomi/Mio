@@ -448,3 +448,44 @@ async fn test_regex_grep_glob_find_unified_diff_and_tool_filter() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn aggregate_workspace_respects_explicit_exclusions() {
+    use mio_coding_agent::ToolFilter;
+    for (allow, exclude, operation, permitted) in [
+        (None, Some("write"), "write", false),
+        (Some("workspace"), Some("wr*"), "write", false),
+        (Some("workspace"), None, "write", true),
+        (Some("read"), None, "write", false),
+        (None, Some("bash"), "shell", false),
+        (None, Some("shell"), "bash", false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path(), Arc::new(DummyHost))
+            .unwrap()
+            .with_tool_filter(ToolFilter::from_cli(allow, exclude, false).unwrap());
+        let args = serde_json::from_value(serde_json::json!({
+            "operation": operation, "path": "out", "value": "written", "command": "unused"
+        }))
+        .unwrap();
+        let result = workspace.execute(args).await;
+        assert_eq!(
+            result.is_ok(),
+            permitted,
+            "{allow:?} {exclude:?} {operation}: {result:?}"
+        );
+        if !permitted {
+            assert!(result.unwrap_err().contains("工具过滤策略禁止执行"));
+        }
+        assert_eq!(dir.path().join("out").exists(), permitted);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::new(dir.path(), Arc::new(DummyHost))
+        .unwrap()
+        .with_tool_filter(ToolFilter::none());
+    let args =
+        serde_json::from_value(serde_json::json!({"operation":"write","path":"out","value":"x"}))
+            .unwrap();
+    assert!(workspace.execute(args).await.is_err());
+    assert!(!dir.path().join("out").exists());
+}

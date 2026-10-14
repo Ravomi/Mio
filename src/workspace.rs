@@ -95,10 +95,7 @@ impl Workspace {
             .as_ref()
             .map(|manager| manager.parent_operation(is_write))
             .transpose()?;
-        if !self.tool_filter.allows(op) && !self.tool_filter.allows("workspace") {
-            return Err(format!("工具过滤策略禁止执行 '{op}' 操作"));
-        }
-        if !self.tool_filter.allows(op) && self.tool_filter.is_read_only_only() && is_write {
+        if !self.tool_filter.allows_workspace_operation(op) {
             return Err(format!("工具过滤策略禁止执行 '{op}' 操作"));
         }
         if self.read_only && is_write {

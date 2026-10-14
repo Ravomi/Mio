@@ -156,14 +156,8 @@ impl ToolFilter {
             _ => &single,
         };
 
-        for candidate in candidates {
-            if self
-                .excluded_patterns
-                .iter()
-                .any(|pat| matches_glob(pat, candidate))
-            {
-                return false;
-            }
+        if self.is_excluded(name) {
+            return false;
         }
 
         if self.allow_all {
@@ -174,6 +168,23 @@ impl ToolFilter {
             self.allowed_patterns
                 .iter()
                 .any(|pat| matches_glob(pat, candidate))
+        })
+    }
+
+    /// Explicit exclusions also apply through the aggregate workspace tool.
+    pub fn allows_workspace_operation(&self, operation: &str) -> bool {
+        !self.is_excluded(operation) && (self.allows(operation) || self.allows("workspace"))
+    }
+
+    fn is_excluded(&self, name: &str) -> bool {
+        let aliases: &[&str] = match name {
+            "bash" | "shell" => &["bash", "shell"],
+            _ => &[name],
+        };
+        aliases.iter().any(|name| {
+            self.excluded_patterns
+                .iter()
+                .any(|pattern| matches_glob(pattern, name))
         })
     }
 
