@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod pattern;
 pub mod plugin;
 pub mod profile;
+pub mod rpc;
 pub mod session;
 pub mod shell;
 pub mod subagent;
