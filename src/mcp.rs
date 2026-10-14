@@ -359,9 +359,12 @@ pub async fn build_dynamic_tools_from_specs(
                         };
                         if let Some(steer) = host.poll_steering()
                             && !steer.trim().is_empty()
-                            && let Some(obj) = payload.as_object_mut()
                         {
-                            obj.insert("steering".into(), json!(steer.trim()));
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.insert("steering".into(), json!(steer.trim()));
+                            } else {
+                                payload = json!({"result": payload, "steering": steer.trim()});
+                            }
                         }
                         Ok(ToolOutput::json(payload))
                     })
