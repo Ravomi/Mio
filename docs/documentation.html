@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+
+<html data-theme="light" data-theme-mode="light" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Documentation · Mio 原生编程 Agent 完整指南</title>
+<meta content="Mio 官方技术文档。涵盖 CLI 选项全表、会话分支、MCP 与插件、上下文压缩、子代理委派、RPC 协议与 Rust 宿主嵌入。" name="description"/>
+<link href="favicon.svg" rel="icon" type="image/svg+xml"/>
+<link href="styles.css" rel="stylesheet"/>
+<link href="reference.css" rel="stylesheet"/>
+</head>
+<body class="ref-page-wrap">
+<a class="skip-link" href="#main-content">跳转到正文内容 (Skip to main content)</a>
+<header class="site-header" role="banner">
+<div style="display: flex; align-items: center; gap: 1rem;">
+<a class="brand" href="index.html">
+<img alt="Mio Logo" height="30" src="mio-logo.png" width="30"/>
+<span>Mio</span>
+<span class="brand-badge" data-en="Docs" data-zh="官方文档">官方文档</span>
+</a>
+</div>
+<nav aria-label="主导航">
+<ul class="nav-links"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a class="nav-link" data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a aria-current="page" class="nav-link is-active" data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a class="nav-link" data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a class="nav-link" data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a class="nav-link" data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li>
+<a class="nav-link" href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">
+            GitHub ↗
+          </a>
+</li>
+</ul>
+</nav>
+<div class="nav-controls">
+<button aria-label="切换语言 / Switch language" class="nav-pill-btn" id="langToggleBtn" type="button">EN</button>
+<button aria-label="切换深浅色主题" class="nav-pill-btn" id="themeToggleBtn" type="button">
+<span aria-hidden="true" id="themeIcon">☀</span>
+<span data-en="Light" data-zh="浅色" id="themeLabel">浅色</span>
+</button>
+<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button">☰</button>
+</div>
+</header>
+<!-- Mobile Navigation Drawer -->
+<div aria-label="移动端导航" class="mobile-nav-drawer" id="mobileNavDrawer">
+<ul class="mobile-nav-list"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a class="is-active" data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li><a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a></li>
+</ul>
+</div>
+<div class="ref-container">
+<div class="ref-grid">
+<!-- 左栏导航与实时过滤 -->
+<aside aria-label="文档章节导航" class="ref-sidebar">
+<button aria-controls="docSidebarCard" aria-expanded="false" class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button">
+<span data-en="📖 Expand Table of Contents" data-zh="📖 展开章节目录">📖 展开章节目录</span>
+<span aria-hidden="true" class="sidebar-toggle-icon">▾</span>
+</button>
+<div class="ref-sidebar-card" id="docSidebarCard">
+<div class="ref-search-wrap">
+<span aria-hidden="true" class="ref-search-icon">🔍</span>
+<input aria-label="搜索文档章节" class="ref-search-input" data-en-placeholder="Search sections..." data-zh-placeholder="搜索文档章节..." id="sidebarSearchInput" placeholder="搜索文档章节..." type="text"/>
+</div>
+<div class="ref-nav-group">
+<div class="ref-nav-title" data-en="Getting Started" data-zh="起步指南">起步指南</div>
+<ul class="ref-nav-list">
+<li class="ref-nav-item"><a data-en="Installation &amp; Setup" data-zh="安装与模型接入" href="#installation">安装与模型接入</a></li>
+<li class="ref-nav-item"><a data-en="Interactive, Print &amp; Stdin" data-zh="交互、单次与标准输入" href="#execution-modes">交互、单次与标准输入</a></li>
+</ul>
+</div>
+<div class="ref-nav-group">
+<div class="ref-nav-title" data-en="Core Engine" data-zh="核心架构">核心架构</div>
+<ul class="ref-nav-list">
+<li class="ref-nav-item"><a data-en="Sessions &amp; Forking" data-zh="会话恢复、分叉与导出" href="#sessions">会话恢复、分叉与导出</a></li>
+<li class="ref-nav-item"><a data-en="Context &amp; @Files" data-zh="上下文规则与 @文件" href="#context-rules">上下文规则与 @文件</a></li>
+<li class="ref-nav-item"><a data-en="Context Compaction" data-zh="上下文压缩引擎" href="#compaction">上下文压缩引擎</a></li>
+<li class="ref-nav-item"><a data-en="Tools &amp; Approval Safety" data-zh="工具执行、审批与边界" href="#tools-safety">工具执行、审批与边界</a></li>
+<li class="ref-nav-item"><a data-en="Subagent Delegation" data-zh="原生子代理委派" href="#subagents">原生子代理委派</a></li>
+<li class="ref-nav-item"><a data-en="Plugins &amp; MCP Protocol" data-zh="插件生态与 MCP 扩展" href="#plugins-mcp">插件生态与 MCP 扩展</a></li>
+</ul>
+</div>
+<div class="ref-nav-group">
+<div class="ref-nav-title" data-en="Integration" data-zh="进阶与集成">进阶与集成</div>
+<ul class="ref-nav-list">
+<li class="ref-nav-item"><a data-en="JSONL &amp; RPC Protocol" data-zh="JSONL 与 RPC 协议" href="#rpc-protocol">JSONL 与 RPC 协议</a></li>
+<li class="ref-nav-item"><a data-en="Rust Host Embedding" data-zh="Rust Host 进程内嵌入" href="#host-embedding">Rust Host 进程内嵌入</a></li>
+</ul>
+</div>
+<div class="ref-nav-group">
+<div class="ref-nav-title" data-en="Reference" data-zh="参考手册">参考手册</div>
+<ul class="ref-nav-list">
+<li class="ref-nav-item"><a data-en="CLI Flags Reference" data-zh="CLI 选项参数完整表" href="#cli-flags">CLI 选项参数完整表</a></li>
+<li class="ref-nav-item"><a data-en="Environment Variables" data-zh="环境变量优先级表" href="#env-vars">环境变量优先级表</a></li>
+<li class="ref-nav-item"><a data-en="Slash Commands" data-zh="交互式斜杠命令表" href="#slash-commands">交互式斜杠命令表</a></li>
+</ul>
+</div>
+</div>
+</aside>
+<!-- 右侧正文区域 -->
+<main class="ref-content" id="main-content">
+<article class="ref-article">
+<div class="ref-hero-badge">
+<span data-en="Technical Specifications &amp; Implementation · v1" data-zh="技术规格与实现标准 · v1">技术规格与实现标准 · v1</span>
+</div>
+<h1 class="ref-title" data-en="Mio Engineering Guide &amp; System Manual" data-zh="Mio 官方开发指南与系统手册">
+            Mio 官方开发指南与系统手册
+          </h1>
+<p class="ref-lead" data-en="Usage guide for the CLI, sessions, tools and embedding interfaces, based on the current source." data-zh="使用指南涵盖命令行、会话、工具和嵌入接口。示例与参数以当前源码实现为依据。">使用指南涵盖命令行、会话、工具和嵌入接口。示例与参数以当前源码实现为依据。</p>
+<!-- 1. 安装与接入 -->
+<section class="ref-section" id="installation">
+<p class="ref-p"><a href="installation.html"><span data-en="See curl, PowerShell, npm, pnpm and Bun installation" data-zh="查看 curl、PowerShell、npm、pnpm、Bun 安装方式">查看 curl、PowerShell、npm、pnpm、Bun 安装方式</span></a></p><h2 class="ref-h2">
+<span data-en="1. Installation &amp; Model Setup" data-zh="1. 快速安装与模型接入">1. 快速安装与模型接入</span>
+<a aria-label="Permalink" class="header-anchor" href="#installation">#</a>
+</h2>
+<p class="ref-p" data-en="Mio is compiled and installed from source via Cargo (Rust 2024 Edition, requiring Rust 1.95+):" data-zh="Mio 目前通过 Cargo 进行源码编译安装（Rust 2024 Edition，需 Rust 1.95+）。可直接从 GitHub 仓库克隆构建并在本地环境执行：">
+              Mio 目前通过 Cargo 进行源码编译安装（Rust 2024 Edition，需 Rust 1.95+）。可直接从 GitHub 仓库克隆构建并在本地环境执行：
+            </p>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 源码编译安装到 ~/.cargo/bin
+git clone https://github.com/Ravomi/Mio.git
+cd Mio
+cargo install --path . --locked
+
+# 验证安装
+mio --version</code></pre>
+</div>
+<div class="ref-callout warning">
+<div class="ref-callout-title">
+<span>⚠️</span>
+<span data-en="Model selection: use --model, MIO_MODEL, or a default model from an imported Antigravity profile." data-zh="模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。">模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。</span>
+</div>
+<ul class="ref-ul" style="margin-bottom: 0;">
+<li class="ref-li" data-en="Model selection: use --model, MIO_MODEL, or a default model from an imported Antigravity profile." data-zh="模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。">模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。</li>
+<li class="ref-li" data-en="API keys: MIO_API_KEY takes precedence over provider-specific variables. Antigravity uses a separate OAuth profile." data-zh="API 密钥：MIO_API_KEY 优先于提供商专属变量；Antigravity 使用独立 OAuth 配置。">API 密钥：MIO_API_KEY 优先于提供商专属变量；Antigravity 使用独立 OAuth 配置。</li>
+<li class="ref-li" data-en-html="&lt;strong&gt;Thinking Budget Scope&lt;/strong&gt;: Thinking budget levels are currently consumed exclusively in the Antigravity adapter; standard OpenAI drivers ignore them." data-zh-html="&lt;strong&gt;思考预算生效范围&lt;/strong&gt;：思考等级（--thinking 或 model:level 缩写）目前仅在 Antigravity 适配器中消费生效，通用 OpenAI 驱动驱动暂不承诺生效。">
+<strong>思考预算生效范围</strong>：思考等级（<code>--thinking</code> 或 <code>model:level</code> 缩写）目前仅在 Antigravity 适配器中消费生效，通用 OpenAI 驱动驱动暂不承诺生效。
+                </li>
+</ul>
+</div>
+<h3 class="ref-h3" data-en="Provider Setup Examples" data-zh="多提供商接入范例">多提供商接入范例</h3>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 1. Google Antigravity 本地 OAuth 凭据 (无感复用，支持思考等级)
+mio --provider antigravity --model claude-sonnet-4-5:high -p "审查当前目录代码"
+
+# 2. DeepSeek 官方 API
+export DEEPSEEK_API_KEY="sk-..."
+mio --provider deepseek --model deepseek-reasoner -p "重构 context.rs"
+
+# 3. 本地 Ollama 离线免密调用
+mio --provider ollama --model qwen2.5-coder:32b -p "生成单元测试"
+
+# 4. Anthropic 兼容网关接入 (⚠️ 必须提供 OpenAI 兼容网关)
+export MIO_API_KEY="sk-..."
+mio --provider anthropic --model claude-sonnet-4-5 \
+  --base-url https://your-gateway.example/v1 -p "解释这个架构"</code></pre>
+</div>
+<p class="ref-p" data-en="Import an existing Antigravity profile with mio --import-antigravity ~/.pi/agent. The directory needs auth.json, settings.json and compatible client metadata." data-zh="导入已有 Antigravity 配置：mio --import-antigravity ~/.pi/agent。目录需包含 auth.json 与 settings.json，并提供兼容客户端元数据。">导入已有 Antigravity 配置：mio --import-antigravity ~/.pi/agent。目录需包含 auth.json 与 settings.json，并提供兼容客户端元数据。</p></section>
+<!-- 2. 执行模式 -->
+<section class="ref-section" id="execution-modes">
+<h2 class="ref-h2">
+<span data-en="2. Interactive, Print &amp; Stdin Modes" data-zh="2. 交互模式、单次执行与管道标准输入">2. 交互模式、单次执行与管道标准输入</span>
+<a aria-label="Permalink" class="header-anchor" href="#execution-modes">#</a>
+</h2>
+<p class="ref-p" data-en="Mio supports flexible I/O combinations for both terminal interactive use and pipeline automation:" data-zh="Mio 支持灵活的输入输出管道组合，适应终端人机协作与自动化脚本流程：">
+              Mio 支持灵活的输入输出管道组合，适应终端人机协作与自动化脚本流程：
+            </p>
+<ul class="ref-ul">
+<li class="ref-li" data-en-html="&lt;strong&gt;Interactive Terminal&lt;/strong&gt;: Running mio without prompt in a TTY starts an interactive chat loop with slash commands." data-zh-html="&lt;strong&gt;交互式终端会话&lt;/strong&gt;：直接运行 mio。如果在 TTY 终端下未传入提示词，自动进入交互式循环，支持斜杠命令、多轮对话与历史追溯。">
+<strong>交互式终端会话</strong>：直接运行 <code>mio</code>。如果在 TTY 终端下未传入提示词，自动进入交互式循环，支持斜杠命令、多轮对话与历史追溯。
+              </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;One-Shot Print (-p / --print)&lt;/strong&gt;: Executes a single prompt and exits immediately." data-zh-html="&lt;strong&gt;单次任务模式 (-p / --print)&lt;/strong&gt;：运行给定任务后直接退出，适合在构建脚本或 CI 中调用。">
+<strong>单次任务模式 (<code>-p / --print</code>)</strong>：运行给定任务后直接退出，适合在构建脚本或 CI 中调用。
+              </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;Non-TTY Stdin Pipeline&lt;/strong&gt;: When input is piped, Mio reads stdin as the task prompt." data-zh-html="&lt;strong&gt;管道与非 TTY 标准输入&lt;/strong&gt;：当通过管道向 mio 喂入输入时，Mio 会自动将 stdin 读取为任务提示词。">
+<strong>管道与非 TTY 标准输入</strong>：当通过管道向 <code>mio</code> 喂入输入时，Mio 会自动将 stdin 读取为任务提示词。
+              </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;JSON Lines (--json / --mode json)&lt;/strong&gt;: Emits newline-delimited AgentEvent JSON to stdout." data-zh-html="&lt;strong&gt;JSON Lines 流输出 (--json / --mode json)&lt;/strong&gt;：在标准输出上逐行打印机器可读的 AgentEvent，方便二次包装与前端渲染。">
+<strong>JSON Lines 流输出 (<code>--json / --mode json</code>)</strong>：在标准输出上逐行打印机器可读的 <code>AgentEvent</code>，方便二次包装与前端渲染。
+              </li>
+</ul>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 管道输入结合 JSON 流
+{ printf '%s\n' '总结本次代码变更的主要风险'; git diff; } | mio --model gpt-4.1 --mode json</code></pre>
+</div>
+</section>
+<!-- 3. 会话恢复与分叉 -->
+<section class="ref-section" id="sessions">
+<h2 class="ref-h2">
+<span data-en="3. Sessions, Resuming, Forking &amp; Exporting" data-zh="3. 会话恢复、分叉与命名导出">3. 会话恢复、分叉与命名导出</span>
+<a aria-label="Permalink" class="header-anchor" href="#sessions">#</a>
+</h2>
+<p class="ref-p" data-en="Mio conversations and tool results persist under .mio/sessions/*.json unless --no-session is set:" data-zh="Mio 的对话与工具执行结果会自动序列化存储在工作区的 .mio/sessions/*.json 目录中（除非显式指定 --no-session）。">
+              Mio 的对话与工具执行结果会自动序列化存储在工作区的 <code>.mio/sessions/*.json</code> 目录中（除非显式指定 <code>--no-session</code>）。
+            </p>
+<div class="ref-callout info">
+<div class="ref-callout-title">
+<span>🔍</span>
+<span data-en="Parser Facts: --continue vs --fork" data-zh="CLI 真实解析事实纠正：--continue 与 --fork">CLI 真实解析事实纠正：--continue 与 --fork</span>
+</div>
+<ul class="ref-ul" style="margin-bottom: 0;">
+<li class="ref-li" data-en-html="&lt;strong&gt;-c / --continue accepts NO selector&lt;/strong&gt;: It only resumes the latest saved session. To select by name or UUID, use --session &lt;SELECTOR&gt; or -r &lt;SELECTOR&gt;." data-zh-html="&lt;strong&gt;-c / --continue 不接受 SELECTOR&lt;/strong&gt;：-c 或 --continue 仅用于恢复当前工作区最新保存的会话，不消费额外参数。若需按选择器指定会话，请使用 --session &lt;SELECTOR&gt; 或 -r &lt;SELECTOR&gt;。">
+<strong><code>-c / --continue</code> 不接受 SELECTOR</strong>：<code>-c</code> 或 <code>--continue</code> 仅用于恢复当前工作区最新保存的会话，不消费额外参数。若需按选择器指定会话，请使用 <code>--session &lt;SELECTOR&gt;</code> 或 <code>-r &lt;SELECTOR&gt;</code>。
+                </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;--fork [SELECTOR] is valid&lt;/strong&gt;: --fork can optionally accept a selector directly, loading the session and immediately cloning it into a new branch." data-zh-html="&lt;strong&gt;--fork [SELECTOR] 本身合法&lt;/strong&gt;：--fork 可以单独携带 SELECTOR（如 mio --fork my-feature -p ...），此时会在读取该指定会话的同时自动克隆出全新 UUID 的分支会话，完全保留原会话进度。">
+<strong><code>--fork [SELECTOR]</code> 本身合法</strong>：<code>--fork</code> 可以单独携带 SELECTOR（如 <code>mio --fork my-feature -p ...</code>），此时会在读取该指定会话的同时自动克隆出全新 UUID 的分支会话，完全保留原会话进度。
+                </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;Mutual Exclusions&lt;/strong&gt;: --resume and --session cannot be combined; --fork requires --resume, --session, or an inline selector." data-zh-html="&lt;strong&gt;参数互斥约束&lt;/strong&gt;：--resume 与 --session 严格互斥，不能同时传入；--fork 必须搭配 --resume、--session 或自身携带 SELECTOR。">
+<strong>参数互斥约束</strong>：<code>--resume</code> 与 <code>--session</code> 严格互斥，不能同时传入；<code>--fork</code> 必须搭配 <code>--resume</code>、<code>--session</code> 或自身携带 SELECTOR。
+                </li>
+</ul>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 列出当前工作区的所有历史会话（不触碰模型服务）
+mio --list-sessions
+
+# 恢复最新会话
+mio -c -p "继续刚才的重构"
+
+# 直接分叉指定名称的会话并命名为新实验分支
+mio --fork "refactor-phase-1" -n "refactor-phase-2"
+
+# 导出会话记录为单文件独立 HTML 报告
+mio --session 9b1f --export ./session-report.html</code></pre>
+</div>
+</section>
+<!-- 4. 上下文与@文件 -->
+<section class="ref-section" id="context-rules">
+<h2 class="ref-h2">
+<span data-en="4. Project Context, Skills, Templates &amp; @Files" data-zh="4. 项目上下文、Skills、模板与 @文件">4. 项目上下文、Skills、模板与 @文件</span>
+<a aria-label="Permalink" class="header-anchor" href="#context-rules">#</a>
+</h2>
+<p class="ref-p" data-en="Mio loads ancestor project rules through the working directory and discovers workspace skills and prompt templates." data-zh="Mio 从祖先目录到当前工作目录加载项目规则，并发现工作区技能与提示模板。">Mio 从祖先目录到当前工作目录加载项目规则，并发现工作区技能与提示模板。</p>
+<ul class="ref-ul">
+<li class="ref-li" data-en="Context files: load AGENTS.md and CLAUDE.md from ancestors in root-to-working-directory order, plus .mio/SYSTEM.md in the working directory." data-zh="上下文文件：沿祖先目录由根到当前目录加载 AGENTS.md、CLAUDE.md；额外加载当前目录的 .mio/SYSTEM.md。">上下文文件：沿祖先目录由根到当前目录加载 AGENTS.md、CLAUDE.md；额外加载当前目录的 .mio/SYSTEM.md。</li>
+<li class="ref-li" data-en="Skills are discovered in .agents/skills, .mio/skills, .claude/skills and plugin declarations; select them with --skill NAME." data-zh="Skills：从 .agents/skills、.mio/skills、.claude/skills 与插件声明中发现技能，通过 --skill NAME 加载。">Skills：从 .agents/skills、.mio/skills、.claude/skills 与插件声明中发现技能，通过 --skill NAME 加载。</li>
+<li class="ref-li" data-en-html="&lt;strong&gt;Prompt Templates&lt;/strong&gt;: Templates from .mio/prompts/NAME.md via --template NAME, replacing $ARGUMENTS with the prompt." data-zh-html="&lt;strong&gt;Prompt 模板&lt;/strong&gt;：.mio/prompts/NAME.md 文件可通过 --template NAME 加载，$ARGUMENTS 会被命令行传入的 Prompt 自动替换。">
+<strong>Prompt 模板</strong>：<code>.mio/prompts/NAME.md</code> 文件可通过 <code>--template NAME</code> 加载，<code>$ARGUMENTS</code> 会被命令行传入的 Prompt 自动替换。
+              </li>
+<li class="ref-li" data-en="File references: whitespace-delimited tokens starting with @ can expand @src/lib.rs or @src/lib.rs:10-50. Unmatched ordinary @mentions remain literal. Missing explicit @./ or @/ paths and invalid line ranges produce errors." data-zh="文件引用：空白分隔且以 @ 开头的 token 可展开 @src/lib.rs 或 @src/lib.rs:10-50。未匹配的普通 @mention 保留原文；显式 @./ 或 @/ 路径不存在、或行范围非法时会报错。">文件引用：空白分隔且以 @ 开头的 token 可展开 @src/lib.rs 或 @src/lib.rs:10-50。未匹配的普通 @mention 保留原文；显式 @./ 或 @/ 路径不存在、或行范围非法时会报错。</li>
+</ul>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 精确携带关键文件片段进行代码审查
+mio -p "检查这段逻辑的并发安全隐患： @src/bin/mio.rs:440-480"
+
+# 组合模板执行固定代码检查流程
+mio --template review-pr -p "feat(mcp): support dynamic tool registration"</code></pre>
+</div>
+</section>
+<!-- 5. 上下文压缩 -->
+<section class="ref-section" id="compaction">
+<h2 class="ref-h2">
+<span data-en="5. Context Compaction Engine" data-zh="5. 上下文压缩引擎 (Context Compaction)">5. 上下文压缩引擎 (Context Compaction)</span>
+<a aria-label="Permalink" class="header-anchor" href="#compaction">#</a>
+</h2>
+<div class="ref-callout info">
+<div class="ref-callout-title">
+<span>💡</span>
+<span data-en="DEFAULT_KEEP_RECENT_MESSAGES &amp; Deterministic Summary" data-zh="DEFAULT_KEEP_RECENT_MESSAGES 与本地结构化摘要">DEFAULT_KEEP_RECENT_MESSAGES 与本地结构化摘要</span>
+</div>
+<ul class="ref-ul" style="margin-bottom: 0;">
+<li class="ref-li" data-en="Compaction keeps roughly six recent messages, adjusting the boundary to retain complete tool interactions, and replaces older history with a local extractive summary." data-zh="压缩保留约 6 条最近消息，并调整边界以保留完整工具交互；更旧的历史转换成本地抽取摘要。">压缩保留约 6 条最近消息，并调整边界以保留完整工具交互；更旧的历史转换成本地抽取摘要。</li>
+<li class="ref-li" data-en="Local summaries extract user intent, tool operations and results from older history without calling an LLM. Details may be lost." data-zh="本地摘要：从旧历史抽取用户意图、工具操作与关键结果，不调用 LLM。摘要可能丢失细节。">本地摘要：从旧历史抽取用户意图、工具操作与关键结果，不调用 LLM。摘要可能丢失细节。</li>
+<li class="ref-li" data-en-html="&lt;strong&gt;Auto Compaction Threshold&lt;/strong&gt;: With --auto-compact, triggers when serialized history exceeds 512 KiB (DEFAULT_AUTO_COMPACT_BYTES)." data-zh-html="&lt;strong&gt;自动压缩触发阈值&lt;/strong&gt;：指定 --auto-compact 时，历史记录超过 512 KiB (DEFAULT_AUTO_COMPACT_BYTES) 就会自动在回合执行前压缩。">
+<strong>自动压缩触发阈值</strong>：指定 <code>--auto-compact</code> 时，历史记录超过 512 KiB (<code>DEFAULT_AUTO_COMPACT_BYTES</code>) 就会自动在回合执行前压缩。
+                </li>
+</ul>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">text</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 交互式终端中手动触发压缩，可指定关注焦点
+/compact 关注关于 MCP 工具注册与错误处理相关的讨论
+
+# 命令行启动时开启自动压缩
+mio --auto-compact -p "大规模批量重构"</code></pre>
+</div>
+</section>
+<!-- 6. 工具与审批 -->
+<section class="ref-section" id="tools-safety">
+<h2 class="ref-h2">
+<span data-en="6. Native Tools, Approval &amp; Safety Boundaries" data-zh="6. 原生工具、交互审批与安全边界">6. 原生工具、交互审批与安全边界</span>
+<a aria-label="Permalink" class="header-anchor" href="#tools-safety">#</a>
+</h2>
+<p class="ref-p" data-en="Mio comes with strictly bounded native tools: read, write, edit, grep, find, ls, bash." data-zh="Mio 原生内置一套经过严格权限与规模约束的代码工具：read（分页读取）、write（创建或全量写入）、edit（单次原子精确定位替换）、grep（正则检索）、find（Glob 文件查找）、ls（目录列举）、bash（命令执行）。">
+              Mio 原生内置一套经过严格权限与规模约束的代码工具：<code>read</code>（分页读取）、<code>write</code>（创建或全量写入）、<code>edit</code>（单次原子精确定位替换）、<code>grep</code>（正则检索）、<code>find</code>（Glob 文件查找）、<code>ls</code>（目录列举）、<code>bash</code>（命令执行）。
+            </p>
+<div class="ref-callout danger">
+<div class="ref-callout-title">
+<span>🛑</span>
+<span data-en="Tool Approval Behavior in Non-TTY / JSON" data-zh="--approve 交互审批在非 TTY / JSON 下的拒绝行为">--approve 交互审批在非 TTY / JSON 下的拒绝行为</span>
+</div>
+<p class="ref-p" data-en="When --approve is enabled in a non-terminal environment or under --json mode, approve_tool() cannot prompt interactively and directly rejects sensitive tool calls. It will never silently allow destructive actions." data-zh="当传入 --approve 开启工具确认时，若当前终端为非 TTY 环境或启用了 --json，approve_tool() 无法弹出交互式提示，将直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作并抛出错误（Tool requires interactive approval (--approve)）。绝不会在非交互场景下静默放行危险命令。" style="margin-bottom: 0;">
+                当传入 <code>--approve</code> 开启工具确认时，若当前终端为<strong>非 TTY 环境</strong>或启用了 <code>--json</code>，<code>approve_tool()</code> 无法弹出交互式提示，将<strong>直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作</strong>并抛出错误（<em>Tool requires interactive approval (--approve)</em>）。绝不会在非交互场景下静默放行危险命令。
+              </p>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 禁用 Bash 执行能力（仅保留安全文件读写）
+mio --no-shell -p "重命名所有模块导出"
+
+# 精细化工具控制：禁用 bash 和特定工具
+mio --exclude-tools "bash,write" -p "搜索项目架构"
+
+# 开启严格交互审批
+mio --approve</code></pre>
+</div>
+<p class="ref-p" data-en="Shell runs non-interactively as the current user with a 120-second timeout. File path and output limits are not an operating-system sandbox." data-zh="Shell 在当前用户权限下非交互执行，超时 120 秒。文件工具的路径与输出限制不是操作系统沙箱。">Shell 在当前用户权限下非交互执行，超时 120 秒。文件工具的路径与输出限制不是操作系统沙箱。</p></section>
+<!-- 7. 子代理体系 -->
+<section class="ref-section" id="subagents">
+<h2 class="ref-h2">
+<span data-en="7. Native Subagent Delegation" data-zh="7. 原生子代理委派体系 (Subagents)">7. 原生子代理委派体系 (Subagents)</span>
+<a aria-label="Permalink" class="header-anchor" href="#subagents">#</a>
+</h2>
+<div class="ref-callout warning">
+<div class="ref-callout-title">
+<span>⚙️</span>
+<span data-en="Default Read-Only &amp; Explicit Write Capability" data-zh="只读默认值与显式可写权限">只读默认值与显式可写权限</span>
+</div>
+<p class="ref-p" data-en="Subagents default to read_only=true; explicit read_only=false permits writes. Up to four run concurrently, without further delegation, and results are collected before the parent turn ends. Tool permissions are not an OS sandbox." data-zh="子代理默认 read_only=true；显式 read_only=false 可允许写入。最多并发 4 个，不继续委派，父回合结束前收集结果。工具权限不是操作系统沙箱。" style="margin-bottom: 0;">子代理默认 read_only=true；显式 read_only=false 可允许写入。最多并发 4 个，不继续委派，父回合结束前收集结果。工具权限不是操作系统沙箱。</p>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 启动支持子代理的任务执行
+mio --subagents -p "让只读子代理检查仓库中的错误处理，汇总发现"</code></pre>
+</div>
+</section>
+<!-- 8. 插件与MCP -->
+<section class="ref-section" id="plugins-mcp">
+<h2 class="ref-h2">
+<span data-en="8. Plugin Ecosystem &amp; MCP Dynamic Tools" data-zh="8. 插件生态与 MCP 动态扩展">8. 插件生态与 MCP 动态扩展</span>
+<a aria-label="Permalink" class="header-anchor" href="#plugins-mcp">#</a>
+</h2>
+<p class="ref-p" data-en="Mio provides full support for standard plugins and Model Context Protocol (MCP) clients:" data-zh="Mio 提供完整的标准插件管理与 Model Context Protocol (MCP) 客户端支持。">
+              Mio 提供完整的标准插件管理与 Model Context Protocol (MCP) 客户端支持。
+            </p>
+<div class="ref-callout warning">
+<div class="ref-callout-title">
+<span>⚠️</span>
+<span data-en="Fact: --no-mcp Disables Plugin Dynamic Tools" data-zh="--no-mcp 会一并阻断插件动态工具">--no-mcp 会一并阻断插件动态工具</span>
+</div>
+<p class="ref-p" data-en="In src/bin/mio.rs, --no-mcp bypasses load_dynamic_tools() entirely, which loads both plugin dynamic tools and MCP specs. Therefore, --no-mcp disables both." data-zh="在 src/bin/mio.rs 中，--no-mcp 会直接绕过 load_dynamic_tools() 的执行。而 load_dynamic_tools() 内部同时承担了加载插件内置动态工具 (load_plugin_tools) 与 MCP 外部工具 (load_mcp_specs) 的职责。因此传入 --no-mcp 会同时关闭 MCP 服务与插件动态工具。" style="margin-bottom: 0;">
+                在 <code>src/bin/mio.rs</code> 中，<code>--no-mcp</code> 会直接绕过 <code>load_dynamic_tools()</code> 的执行。而 <code>load_dynamic_tools()</code> 内部同时承担了加载插件内置动态工具（<code>load_plugin_tools</code>）与 MCP 外部工具（<code>load_mcp_specs</code>）的职责。因此传入 <code>--no-mcp</code> 会<strong>同时关闭 MCP 服务与插件动态工具</strong>。
+              </p>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">bash</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code># 搜索内置插件注册表
+mio --plugin-search github
+
+# 从社区注册表安装插件
+mio --plugin-install git-workflow
+
+# 查看当前工作区已安装的插件
+mio --plugin-list</code></pre>
+</div>
+</section>
+<!-- 9. RPC 协议 -->
+<section class="ref-section" id="rpc-protocol">
+<h2 class="ref-h2">
+<span data-en="9. JSONL &amp; RPC Mode (--mode rpc)" data-zh="9. JSONL 与 RPC 协议模式 (--mode rpc)">9. JSONL 与 RPC 协议模式 (--mode rpc)</span>
+<a aria-label="Permalink" class="header-anchor" href="#rpc-protocol">#</a>
+</h2>
+<div class="ref-callout danger">
+<div class="ref-callout-title">
+<span>🛑</span>
+<span data-en="RPC Implementation Boundaries &amp; Limitations" data-zh="RPC 运行循环边界与实验性限制">RPC 运行循环边界与实验性限制</span>
+</div>
+<ul class="ref-ul" style="margin-bottom: 0;">
+<li class="ref-li" data-en-html="&lt;strong&gt;Prompt Turn Blocks Stdin Loop&lt;/strong&gt;: run_rpc_loop awaits runner.turn() during a turn. Additional commands are not processed concurrently." data-zh-html="&lt;strong&gt;单轮 Turn 阻塞等待&lt;/strong&gt;：在 run_rpc_loop 中，接收到 prompt 指令后会直接 await runner.turn(&amp;message)。在此期间标准输入的新指令不会并发执行。">
+<strong>单轮 Turn 阻塞等待</strong>：在 <code>run_rpc_loop</code> 中，接收到 prompt 指令后会直接 <code>await runner.turn(&amp;message)</code>。在此期间标准输入的新指令不会并发执行。
+                </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;steer &amp; abort Cannot Interrupt In-Flight Requests&lt;/strong&gt;: Because the loop awaits the turn, steer/abort commands cannot interrupt actively running HTTP requests; abort currently returns an acknowledgment." data-zh-html="&lt;strong&gt;steer 与 abort 无法实时打断运行中的请求&lt;/strong&gt;：因为 Turn 执行期间主循环正处于 await 阻塞状态，steer 或 abort 指令必须在当前 turn 结束后或在命令间隙被处理；abort 当前仅返回成功确认，尚未接入实时取消通道。">
+<strong>steer 与 abort 无法实时打断运行中的请求</strong>：因为 Turn 执行期间主循环正处于 await 阻塞状态，steer 或 abort 指令无法实时中断正在向模型发送的 HTTP 请求；<code>abort</code> 当前仅返回成功确认 JSON。
+                </li>
+<li class="ref-li" data-en-html="&lt;strong&gt;approve_response Has No Interactive Wire-up&lt;/strong&gt;: approve_response returns an empty ACK but is not yet wired to approve_tool()." data-zh-html="&lt;strong&gt;approve_response 暂无交互接入实现&lt;/strong&gt;：approve_response 命令接收后仅返回空响应确认，未与底层 approve_tool() 交互渠道打通。外部宿主应标注其为实验性边界。">
+<strong>approve_response 暂无交互接入实现</strong>：<code>approve_response</code> 命令接收后仅返回空响应确认，未与底层 <code>approve_tool()</code> 交互渠道打通。外部宿主应标注其为实验性边界。
+                </li>
+</ul>
+</div>
+<h3 class="ref-h3" data-en="RPC Command Specification" data-zh="RPC 指令集一览">RPC 指令集一览</h3>
+<div class="table-scroll-wrap">
+<table class="ref-table">
+<thead>
+<tr>
+<th>Command Type</th>
+<th>Parameters</th>
+<th>Response Action</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td><code>{"id": "...", "message": "..."}</code></td>
+<td data-en="Run one turn and emit AgentEvent events." data-zh="执行单次回合，广播 AgentEvent 事件流">执行单次回合，广播 AgentEvent 事件流</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>steer</code></td>
+<td><code>{"id": "...", "message": "..."}</code></td>
+<td data-en="Enqueue steering for a later turn; cannot interrupt the active stdin-blocking turn." data-zh="推入宿主引导队列 (CliHost.push_steering)">推入宿主引导队列 (CliHost.push_steering)</td>
+<td><span class="badge badge-orange">回合间隙消费</span></td>
+</tr>
+<tr>
+<td><code>follow_up</code></td>
+<td><code>{"id": "...", "message": "..."}</code></td>
+<td data-en="Queue until the next prompt finishes; does not start a turn by itself." data-zh="先加入队列，等下一次 prompt 执行完成后消费；不会自行启动回合。">先加入队列，等下一次 prompt 执行完成后消费；不会自行启动回合。</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>abort</code></td>
+<td><code>{"id": "..."}</code></td>
+<td data-en="Acknowledgment only; does not cancel an active turn." data-zh="仅返回确认；不取消正在执行的回合。">仅返回确认；不取消正在执行的回合。</td>
+<td><span class="badge badge-orange">实验性/非实时</span></td>
+</tr>
+<tr>
+<td><code>compact</code></td>
+<td><code>{"id": "...", "instructions": "..."}</code></td>
+<td data-en="Run local extractive compaction and return statistics." data-zh="执行本地结构化压缩并返回字节/消息压缩统计">执行本地结构化压缩并返回字节/消息压缩统计</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>get_state</code></td>
+<td><code>{"id": "..."}</code></td>
+<td data-en="Return session, model, provider and thinking state." data-zh="返回 sessionId, model, provider, thinkingLevel 等状态">返回 sessionId, model, provider, thinkingLevel 等状态</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>set_model</code></td>
+<td><code>{"id": "...", "model": "...", "thinking": "..."}</code></td>
+<td data-en="Update model name and thinking level, retaining provider and base URL." data-zh="更新模型名与思考等级，不改变提供商或 base URL。">更新模型名与思考等级，不改变提供商或 base URL。</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>new_session</code></td>
+<td><code>{"id": "...", "name": "..."}</code></td>
+<td data-en="Create and select a new session." data-zh="创建新会话并切换当前绑定">创建新会话并切换当前绑定</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>fork_session</code></td>
+<td><code>{"id": "..."}</code></td>
+<td data-en="Fork the current session history." data-zh="克隆当前会话并派生新分支">克隆当前会话并派生新分支</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>set_session_name</code></td>
+<td><code>{"id": "...", "name": "..."}</code></td>
+<td data-en="Set a readable session name." data-zh="为会话设置可读别名">为会话设置可读别名</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>export_html</code></td>
+<td><code>{"id": "...", "output_path": "..."}</code></td>
+<td data-en="Export the session as standalone HTML." data-zh="将会话导出为独立 HTML 页面文件">将会话导出为独立 HTML 页面文件</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
+</tr>
+<tr>
+<td><code>approve_response</code></td>
+<td><code>{"request_id": "...", "approved": bool}</code></td>
+<td data-en="Acknowledgment only; not wired to interactive approval." data-zh="仅返回确认；尚未连接交互审批。">仅返回确认；尚未连接交互审批。</td>
+<td><span class="badge badge-gray">实验性 (空实现)</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="code-block"><div class="code-header">JSONL / RPC<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button></div><pre><code>{"type":"text","data":"Hello"}
+{"type":"tool_started","data":{"operation":"read","target":"Cargo.toml"}}
+{"type":"tool_finished","data":{"operation":"read","target":"Cargo.toml","result":{"Ok":"..."}}}
+{"type":"done","session":null,"messages":2}
+{"type":"error","error":"..."}
+
+{"type":"get_state","id":"1"}
+{"type":"response","command":"get_state","id":"1","success":true,"data":{}}
+</code></pre></div><p class="ref-p" data-en="The first five lines illustrate JSONL events; the last two show an RPC request and response. The data object is a placeholder; get_state returns session and model state." data-zh="前五行展示 JSONL 事件形状；最后两行为 RPC 请求与响应。data 对象为占位，真实 get_state 响应包含当前会话与模型等状态。">前五行展示 JSONL 事件形状；最后两行为 RPC 请求与响应。data 对象为占位，真实 get_state 响应包含当前会话与模型等状态。</p></section>
+<!-- 10. Host 嵌入 -->
+<section class="ref-section" id="host-embedding">
+<h2 class="ref-h2">
+<span data-en="10. Rust Host In-Process Embedding" data-zh="10. Rust Host 宿主进程内嵌入">10. Rust Host 宿主进程内嵌入</span>
+<a aria-label="Permalink" class="header-anchor" href="#host-embedding">#</a>
+</h2>
+<p class="ref-p" data-en="Mio core engine is decoupled via the Host trait, allowing desktop applications like Tauri or Ravomi to embed it in-process:" data-zh="Mio 的核心 Agent 循环完全通过 Host trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 mio-agent 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：">
+              Mio 的核心 Agent 循环完全通过 <code>Host</code> trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 <code>mio-agent</code> 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：
+            </p>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">rust</span>
+<button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
+</div>
+<pre><code>use mio_agent::{AgentEvent, Host, HostFuture};
+use std::path::Path;
+
+struct ExampleHost;
+impl Host for ExampleHost {
+    fn shell(&amp;self, _command: &amp;str, _cwd: &amp;Path) -&gt; HostFuture&lt;Result&lt;String, String&gt;&gt; {
+        Box::pin(async { Err("Shell is disabled by this host".to_string()) })
+    }
+    fn on_event(&amp;self, event: AgentEvent) {
+        if let AgentEvent::Text(delta) = event {
+            print!("{delta}");
+        }
+    }
+}
+fn main() {}
+</code></pre>
+</div>
+<a data-en="Full Host example" data-zh="完整 Host 示例" href="https://github.com/Ravomi/Mio/blob/main/examples/host.rs">完整 Host 示例</a></section>
+<!-- 11. CLI 完整参数表 -->
+<section class="ref-section" id="cli-flags">
+<h2 class="ref-h2">
+<span data-en="11. Complete CLI Flags Reference" data-zh="11. 完整 CLI 选项参数表">11. 完整 CLI 选项参数表</span>
+<a aria-label="Permalink" class="header-anchor" href="#cli-flags">#</a>
+</h2>
+<p class="ref-p" data-en="Extracted directly from src/bin/mio.rs parse() function, including aliases, defaults, and mutual exclusions:" data-zh="以下参数提取自 src/bin/mio.rs 真实解析函数 parse()。包含短别名、取值类型、默认行为及互斥规则：">
+              以下参数提取自 <code>src/bin/mio.rs</code> 真实解析函数 <code>parse()</code>。包含短别名、取值类型、默认行为及互斥规则：
+            </p>
+<div class="ref-filter-bar" style="margin-bottom: 1rem;">
+<div class="ref-filter-group" style="width: 100%;">
+<input aria-label="搜索 CLI 参数" class="ref-filter-input" data-en-placeholder="Search CLI flags (e.g. --max-turns, -p, --cwd)..." data-zh-placeholder="搜索 CLI 参数 (例如 --max-turns, -p, --cwd)..." id="cliFlagsSearchInput" placeholder="搜索 CLI 参数 (例如 --max-turns, -p, --cwd)..." type="text"/>
+</div>
+</div>
+<div data-en="No matching CLI flags found" data-zh="未找到匹配的 CLI 参数" id="cliFlagsNoResults" style="display: none; padding: 1.5rem; text-align: center; color: var(--muted);">未找到匹配的 CLI 参数</div>
+<div class="table-scroll-wrap">
+<table class="ref-table">
+<thead>
+<tr>
+<th>Flag / Alias</th>
+<th>Value</th>
+<th>Default</th>
+<th>Description &amp; Mutual Exclusions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-p, --print</code></td>
+<td><code>TEXT</code></td>
+<td data-en="None" data-zh="无 (None)">无 (None)</td>
+<td data-en="Run one task and exit. An explicit prompt takes precedence over piped stdin." data-zh="运行单次任务并退出；显式提示词优先于管道输入。">运行单次任务并退出；显式提示词优先于管道输入。</td>
+</tr>
+<tr>
+<td><code>--mode</code></td>
+<td><code>text | json | rpc</code></td>
+<td><code>text</code></td>
+<td data-en="Output/protocol mode: text, JSON Lines, or RPC. json and rpc enable JSON output." data-zh="输出与协议模式。 json 与 rpc 模式下自动设置 json=true 。">输出与协议模式。 json 与 rpc 模式下自动设置 json=true 。</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Emit JSON Lines events on stdout; shorthand for --mode json." data-zh="在 stdout 上输出 JSON Lines 事件。为 --mode json 的简写。">在 stdout 上输出 JSON Lines 事件。为 --mode json 的简写。</td>
+</tr>
+<tr>
+<td><code>--cwd</code></td>
+<td><code>PATH</code></td>
+<td data-en="Current working directory" data-zh="当前工作目录">当前工作目录</td>
+<td data-en="Set the agent working directory." data-zh="设定 Agent 工作空间根目录。">设定 Agent 工作空间根目录。</td>
+</tr>
+<tr>
+<td><code>--model</code></td>
+<td><code>NAME</code></td>
+<td data-en="MIO_MODEL / imported profile" data-zh="环境变量 MIO_MODEL">环境变量 MIO_MODEL</td>
+<td data-en="Model ID or [provider/]model[:thinking]. May fall back to MIO_MODEL or an imported Antigravity profile." data-zh="模型标识，支持 [provider/]model[:thinking]；可回退 MIO_MODEL 或已导入的 Antigravity 配置。">模型标识，支持 [provider/]model[:thinking]；可回退 MIO_MODEL 或已导入的 Antigravity 配置。</td>
+</tr>
+<tr>
+<td><code>--provider</code></td>
+<td><code>NAME</code></td>
+<td data-en="MIO_PROVIDER" data-zh="环境变量 MIO_PROVIDER">环境变量 MIO_PROVIDER</td>
+<td data-en="Provider preset: custom, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, ollama." data-zh="提供商预设：custom, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, ollama。">提供商预设：custom, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, ollama。</td>
+</tr>
+<tr>
+<td><code>--thinking</code></td>
+<td><code>LEVEL</code></td>
+<td data-en="None" data-zh="无 (None)">无 (None)</td>
+<td data-en="off, minimal, low, medium, high, xhigh, max. The setting is consumed only by the Antigravity adapter." data-zh="思考预算等级：off, minimal, low, medium, high, xhigh, max。仅 Antigravity 适配器消费生效。">思考预算等级：off, minimal, low, medium, high, xhigh, max。仅 Antigravity 适配器消费生效。</td>
+</tr>
+<tr>
+<td><code>--list-models</code></td>
+<td><code>[QUERY]</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List built-in presets and exit, with an optional filter. Does not query remote model availability." data-zh="列出预设模型并退出（支持可选过滤字符串，不发送网络请求）。">列出预设模型并退出（支持可选过滤字符串，不发送网络请求）。</td>
+</tr>
+<tr>
+<td><code>--import-antigravity</code></td>
+<td><code>PATH</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Directory containing auth.json and settings.json, with compatible provider metadata or OAuth client environment variables." data-zh="含 auth.json 与 settings.json 的目录；另需兼容提供商元数据或 OAuth 客户端环境变量。">含 auth.json 与 settings.json 的目录；另需兼容提供商元数据或 OAuth 客户端环境变量。</td>
+</tr>
+<tr>
+<td><code>--base-url</code></td>
+<td><code>URL</code></td>
+<td data-en="Provider preset" data-zh="按提供商预设">按提供商预设</td>
+<td data-en="Base URL for an OpenAI-compatible endpoint. Cannot be supplied for Antigravity." data-zh="OpenAI 兼容端点基础 URL。Antigravity 显式禁止传入 base-url。">OpenAI 兼容端点基础 URL。Antigravity 显式禁止传入 base-url。</td>
+</tr>
+<tr>
+<td><code>-t, --tools</code></td>
+<td><code>LIST</code></td>
+<td data-en="All enabled" data-zh="全部启用">全部启用</td>
+<td data-en="Comma-separated tool allowlist or +tool/-tool rules: read, write, edit, bash, grep, find, ls." data-zh="逗号分隔的工具白名单或 +tool/-tool 增量规则 (read,write,edit,bash,grep,find,ls)。">逗号分隔的工具白名单或 +tool/-tool 增量规则 (read,write,edit,bash,grep,find,ls)。</td>
+</tr>
+<tr>
+<td><code>-xt, --exclude-tools</code></td>
+<td><code>LIST</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Exclude tool names or glob patterns, such as bash,mcp__*." data-zh="排除指定工具或 Glob 匹配模式（例如 bash,mcp__* ）。">排除指定工具或 Glob 匹配模式（例如 bash,mcp__* ）。</td>
+</tr>
+<tr>
+<td><code>-nt, --no-tools</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Disable all tool execution." data-zh="完全禁用所有工具执行。">完全禁用所有工具执行。</td>
+</tr>
+<tr>
+<td><code>--no-mcp</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Disable MCP discovery and plugin dynamic tools." data-zh="禁用 MCP 外部服务扫描与插件动态工具加载。">禁用 MCP 外部服务扫描与插件动态工具加载。</td>
+</tr>
+<tr>
+<td><code>--approve</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Require interactive approval for sensitive tools; deny when interactive input is unavailable or JSON mode is active." data-zh="敏感工具执行前要求人工交互确认。在非 TTY 或 --json 模式下直接安全拒绝。">敏感工具执行前要求人工交互确认。在非 TTY 或 --json 模式下直接安全拒绝。</td>
+</tr>
+<tr>
+<td><code>--session</code></td>
+<td><code>SELECTOR</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Load a session by path, UUID prefix or name. Mutually exclusive with --resume." data-zh="按会话路径、短 UUID 或会话名称加载特定会话。 与 --resume 严格互斥 。">按会话路径、短 UUID 或会话名称加载特定会话。 与 --resume 严格互斥 。</td>
+</tr>
+<tr>
+<td><code>-c, --continue</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Resume the latest saved session in this workspace. Does not consume a selector." data-zh="恢复当前工作区最新保存的会话。 不接受任何 SELECTOR 参数 。">恢复当前工作区最新保存的会话。 不接受任何 SELECTOR 参数 。</td>
+</tr>
+<tr>
+<td><code>-r, --resume</code></td>
+<td><code>[SELECTOR]</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Resume the selected session, or the latest session if no selector is supplied." data-zh="续接会话。若后跟选择器则载入该会话，否则恢复最新会话。">续接会话。若后跟选择器则载入该会话，否则恢复最新会话。</td>
+</tr>
+<tr>
+<td><code>--fork</code></td>
+<td><code>[SELECTOR]</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Fork a session. Accepts its own selector or combines with --session/--resume." data-zh="分叉会话为全新分支。 自身可接受 SELECTOR ，或与 --session / --resume 配合使用。">分叉会话为全新分支。 自身可接受 SELECTOR ，或与 --session / --resume 配合使用。</td>
+</tr>
+<tr>
+<td><code>-n, --name</code></td>
+<td><code>TITLE</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Set a readable session title." data-zh="为当前会话设置可读显示标题。">为当前会话设置可读显示标题。</td>
+</tr>
+<tr>
+<td><code>--no-session</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Keep the session in memory without writing .mio/sessions/*.json." data-zh="完全在内存中运行，不产生 .mio/sessions/*.json 持久化文件。">完全在内存中运行，不产生 .mio/sessions/*.json 持久化文件。</td>
+</tr>
+<tr>
+<td><code>--export</code></td>
+<td><code>PATH</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Export a session as a standalone HTML report." data-zh="将会话记录渲染并导出为独立 HTML 报告文件。">将会话记录渲染并导出为独立 HTML 报告文件。</td>
+</tr>
+<tr>
+<td><code>--list-sessions</code></td>
+<td>None (Flag)</td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List saved session metadata and exit." data-zh="列出当前工作区所有已持久化的会话元数据并退出。">列出当前工作区所有已持久化的会话元数据并退出。</td>
+</tr>
+<tr>
+<td><code>--skill</code></td>
+<td><code>NAME</code></td>
+<td data-en="None (repeatable)" data-zh="无 (可重复)">无 (可重复)</td>
+<td data-en="Load a named skill; repeatable. Conflicts with --no-context and --no-skills." data-zh="载入项目特定 Skill。 与 --no-context / --no-skills 严格互斥 。">载入项目特定 Skill。 与 --no-context / --no-skills 严格互斥 。</td>
+</tr>
+<tr>
+<td><code>--template</code></td>
+<td><code>NAME</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Apply .mio/prompts/NAME.md. Conflicts with --no-context and --no-prompt-templates." data-zh="应用 .mio/prompts/NAME.md 提示词模板。 与 --no-context / --no-prompt-templates 互斥 。">应用 .mio/prompts/NAME.md 提示词模板。 与 --no-context / --no-prompt-templates 互斥 。</td>
+</tr>
+<tr>
+<td><code>--system-prompt</code></td>
+<td><code>TEXT</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Append instructions to the existing system context rather than replacing project rules." data-zh="向已有系统上下文追加指令，不替换项目规则。">向已有系统上下文追加指令，不替换项目规则。</td>
+</tr>
+<tr>
+<td><code>--append-system-prompt</code></td>
+<td><code>TEXT</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Append literal text or loaded file content to the system prompt." data-zh="追加文本或文件内容到系统提示词尾部。">追加文本或文件内容到系统提示词尾部。</td>
+</tr>
+<tr>
+<td><code>--no-context</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Skip project rules and skills." data-zh="不扫描任何项目规则文件与 Skills。">不扫描任何项目规则文件与 Skills。</td>
+</tr>
+<tr>
+<td><code>--no-context-files</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Skip AGENTS.md, CLAUDE.md and .mio/SYSTEM.md." data-zh="仅跳过 AGENTS.md / CLAUDE.md / SYSTEM.md 扫描。">仅跳过 AGENTS.md / CLAUDE.md / SYSTEM.md 扫描。</td>
+</tr>
+<tr>
+<td><code>--no-skills</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Skip workspace skill discovery." data-zh="跳过工作区 Skills 发现。">跳过工作区 Skills 发现。</td>
+</tr>
+<tr>
+<td><code>--no-prompt-templates</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Disable prompt template expansion." data-zh="禁用模板提示词扩展。">禁用模板提示词扩展。</td>
+</tr>
+<tr>
+<td><code>--no-shell</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Disable shell execution while retaining file and search tools." data-zh="禁用 Bash 执行器；文件读写与搜索工具保持可用。">禁用 Bash 执行器；文件读写与搜索工具保持可用。</td>
+</tr>
+<tr>
+<td><code>--subagents</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Enable native subagents, with at most four concurrent tasks." data-zh="开启原生并发子代理支持（最大并发 4 个）。">开启原生并发子代理支持（最大并发 4 个）。</td>
+</tr>
+<tr>
+<td><code>--auto-compact</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Compact history before a turn when it exceeds 512 KiB." data-zh="历史超过 512 KiB 时自动执行上下文压缩。">历史超过 512 KiB 时自动执行上下文压缩。</td>
+</tr>
+<tr>
+<td><code>--max-turns</code></td>
+<td><code>1..256</code></td>
+<td><code>32</code></td>
+<td data-en="Maximum tool-loop steps per turn, from 1 to 256." data-zh="单次回合工具循环最大执行步数（范围校验 1–256）。">单次回合工具循环最大执行步数（范围校验 1–256）。</td>
+</tr>
+<tr>
+<td><code>--plugin-install</code></td>
+<td><code>SPEC</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Install a plugin from the registry, GitHub or a local directory." data-zh="从社区注册表、GitHub 仓库或本地目录安装插件。">从社区注册表、GitHub 仓库或本地目录安装插件。</td>
+</tr>
+<tr>
+<td><code>--plugin-remove</code></td>
+<td><code>NAME</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Remove a plugin from .mio/plugins/." data-zh="从 .mio/plugins/ 卸载指定插件。">从 .mio/plugins/ 卸载指定插件。</td>
+</tr>
+<tr>
+<td><code>--plugin-list, --list-plugins</code></td>
+<td>None (Flag)</td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List installed workspace plugins." data-zh="列出当前工作区所有已安装插件。">列出当前工作区所有已安装插件。</td>
+</tr>
+<tr>
+<td><code>-h, --help</code></td>
+<td>None (Flag)</td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Print help and exit when supplied as the first argument." data-zh="打印帮助信息并退出。">打印帮助信息并退出。</td>
+</tr>
+<tr>
+<td><code>-V, --version</code></td>
+<td>None (Flag)</td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Print the version and exit when supplied as the first argument." data-zh="打印版本信息并退出。">打印版本信息并退出。</td>
+</tr>
+<tr>
+<td><code>--plugin-search</code></td>
+<td><code>[QUERY]</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Search the bundled registry without a live network query." data-zh="搜索内置插件注册表，不发起实时网络检索。">搜索内置插件注册表，不发起实时网络检索。</td>
+</tr>
+<tr>
+<td><code>--plugin-init</code></td>
+<td><code>DIR</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Create a plugin scaffold with mio-plugin.json." data-zh="初始化生成标准插件脚手架文件（ mio-plugin.json ）。">初始化生成标准插件脚手架文件（ mio-plugin.json ）。</td>
+</tr>
+<tr>
+<td><code>--plugin-validate</code></td>
+<td><code>PATH</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Validate a plugin directory or registry manifest." data-zh="校验插件目录或注册表清单规范格式。">校验插件目录或注册表清单规范格式。</td>
+</tr>
+<tr><td data-en="--" data-zh="--">--</td><td data-en="TEXT…" data-zh="TEXT…">TEXT…</td><td data-en="None" data-zh="无">无</td><td data-en="Stop option parsing and treat remaining arguments as the prompt." data-zh="停止选项解析，后续内容作为提示词。">停止选项解析，后续内容作为提示词。</td></tr></tbody>
+</table>
+</div>
+</section>
+<!-- 12. 环境变量表 -->
+<section class="ref-section" id="env-vars">
+<h2 class="ref-h2">
+<span data-en="12. Environment Variables &amp; Priority" data-zh="12. 环境变量与凭据解析优先级">12. 环境变量与凭据解析优先级</span>
+<a aria-label="Permalink" class="header-anchor" href="#env-vars">#</a>
+</h2>
+<div class="table-scroll-wrap">
+<table class="ref-table">
+<thead>
+<tr>
+<th>Variable</th>
+<th>Scope &amp; Priority</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MIO_API_KEY</code></td>
+<td data-en="Highest priority" data-zh="最高优先级">最高优先级</td>
+<td data-en="Highest priority for API-key routes; Antigravity OAuth is separate." data-zh="API 密钥路由的最高优先级；Antigravity OAuth 配置独立。">API 密钥路由的最高优先级；Antigravity OAuth 配置独立。</td>
+</tr>
+<tr>
+<td><code>OPENAI_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="OpenAI preset API key." data-zh="OpenAI 提供商预设凭据。">OpenAI 提供商预设凭据。</td>
+</tr>
+<tr>
+<td><code>ANTHROPIC_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="Anthropic-compatible gateway API key." data-zh="Anthropic 网关接入凭据。">Anthropic 网关接入凭据。</td>
+</tr>
+<tr>
+<td><code>GEMINI_API_KEY / GOOGLE_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="Google Generative Language credentials." data-zh="Google Generative Language 接口凭据。">Google Generative Language 接口凭据。</td>
+</tr>
+<tr>
+<td><code>DEEPSEEK_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="DeepSeek API key." data-zh="DeepSeek 官方 API 凭据。">DeepSeek 官方 API 凭据。</td>
+</tr>
+<tr>
+<td><code>OPENROUTER_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="OpenRouter API key." data-zh="OpenRouter 聚合接口凭据。">OpenRouter 聚合接口凭据。</td>
+</tr>
+<tr>
+<td><code>GROQ_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="Groq API key." data-zh="Groq 推理接口凭据。">Groq 推理接口凭据。</td>
+</tr>
+<tr>
+<td><code>XAI_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="xAI API key." data-zh="xAI Grok 官方接口凭据。">xAI Grok 官方接口凭据。</td>
+</tr>
+<tr>
+<td><code>MISTRAL_API_KEY</code></td>
+<td data-en="Provider fallback" data-zh="供应商回退">供应商回退</td>
+<td data-en="Mistral API key." data-zh="Mistral AI 官方接口凭据。">Mistral AI 官方接口凭据。</td>
+</tr>
+<tr>
+<td><code>MIO_MODEL</code></td>
+<td data-en="CLI fallback" data-zh="CLI 回退">CLI 回退</td>
+<td data-en="Fallback model when --model is omitted." data-zh="未指定 --model 时的回退模型名称。">未指定 --model 时的回退模型名称。</td>
+</tr>
+<tr>
+<td><code>MIO_PROVIDER</code></td>
+<td data-en="CLI fallback" data-zh="CLI 回退">CLI 回退</td>
+<td data-en="Fallback provider when --provider is omitted." data-zh="未指定 --provider 时的回退提供商名称。">未指定 --provider 时的回退提供商名称。</td>
+</tr>
+<tr>
+<td><code>MIO_BASE_URL</code></td>
+<td data-en="CLI fallback" data-zh="CLI 回退">CLI 回退</td>
+<td data-en="Fallback endpoint when --base-url is omitted." data-zh="未指定 --base-url 时的回退端点地址。">未指定 --base-url 时的回退端点地址。</td>
+</tr>
+<tr>
+<td><code>MIO_CONFIG_DIR</code></td>
+<td data-en="Config directory override" data-zh="配置路径覆盖">配置路径覆盖</td>
+<td data-en="Override the Antigravity profile/config directory." data-zh="自定义 Antigravity 凭据及全局配置存储目录。">自定义 Antigravity 凭据及全局配置存储目录。</td>
+</tr>
+<tr><td><code>OLLAMA_API_KEY</code></td><td data-en="Provider fallback" data-zh="提供商回退">提供商回退</td><td data-en="Optional key for an Ollama-compatible endpoint." data-zh="Ollama 兼容端点可选密钥。">Ollama 兼容端点可选密钥。</td></tr><tr><td><code>XDG_CONFIG_HOME</code></td><td data-en="Config path" data-zh="配置路径">配置路径</td><td data-en="Use XDG_CONFIG_HOME/mio when MIO_CONFIG_DIR is unset, then ~/.config/mio." data-zh="未设置 MIO_CONFIG_DIR 时使用 XDG_CONFIG_HOME/mio；再回退 ~/.config/mio。">未设置 MIO_CONFIG_DIR 时使用 XDG_CONFIG_HOME/mio；再回退 ~/.config/mio。</td></tr><tr><td><code>MIO_GOOGLE_CLIENT_ID / MIO_GOOGLE_CLIENT_SECRET</code></td><td data-en="OAuth client" data-zh="OAuth 客户端">OAuth 客户端</td><td data-en="Antigravity OAuth client; aliases ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET." data-zh="Antigravity OAuth 客户端；别名 ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET。">Antigravity OAuth 客户端；别名 ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET。</td></tr></tbody>
+</table>
+</div>
+</section>
+<!-- 13. 斜杠命令表 -->
+<section class="ref-section" id="slash-commands">
+<h2 class="ref-h2">
+<span data-en="13. Interactive Slash Commands" data-zh="13. 交互式斜杠命令完整表">13. 交互式斜杠命令完整表</span>
+<a aria-label="Permalink" class="header-anchor" href="#slash-commands">#</a>
+</h2>
+<div class="table-scroll-wrap">
+<table class="ref-table">
+<thead>
+<tr>
+<th>Command</th>
+<th>Parameters</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/help</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Show interactive help." data-zh="打印内置命令行帮助文本。">打印内置命令行帮助文本。</td>
+</tr>
+<tr>
+<td><code>/new</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Start a new conversation." data-zh="重置对话历史，开启一个全新会话。">重置对话历史，开启一个全新会话。</td>
+</tr>
+<tr>
+<td><code>/fork</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Fork the current session." data-zh="从当前会话位置分叉出一个全新子会话。">从当前会话位置分叉出一个全新子会话。</td>
+</tr>
+<tr>
+<td><code>/sessions</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List saved workspace sessions." data-zh="列出当前工作区中存储的所有历史会话。">列出当前工作区中存储的所有历史会话。</td>
+</tr>
+<tr>
+<td><code>/name [TITLE]</code></td>
+<td data-en="Optional title" data-zh="可选标题">可选标题</td>
+<td data-en="Set the session name, or show it when omitted." data-zh="为当前会话设置易于识别的名字；不传参数时打印当前名字。">为当前会话设置易于识别的名字；不传参数时打印当前名字。</td>
+</tr>
+<tr>
+<td><code>/compact [FOCUS]</code></td>
+<td data-en="Optional focus" data-zh="可选关注焦点">可选关注焦点</td>
+<td data-en="Local extractive compaction retaining roughly six recent messages with tool-safe boundaries." data-zh="本地摘要压缩，保留约 6 条最近消息并调整工具边界。">本地摘要压缩，保留约 6 条最近消息并调整工具边界。</td>
+</tr>
+<tr>
+<td><code>/export [PATH]</code></td>
+<td data-en="Optional output path" data-zh="可选输出路径">可选输出路径</td>
+<td data-en="Export the session as standalone HTML." data-zh="将会话完整轨迹导出为独立 HTML 页面文件。">将会话完整轨迹导出为独立 HTML 页面文件。</td>
+</tr>
+<tr>
+<td><code>/model [NAME]</code></td>
+<td data-en="Optional model ID" data-zh="可选模型标识">可选模型标识</td>
+<td data-en="Set the current model name or display it when omitted." data-zh="热切换当前使用的模型；不传参数时输出当前模型。">热切换当前使用的模型；不传参数时输出当前模型。</td>
+</tr>
+<tr>
+<td><code>/thinking [LEVEL]</code></td>
+<td>off..max</td>
+<td data-en="Set or display the thinking level." data-zh="调整思考预算等级（当前由 Antigravity 适配器消费）。">调整思考预算等级（当前由 Antigravity 适配器消费）。</td>
+</tr>
+<tr>
+<td><code>/plugins, /plugin list</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td>查看当前工作区已载入的插件清单。</td>
+</tr>
+<tr>
+<td><code>/plugin search [Q]</code></td>
+<td>可选关键词</td>
+<td>在线检索官方社区插件注册表。</td>
+</tr>
+<tr>
+<td><code>/subagents</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td>查看当前会话已派生的原生子代理运行快照与状态。</td>
+</tr>
+<tr>
+<td><code>/status</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td>打印当前会话 ID、模型、提供商、历史消息数及总字节体积。</td>
+</tr>
+<tr>
+<td><code>/clear</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td>清除当前终端屏幕。</td>
+</tr>
+<tr>
+<td><code>/exit, /quit</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td>退出 Mio 交互式终端。</td>
+</tr>
+<tr><td><code>/plugin install</code></td><td><code>SPEC</code></td><td data-en="Install a plugin." data-zh="安装插件。">安装插件。</td></tr><tr><td><code>/plugin remove</code></td><td><code>NAME</code></td><td data-en="Remove a plugin." data-zh="移除插件。">移除插件。</td></tr><tr><td><code>/plugin init</code></td><td><code>DIR</code></td><td data-en="Create a plugin scaffold." data-zh="创建插件脚手架。">创建插件脚手架。</td></tr><tr><td><code>/plugin validate</code></td><td><code>PATH</code></td><td data-en="Validate a plugin directory or registry." data-zh="校验插件目录或注册表。">校验插件目录或注册表。</td></tr></tbody>
+</table>
+</div>
+</section>
+</article>
+</main>
+</div>
+</div>
+<footer class="ref-footer" role="contentinfo">
+<div class="ref-footer-content">
+<div class="ref-footer-top">
+<div data-en-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · Built on &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT License" data-zh-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · 基于 &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT 许可"><strong>Mio (mio-agent)</strong> · 基于 <a href="https://github.com/0xPlaygrounds/rig">Rig</a> · MIT 许可</div>
+<div class="ref-footer-links">
+<a data-en="Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a>
+<a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a>
+<a data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a>
+<a data-en="Models" data-zh="模型生态" href="models.html">模型生态</a>
+<a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a>
+<a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a>
+</div>
+</div>
+</div>
+</footer>
+<div aria-atomic="true" aria-live="polite" class="sr-only" id="copy-status-live"></div>
+<script src="reference.js"></script>
+</body>
+</html>
