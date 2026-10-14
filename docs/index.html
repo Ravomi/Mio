@@ -139,21 +139,31 @@
         <div class="install-switcher" data-install-switcher>
           <div class="install-tabs-bar">
             <div class="install-tabs" role="tablist" aria-label="安装与启动方式">
-              <button type="button" class="install-tab is-active" role="tab" aria-selected="true" data-install-tab="cargo" data-zh="Cargo 源码安装" data-en="Cargo Install">Cargo 源码安装</button>
-              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="antigravity" data-zh="Antigravity 账号导入" data-en="Antigravity OAuth">Antigravity 账号导入</button>
-              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="openai" data-zh="OpenAI / 本地模型" data-en="OpenAI / Local">OpenAI / 本地模型</button>
-              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="thinking" data-zh="子代理 + 思考档位" data-en="Subagents + Thinking">子代理 + 思考档位</button>
-              <button type="button" class="install-tab" role="tab" aria-selected="false" data-install-tab="crate" data-zh="Rust 库嵌入 (Crate)" data-en="Rust Crate SDK">Rust 库嵌入 (Crate)</button>
+              <button type="button" class="install-tab is-active" role="tab" aria-selected="true" aria-controls="install-cmd-cargo" id="install-tab-cargo" data-install-tab="cargo" data-zh="Cargo 源码安装" data-en="Cargo Install">Cargo 源码安装</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-curl" id="install-tab-curl" data-install-tab="curl" data-zh="cURL (Shell)" data-en="cURL (Shell)">cURL (Shell)</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-powershell" id="install-tab-powershell" data-install-tab="powershell" data-zh="PowerShell" data-en="PowerShell">PowerShell</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-npm" id="install-tab-npm" data-install-tab="npm" data-zh="npm" data-en="npm">npm</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-pnpm" id="install-tab-pnpm" data-install-tab="pnpm" data-zh="pnpm" data-en="pnpm">pnpm</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-bun" id="install-tab-bun" data-install-tab="bun" data-zh="Bun" data-en="Bun">Bun</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-antigravity" id="install-tab-antigravity" data-install-tab="antigravity" data-zh="Antigravity 账号导入" data-en="Antigravity OAuth">Antigravity 账号导入</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-openai" id="install-tab-openai" data-install-tab="openai" data-zh="OpenAI / 本地模型" data-en="OpenAI / Local">OpenAI / 本地模型</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-thinking" id="install-tab-thinking" data-install-tab="thinking" data-zh="子代理 + 思考档位" data-en="Subagents + Thinking">子代理 + 思考档位</button>
+              <button type="button" class="install-tab" role="tab" aria-selected="false" aria-controls="install-cmd-crate" id="install-tab-crate" data-install-tab="crate" data-zh="Rust 库嵌入 (Crate)" data-en="Rust Crate SDK">Rust 库嵌入 (Crate)</button>
             </div>
             <span class="install-hint" id="installTabHint" data-zh="需要 Rust 1.95+ · 锁定依赖构建" data-en="Requires Rust 1.95+ · Locked build">需要 Rust 1.95+ · 锁定依赖构建</span>
           </div>
 
           <div class="install-command-area">
-            <code class="install-code-panel" data-install-panel="cargo" id="install-cmd-cargo"><span class="prompt-sign">$</span>git clone https://github.com/Ravomi/Mio.git &amp;&amp; cd Mio &amp;&amp; cargo install --path . --locked</code>
-            <code class="install-code-panel" data-install-panel="antigravity" id="install-cmd-antigravity" hidden><span class="prompt-sign">$</span>mio --import-antigravity ~/.pi/agent &amp;&amp; mio --provider antigravity --subagents</code>
-            <code class="install-code-panel" data-install-panel="openai" id="install-cmd-openai" hidden><span class="prompt-sign">$</span>export MIO_BASE_URL='https://your-provider.example/v1' MIO_MODEL='gpt-5.4' &amp;&amp; mio -p '分析模块结构'</code>
-            <code class="install-code-panel" data-install-panel="thinking" id="install-cmd-thinking" hidden><span class="prompt-sign">$</span>mio --model deepseek/deepseek-reasoner:high --subagents -p '并行审计模块边界与测试覆盖'</code>
-            <code class="install-code-panel" data-install-panel="crate" id="install-cmd-crate" hidden><span class="prompt-sign">$</span>cargo add mio-agent --git https://github.com/Ravomi/Mio</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-cargo" data-install-panel="cargo" id="install-cmd-cargo"><span class="prompt-sign">$</span>git clone https://github.com/Ravomi/Mio.git &amp;&amp; cd Mio &amp;&amp; cargo install --path . --locked</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-curl" data-install-panel="curl" id="install-cmd-curl" hidden><span class="prompt-sign">$</span>curl -fsSL https://raw.githubusercontent.com/Ravomi/Mio/main/docs/install.sh | bash</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-powershell" data-install-panel="powershell" id="install-cmd-powershell" hidden><span class="prompt-sign">&gt;</span>irm https://raw.githubusercontent.com/Ravomi/Mio/main/docs/install.ps1 | iex</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-npm" data-install-panel="npm" id="install-cmd-npm" hidden><span class="prompt-sign">$</span>npm install -g @ravomi/mio</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-pnpm" data-install-panel="pnpm" id="install-cmd-pnpm" hidden><span class="prompt-sign">$</span>pnpm add -g @ravomi/mio</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-bun" data-install-panel="bun" id="install-cmd-bun" hidden><span class="prompt-sign">$</span>bun add -g @ravomi/mio</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-antigravity" data-install-panel="antigravity" id="install-cmd-antigravity" hidden><span class="prompt-sign">$</span>mio --import-antigravity ~/.pi/agent &amp;&amp; mio --provider antigravity --subagents</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-openai" data-install-panel="openai" id="install-cmd-openai" hidden><span class="prompt-sign">$</span>export MIO_BASE_URL='https://your-provider.example/v1' MIO_MODEL='gpt-5.4' &amp;&amp; mio -p '分析模块结构'</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-thinking" data-install-panel="thinking" id="install-cmd-thinking" hidden><span class="prompt-sign">$</span>mio --model deepseek/deepseek-reasoner:high --subagents -p '并行审计模块边界与测试覆盖'</code>
+            <code class="install-code-panel" role="tabpanel" aria-labelledby="install-tab-crate" data-install-panel="crate" id="install-cmd-crate" hidden><span class="prompt-sign">$</span>cargo add mio-agent --git https://github.com/Ravomi/Mio</code>
 
             <button type="button" class="copy-action-btn" id="heroCopyBtn" data-zh="复制命令" data-en="Copy">
               复制命令

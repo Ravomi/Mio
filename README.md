@@ -24,14 +24,31 @@ Mio 将模型调用、代码工具和对话历史组织成完整工作流程：�
 
 ## 开始使用
 
-需要 Rust 1.95 或更新版本，以及一个支持流式工具调用的 OpenAI 兼容模型服务。
+需要 Rust 1.95 或更新版本（源码编译安装），或使用等待发布的预编译脚本与 npm 包。详细说明见 [Mio 安装与分发指南](docs/installation.md)。需要一个支持流式工具调用的 OpenAI 兼容模型服务。
 
-```bash
-git clone https://github.com/Ravomi/Mio.git
-cd Mio
-cargo install --path . --locked
-mio --help
-```
+### 安装方式
+
+- **Cargo 源码安装（当前可用，推荐）**：
+  ```bash
+  git clone https://github.com/Ravomi/Mio.git
+  cd Mio
+  cargo install --path . --locked
+  mio --help
+  ```
+- **Linux & macOS Shell 脚本（等待发布）**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Ravomi/Mio/main/docs/install.sh | bash
+  ```
+- **Windows PowerShell 脚本（等待发布，未实测）**：
+  ```powershell
+  irm https://raw.githubusercontent.com/Ravomi/Mio/main/docs/install.ps1 | iex
+  ```
+- **npm / pnpm / Bun（等待发布，Node >=18，Bun 需系统存在 node）**：
+  ```bash
+  npm install -g @ravomi/mio
+  # 或 pnpm add -g @ravomi/mio
+  # 或 bun add -g @ravomi/mio
+  ```
 
 配置模型与服务地址，通过环境变量提供密钥。以下地址和模型名为占位值，替换为你的服务配置；本地免密钥服务可不设置密钥。
 

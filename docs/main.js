@@ -179,6 +179,11 @@
   // =========================================================================
   var installHints = {
     cargo: { zh: '需要 Rust 1.95+ · 锁定依赖构建', en: 'Requires Rust 1.95+ · Locked build' },
+    curl: { zh: 'Linux & macOS 预编译脚本 · 精确 SHA256 校验（等待发布）', en: 'Linux & macOS prebuilt script · Exact SHA256 (Pending release)' },
+    powershell: { zh: 'Windows PowerShell 脚本 · 自动维护 PATH（等待发布 · Windows 未实测）', en: 'Windows PowerShell script · Auto PATH (Pending release · Untested on Windows)' },
+    npm: { zh: 'Node.js >=18 全局安装 · 首启自动校验缓存二进制（等待发布）', en: 'Node.js >=18 global install · Auto-validating cache on first run (Pending release)' },
+    pnpm: { zh: 'pnpm 全局安装 · 首启自动获取原生二进制（等待发布）', en: 'pnpm global install · Fetches native binary on first run (Pending release)' },
+    bun: { zh: 'Bun 全局安装 · 运行 wrapper 需环境具备 node（等待发布）', en: 'Bun global install · Wrapper requires node in PATH (Pending release)' },
     antigravity: { zh: '复用本机已有 Antigravity OAuth 登录凭证（权限 0600）', en: 'Reuses local Antigravity OAuth profile (chmod 0600)' },
     openai: { zh: '兼容任意支持流式工具调用的云端或本地 Ollama / vLLM 服务', en: 'Works with any streaming OpenAI-compatible or local Ollama endpoint' },
     thinking: { zh: '支持 [provider/]model[:thinking] 简写与 4 路并发子代理', en: 'Supports [provider/]model[:thinking] spec & 4 concurrent subagents' },
@@ -198,6 +203,7 @@
         var active = t.getAttribute('data-install-tab') === tabKey;
         t.classList.toggle('is-active', active);
         t.setAttribute('aria-selected', active ? 'true' : 'false');
+        t.tabIndex = active ? 0 : -1;
       });
       panels.forEach(function (p) {
         var active = p.getAttribute('data-install-panel') === tabKey;
@@ -210,9 +216,32 @@
       }
     }
 
-    tabs.forEach(function (tab) {
+    tabs.forEach(function (tab, index) {
+      // Ensure initial roving tabindex
+      var isSelected = tab.getAttribute('aria-selected') === 'true';
+      tab.tabIndex = isSelected ? 0 : -1;
+
       tab.addEventListener('click', function () {
         activateInstallTab(tab.getAttribute('data-install-tab'));
+      });
+
+      tab.addEventListener('keydown', function (e) {
+        var newIndex = -1;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          newIndex = (index + 1) % tabs.length;
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          newIndex = (index - 1 + tabs.length) % tabs.length;
+        } else if (e.key === 'Home') {
+          newIndex = 0;
+        } else if (e.key === 'End') {
+          newIndex = tabs.length - 1;
+        }
+
+        if (newIndex !== -1) {
+          e.preventDefault();
+          tabs[newIndex].focus();
+          activateInstallTab(tabs[newIndex].getAttribute('data-install-tab'));
+        }
       });
     });
 
@@ -220,7 +249,10 @@
       heroCopyBtn.addEventListener('click', function () {
         var activePanel = document.querySelector('[data-install-panel]:not([hidden])');
         if (!activePanel) return;
-        var raw = (activePanel.innerText || activePanel.textContent || '').replace(/^\$\s*/, '').trim();
+        var clone = activePanel.cloneNode(true);
+        var prompts = clone.querySelectorAll('.prompt-sign');
+        prompts.forEach(function (p) { p.remove(); });
+        var raw = (clone.textContent || '').trim();
         copyText(raw, function () {
           flashCopyButton(heroCopyBtn, currentLang === 'en' ? 'Copied ✓' : '已复制 ✓');
         });
