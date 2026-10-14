@@ -1516,61 +1516,69 @@ impl Runner {
         self.host
             .reporter
             .report(ProgramState::Working, Some("Waiting for model"));
-        let res = self.turn_inner(prompt).await;
-        match res {
-            Ok(cancelled) => {
-                if cancelled {
+        let res = tokio::select! {
+            res = self.turn_inner(prompt) => res,
+            signal = tokio::signal::ctrl_c() => {
+                if let Err(e) = signal {
+                    Err(e.to_string())
+                } else {
+                    if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
+                        self.host.reporter.report(ProgramState::Error, Some(&cleanup_err));
+                        return Err(cleanup_err);
+                    }
                     self.host.reporter.cancelled.store(true, Ordering::SeqCst);
                     self.host.reporter.report(ProgramState::Idle, None);
-                    Err(
+                    return Err(
                         "Cancelled; previous session retained. File changes are not rolled back."
                             .into(),
-                    )
-                } else {
-                    self.host.reporter.report(ProgramState::Done, None);
-                    Ok(())
+                    );
                 }
             }
+        };
+        match res {
+            Ok(()) => {
+                self.host.reporter.report(ProgramState::Done, None);
+                Ok(())
+            }
             Err(e) => {
+                if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
+                    self.host
+                        .reporter
+                        .report(ProgramState::Error, Some(&cleanup_err));
+                    return Err(cleanup_err);
+                }
                 self.host.reporter.report(ProgramState::Error, Some(&e));
                 Err(e)
             }
         }
     }
 
-    async fn turn_inner(&mut self, prompt: &str) -> Result<bool, String> {
+    async fn turn_inner(&mut self, prompt: &str) -> Result<(), String> {
         let expanded_prompt = expand_at_files(&self.session.cwd, prompt)?;
         let extra_tools = if self.no_mcp {
             Vec::new()
         } else {
             load_dynamic_tools(&self.session.cwd, self.host.clone(), &self.tool_filter).await?
         };
-        let mut cancelled = false;
-        let history = tokio::select! {
-            result = run_with_tools(
-                self.config.clone(),
-                self.session.history.clone(),
-                &expanded_prompt,
-                &self.session.cwd,
-                self.host.clone(),
-                Services { antigravity: self.antigravity.as_ref(), ..Services::default() },
-                RunTools {
-                    options: self.options.clone(),
-                    read_only: false,
-                    subagents: self.subagents.clone(),
-                    tool_filter: self.tool_filter.clone(),
-                    extra_tools,
-                }
-            ) => result?,
-            signal = tokio::signal::ctrl_c() => {
-                signal.map_err(|e| e.to_string())?;
-                cancelled = true;
-                Vec::new()
-            }
-        };
-        if cancelled {
-            return Ok(true);
-        }
+        let history = run_with_tools(
+            self.config.clone(),
+            self.session.history.clone(),
+            &expanded_prompt,
+            &self.session.cwd,
+            self.host.clone(),
+            Services {
+                antigravity: self.antigravity.as_ref(),
+                ..Services::default()
+            },
+            RunTools {
+                options: self.options.clone(),
+                read_only: false,
+                subagents: self.subagents.clone(),
+                tool_filter: self.tool_filter.clone(),
+                extra_tools,
+            },
+        )
+        .await?;
         if let Some(manager) = &self.subagents {
             let active: Vec<_> = manager
                 .list()
@@ -1601,7 +1609,7 @@ impl Runner {
                 eprintln!("Session: {}", self.path.display());
             }
         }
-        Ok(false)
+        Ok(())
     }
 }
 
