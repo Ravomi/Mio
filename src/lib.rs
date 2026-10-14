@@ -9,6 +9,7 @@ pub mod compact;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
+pub mod delegation;
 pub mod mcp;
 pub mod pattern;
 pub mod plugin;

@@ -21,7 +21,7 @@ const MAX_OUTPUT: usize = 32 * 1024;
 const MAX_HISTORY: usize = 2 * 1024 * 1024;
 const MAX_WAIT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Running,
@@ -69,6 +69,7 @@ pub struct Task {
     pub host: Arc<dyn Host>,
     pub options: RunOptions,
     pub read_only: bool,
+    pub tool_filter: crate::pattern::ToolFilter,
 }
 pub trait Executor: Send + Sync {
     fn execute(&self, task: Task) -> HostFuture<Result<Vec<Message>, String>>;
@@ -104,6 +105,7 @@ fn execute_task(
                 options: task.options,
                 read_only: task.read_only,
                 subagents: None,
+                tool_filter: task.tool_filter,
                 ..RunTools::default()
             },
         )
@@ -119,6 +121,7 @@ struct Session {
     active: Option<Uuid>,
 }
 struct Record {
+    seq: usize,
     snapshot: Snapshot,
     cancel: Option<oneshot::Sender<()>>,
     changed: watch::Sender<Status>,
@@ -127,6 +130,7 @@ struct Record {
 struct State {
     sessions: BTreeMap<String, Session>,
     runs: BTreeMap<Uuid, Record>,
+    next_seq: usize,
     parent_operations: usize,
 }
 
@@ -216,6 +220,30 @@ impl SubagentManager {
     }
 
     pub fn delegate(&self, request: Delegate, host: Arc<dyn Host>) -> Result<Snapshot, String> {
+        self.delegate_with_timeout(request, host, None)
+    }
+
+    pub fn delegate_with_timeout(
+        &self,
+        request: Delegate,
+        host: Arc<dyn Host>,
+        task_timeout: Option<Duration>,
+    ) -> Result<Snapshot, String> {
+        self.delegate_with_options(
+            request,
+            host,
+            task_timeout,
+            crate::pattern::ToolFilter::default(),
+        )
+    }
+
+    pub fn delegate_with_options(
+        &self,
+        request: Delegate,
+        host: Arc<dyn Host>,
+        task_timeout: Option<Duration>,
+        tool_filter: crate::pattern::ToolFilter,
+    ) -> Result<Snapshot, String> {
         validate_name(&request.session)?;
         if request.prompt.trim().is_empty()
             || request.prompt.len() > 65536
@@ -281,6 +309,8 @@ impl SubagentManager {
             Vec::new()
         };
         let id = Uuid::new_v4();
+        let seq = state.next_seq;
+        state.next_seq += 1;
         let snapshot = Snapshot {
             run_id: id,
             session: request.session.clone(),
@@ -308,6 +338,7 @@ impl SubagentManager {
         state.runs.insert(
             id,
             Record {
+                seq,
                 snapshot: snapshot.clone(),
                 cancel: Some(cancel),
                 changed,
@@ -328,10 +359,14 @@ impl SubagentManager {
             host: task_host,
             options: self.options.clone(),
             read_only: request.read_only,
+            tool_filter,
         };
         let executor = self.executor.clone();
         let state = self.state.clone();
-        let timeout = self.timeout;
+        let timeout = match task_timeout {
+            Some(t) => t.min(self.timeout),
+            None => self.timeout,
+        };
         runtime.spawn(async move {
             // Drop the execution future (including shell guards) before releasing the workspace lease.
             let outcome = {
@@ -375,13 +410,10 @@ impl SubagentManager {
             .ok_or("Unknown child run".into())
     }
     pub fn list(&self) -> Vec<Snapshot> {
-        self.state
-            .lock()
-            .unwrap()
-            .runs
-            .values()
-            .map(|r| r.snapshot.clone())
-            .collect()
+        let state = self.state.lock().unwrap();
+        let mut records: Vec<_> = state.runs.values().collect();
+        records.sort_by_key(|r| r.seq);
+        records.into_iter().map(|r| r.snapshot.clone()).collect()
     }
     pub async fn status(&self, id: Uuid, wait: Duration) -> Result<Snapshot, String> {
         let mut changed = self
