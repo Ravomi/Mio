@@ -507,6 +507,10 @@ struct ChildHost {
     id: Uuid,
 }
 impl Host for ChildHost {
+    fn approve_tool(&self, operation: &str, target: &str) -> Result<(), String> {
+        self.inner.approve_tool(operation, target)
+    }
+
     fn shell(&self, command: &str, cwd: &Path) -> HostFuture<Result<String, String>> {
         self.inner.shell(command, cwd)
     }
