@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+
+<html data-theme="light" data-theme-mode="light" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Changelog · Mio 功能更新与版本演进</title>
+<meta content="Mio Agent 真实版本演进记录。基于 Git 真实提交历史与工作区未发布功能拆解。" name="description"/>
+<link href="favicon.svg" rel="icon" type="image/svg+xml"/>
+<link href="styles.css" rel="stylesheet"/>
+<link href="reference.css" rel="stylesheet"/>
+</head>
+<body class="ref-page-wrap">
+<a class="skip-link" href="#main-content">跳转到正文内容 (Skip to main content)</a>
+<header class="site-header" role="banner">
+<div style="display: flex; align-items: center; gap: 1rem;">
+<a class="brand" href="index.html">
+<img alt="Mio Logo" height="30" src="mio-logo.png" width="30"/>
+<span>Mio</span>
+<span class="brand-badge" data-en="Changelog" data-zh="功能更新">功能更新</span>
+</a>
+</div>
+<nav aria-label="主导航">
+<ul class="nav-links"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a class="nav-link" data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a class="nav-link" data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a aria-current="page" class="nav-link is-active" data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a class="nav-link" data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a class="nav-link" data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li>
+<a class="nav-link" href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">
+            GitHub ↗
+          </a>
+</li>
+</ul>
+</nav>
+<div class="nav-controls">
+<button aria-label="切换语言 / Switch language" class="nav-pill-btn" id="langToggleBtn" type="button">EN</button>
+<button aria-label="切换深浅色主题" class="nav-pill-btn" id="themeToggleBtn" type="button">
+<span aria-hidden="true" id="themeIcon">☀</span>
+<span data-en="Light" data-zh="浅色" id="themeLabel">浅色</span>
+</button>
+<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button">☰</button>
+</div>
+</header>
+<!-- Mobile Navigation Drawer -->
+<div aria-label="移动端导航" class="mobile-nav-drawer" id="mobileNavDrawer">
+<ul class="mobile-nav-list"><li><a class="nav-link" data-en="Install" data-zh="安装" href="installation.html">安装</a></li>
+<li><a data-en="Live Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a></li>
+<li><a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a></li>
+<li><a class="is-active" data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a></li>
+<li><a data-en="Models" data-zh="模型生态" href="models.html">模型生态</a></li>
+<li><a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a></li>
+<li><a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a></li>
+</ul>
+</div>
+<main class="ref-container" id="main-content"><article class="ref-article"><h1 data-en="Changelog" data-zh="功能更新">功能更新</h1><p data-en="Features, fixes and development progress. The Cargo package version is 0.1.0; this alone does not establish a published GitHub Release or npm package." data-zh="记录新功能、修复和开发进展。Cargo 包版本为 0.1.0；版本号本身不代表已发布 GitHub Release 或 npm 包。">记录新功能、修复和开发进展。Cargo 包版本为 0.1.0；版本号本身不代表已发布 GitHub Release 或 npm 包。</p><div class="ref-filter-bar"><label for="changelogCategorySelect"><span data-en="Filter by type" data-zh="按类型筛选">按类型筛选</span></label><select class="ref-filter-select" id="changelogCategorySelect"><option data-en="All updates" data-zh="全部动态" value="all">全部动态</option><option data-en="Features" data-zh="新功能" value="feature">新功能</option><option data-en="Fixes" data-zh="修复" value="fix">修复</option><option data-en="Documentation" data-zh="文档" value="docs">文档</option><option data-en="Architecture" data-zh="架构" value="arch">架构</option></select></div><div class="timeline"><section class="timeline-entry"><span aria-hidden="true" class="timeline-dot"></span><div class="timeline-header"><h2>Unreleased</h2><span class="timeline-date">尚未发布 / Not released</span></div><div class="timeline-card"><div class="changelog-group" data-group-type="feature"><h3 data-en="Features" data-zh="新功能">新功能</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Installers for curl, PowerShell, npm, pnpm and Bun, with checksummed binary release automation." data-zh="多方式安装：提供 curl、PowerShell、npm、pnpm、Bun 安装入口，以及带校验和的二进制发布流程。">多方式安装：提供 curl、PowerShell、npm、pnpm、Bun 安装入口，以及带校验和的二进制发布流程。</span> <a href="installation.html"><span data-en="Details" data-zh="查看">查看</span></a></li><li class="changelog-item"><span data-en="Documentation covering usage, CLI flags, environment variables, sessions, tools and RPC." data-zh="完整文档：使用指南、CLI 参数、环境变量、会话、工具与 RPC 接口。">完整文档：使用指南、CLI 参数、环境变量、会话、工具与 RPC 接口。</span> <a href="documentation.html"><span data-en="Details" data-zh="查看">查看</span></a></li><li class="changelog-item"><span data-en="Model catalog synchronized from source: 10 providers and 27 presets with search, filters and command copying." data-zh="模型目录：从源码同步 10 个提供商、27 个模型预设，支持搜索、筛选与命令复制。">模型目录：从源码同步 10 个提供商、27 个模型预设，支持搜索、筛选与命令复制。</span> <a href="models.html"><span data-en="Details" data-zh="查看">查看</span></a></li><li class="changelog-item"><span data-en="Workspace plugins, MCP tool loading, tool filters and native subagents." data-zh="插件与工具：工作区插件、MCP 工具加载、工具过滤和原生子代理。">插件与工具：工作区插件、MCP 工具加载、工具过滤和原生子代理。</span> <a href="documentation.html#plugins-mcp"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div><div class="changelog-group" data-group-type="docs"><h3 data-en="Documentation" data-zh="使用说明">使用说明</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Document serial RPC handling, configuration path precedence, file references and context compaction." data-zh="补充 RPC 串行处理限制、配置目录优先级、文件引用与上下文压缩行为。">补充 RPC 串行处理限制、配置目录优先级、文件引用与上下文压缩行为。</span> <a href="documentation.html#rpc-protocol"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div></div></section><section class="timeline-entry"><span aria-hidden="true" class="timeline-dot"></span><div class="timeline-header"><h2>2026-10-14</h2><span class="timeline-date">官网演进 / Website development</span></div><div class="timeline-card"><div class="changelog-group" data-group-type="docs"><h3 data-en="Website" data-zh="官网">官网</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Updated the Mio product website and interactive demonstrations. This date records development, not a release." data-zh="更新 Mio 产品官网与交互演示。此日期记录开发提交，不代表版本发布。">更新 Mio 产品官网与交互演示。此日期记录开发提交，不代表版本发布。</span> <a href="https://github.com/Ravomi/Mio/commit/d535ee4"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div></div></section><section class="timeline-entry"><span aria-hidden="true" class="timeline-dot"></span><div class="timeline-header"><h2>2026-10-13</h2><span class="timeline-date">引擎与 CLI / Engine and CLI</span></div><div class="timeline-card"><div class="changelog-group" data-group-type="feature"><h3 data-en="Native workflow" data-zh="原生工作流">原生工作流</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Native CLI and tool loop, resumable and forkable conversation history, and Antigravity OAuth profile reuse." data-zh="原生 CLI、工具循环、可恢复与分叉的完整会话，以及 Antigravity OAuth 配置复用。">原生 CLI、工具循环、可恢复与分叉的完整会话，以及 Antigravity OAuth 配置复用。</span> <a href="documentation.html#sessions"><span data-en="Details" data-zh="查看">查看</span></a></li><li class="changelog-item"><span data-en="Subagents default to read-only with explicit write access available; tool restrictions are not an OS sandbox." data-zh="子代理默认只读，可显式允许写入；工具限制不是操作系统沙箱。">子代理默认只读，可显式允许写入；工具限制不是操作系统沙箱。</span> <a href="documentation.html#subagents"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div><div class="changelog-group" data-group-type="fix"><h3 data-en="Fixes" data-zh="修复">修复</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Continue from the most recently saved session." data-zh="继续会话时选择最近保存的会话。">继续会话时选择最近保存的会话。</span> <a href="https://github.com/Ravomi/Mio/commit/a58bee0"><span data-en="Details" data-zh="查看">查看</span></a></li><li class="changelog-item"><span data-en="Retain input history after a resumed turn completes." data-zh="续接回合完成后保留原有会话历史。">续接回合完成后保留原有会话历史。</span> <a href="https://github.com/Ravomi/Mio/commit/0f5e1b0"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div><div class="changelog-group" data-group-type="arch"><h3 data-en="Architecture" data-zh="架构">架构</h3><ul class="changelog-list"><li class="changelog-item"><span data-en="Pin and internalize upstream Rig sources while preserving MIT licensing and third-party notices." data-zh="固定并内置 Rig 上游依赖源码，保留 MIT 许可与第三方声明。">固定并内置 Rig 上游依赖源码，保留 MIT 许可与第三方声明。</span> <a href="https://github.com/Ravomi/Mio/commit/a897d65"><span data-en="Details" data-zh="查看">查看</span></a></li></ul></div></div></section></div></article></main>
+<footer class="ref-footer" role="contentinfo">
+<div class="ref-footer-content">
+<div class="ref-footer-top">
+<div data-en-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · Built on &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT License" data-zh-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · 基于 &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT 许可"><strong>Mio (mio-agent)</strong> · 基于 <a href="https://github.com/0xPlaygrounds/rig">Rig</a> · MIT 许可</div>
+<div class="ref-footer-links">
+<a data-en="Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a>
+<a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a>
+<a data-en="Changelog" data-zh="功能更新" href="changelog.html">功能更新</a>
+<a data-en="Models" data-zh="模型生态" href="models.html">模型生态</a>
+<a data-en="Packages" data-zh="插件社区" href="packages.html">插件社区</a>
+<a href="https://github.com/Ravomi/Mio" rel="noopener noreferrer" target="_blank">GitHub ↗</a>
+</div>
+</div>
+</div>
+</footer>
+<div aria-atomic="true" aria-live="polite" class="sr-only" id="copy-status-live"></div>
+<script src="reference.js"></script>
+</body>
+</html>
