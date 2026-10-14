@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html data-theme="light" data-theme-mode="light" lang="zh-CN">
+<html data-theme="dark" data-theme-mode="dark" lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
@@ -37,10 +37,10 @@
 <div class="nav-controls">
 <button aria-label="切换语言 / Switch language" class="nav-pill-btn" id="langToggleBtn" type="button">EN</button>
 <button aria-label="切换深浅色主题" class="nav-pill-btn" id="themeToggleBtn" type="button">
-<span aria-hidden="true" id="themeIcon">☀</span>
+<span aria-hidden="true" id="themeIcon"></span>
 <span data-en="Light" data-zh="浅色" id="themeLabel">浅色</span>
 </button>
-<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button">☰</button>
+<button aria-controls="mobileNavDrawer" aria-expanded="false" aria-label="打开导航菜单" class="nav-mobile-menu-btn" id="mobileMenuBtn" type="button"></button>
 </div>
 </header>
 <!-- Mobile Navigation Drawer -->
@@ -59,12 +59,12 @@
 <!-- 左栏导航与实时过滤 -->
 <aside aria-label="文档章节导航" class="ref-sidebar">
 <button aria-controls="docSidebarCard" aria-expanded="false" class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button">
-<span data-en="📖 Expand Table of Contents" data-zh="📖 展开章节目录">📖 展开章节目录</span>
+<span data-en="Expand Table of Contents" data-zh="展开章节目录">展开章节目录</span>
 <span aria-hidden="true" class="sidebar-toggle-icon">▾</span>
 </button>
 <div class="ref-sidebar-card" id="docSidebarCard">
 <div class="ref-search-wrap">
-<span aria-hidden="true" class="ref-search-icon">🔍</span>
+<span aria-hidden="true" class="ref-search-icon"></span>
 <input aria-label="搜索文档章节" class="ref-search-input" data-en-placeholder="Search sections..." data-zh-placeholder="搜索文档章节..." id="sidebarSearchInput" placeholder="搜索文档章节..." type="text"/>
 </div>
 <div class="ref-nav-group">
@@ -136,7 +136,7 @@ mio --version</code></pre>
 </div>
 <div class="ref-callout warning">
 <div class="ref-callout-title">
-<span>⚠️</span>
+<span>️</span>
 <span data-en="Model selection: use --model, MIO_MODEL, or a default model from an imported Antigravity profile." data-zh="模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。">模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。</span>
 </div>
 <ul class="ref-ul" style="margin-bottom: 0;">
@@ -163,7 +163,7 @@ mio --provider deepseek --model deepseek-reasoner -p "重构 context.rs"
 # 3. 本地 Ollama 离线免密调用
 mio --provider ollama --model qwen2.5-coder:32b -p "生成单元测试"
 
-# 4. Anthropic 兼容网关接入 (⚠️ 必须提供 OpenAI 兼容网关)
+# 4. Anthropic 兼容网关接入 (️ 必须提供 OpenAI 兼容网关)
 export MIO_API_KEY="sk-..."
 mio --provider anthropic --model claude-sonnet-4-5 \
   --base-url https://your-gateway.example/v1 -p "解释这个架构"</code></pre>
@@ -212,7 +212,7 @@ mio --provider anthropic --model claude-sonnet-4-5 \
             </p>
 <div class="ref-callout info">
 <div class="ref-callout-title">
-<span>🔍</span>
+<span></span>
 <span data-en="Parser Facts: --continue vs --fork" data-zh="CLI 真实解析事实纠正：--continue 与 --fork">CLI 真实解析事实纠正：--continue 与 --fork</span>
 </div>
 <ul class="ref-ul" style="margin-bottom: 0;">
@@ -280,7 +280,7 @@ mio --template review-pr -p "feat(mcp): support dynamic tool registration"</code
 </h2>
 <div class="ref-callout info">
 <div class="ref-callout-title">
-<span>💡</span>
+<span></span>
 <span data-en="DEFAULT_KEEP_RECENT_MESSAGES &amp; Deterministic Summary" data-zh="DEFAULT_KEEP_RECENT_MESSAGES 与本地结构化摘要">DEFAULT_KEEP_RECENT_MESSAGES 与本地结构化摘要</span>
 </div>
 <ul class="ref-ul" style="margin-bottom: 0;">
@@ -314,7 +314,7 @@ mio --auto-compact -p "大规模批量重构"</code></pre>
             </p>
 <div class="ref-callout danger">
 <div class="ref-callout-title">
-<span>🛑</span>
+<span></span>
 <span data-en="Tool Approval Behavior in Non-TTY / JSON" data-zh="--approve 交互审批在非 TTY / JSON 下的拒绝行为">--approve 交互审批在非 TTY / JSON 下的拒绝行为</span>
 </div>
 <p class="ref-p" data-en="When --approve is enabled in a non-terminal environment or under --json mode, approve_tool() cannot prompt interactively and directly rejects sensitive tool calls. It will never silently allow destructive actions." data-zh="当传入 --approve 开启工具确认时，若当前终端为非 TTY 环境或启用了 --json，approve_tool() 无法弹出交互式提示，将直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作并抛出错误（Tool requires interactive approval (--approve)）。绝不会在非交互场景下静默放行危险命令。" style="margin-bottom: 0;">
@@ -344,7 +344,7 @@ mio --approve</code></pre>
 </h2>
 <div class="ref-callout warning">
 <div class="ref-callout-title">
-<span>⚙️</span>
+<span>️</span>
 <span data-en="Default Read-Only &amp; Explicit Write Capability" data-zh="只读默认值与显式可写权限">只读默认值与显式可写权限</span>
 </div>
 <p class="ref-p" data-en="Subagents default to read_only=true; explicit read_only=false permits writes. Up to four run concurrently, without further delegation, and results are collected before the parent turn ends. Tool permissions are not an OS sandbox." data-zh="子代理默认 read_only=true；显式 read_only=false 可允许写入。最多并发 4 个，不继续委派，父回合结束前收集结果。工具权限不是操作系统沙箱。" style="margin-bottom: 0;">子代理默认 read_only=true；显式 read_only=false 可允许写入。最多并发 4 个，不继续委派，父回合结束前收集结果。工具权限不是操作系统沙箱。</p>
@@ -369,7 +369,7 @@ mio --subagents -p "让只读子代理检查仓库中的错误处理，汇总发
             </p>
 <div class="ref-callout warning">
 <div class="ref-callout-title">
-<span>⚠️</span>
+<span>️</span>
 <span data-en="Fact: --no-mcp Disables Plugin Dynamic Tools" data-zh="--no-mcp 会一并阻断插件动态工具">--no-mcp 会一并阻断插件动态工具</span>
 </div>
 <p class="ref-p" data-en="In src/bin/mio.rs, --no-mcp bypasses load_dynamic_tools() entirely, which loads both plugin dynamic tools and MCP specs. Therefore, --no-mcp disables both." data-zh="在 src/bin/mio.rs 中，--no-mcp 会直接绕过 load_dynamic_tools() 的执行。而 load_dynamic_tools() 内部同时承担了加载插件内置动态工具 (load_plugin_tools) 与 MCP 外部工具 (load_mcp_specs) 的职责。因此传入 --no-mcp 会同时关闭 MCP 服务与插件动态工具。" style="margin-bottom: 0;">
@@ -399,7 +399,7 @@ mio --plugin-list</code></pre>
 </h2>
 <div class="ref-callout danger">
 <div class="ref-callout-title">
-<span>🛑</span>
+<span></span>
 <span data-en="RPC Implementation Boundaries &amp; Limitations" data-zh="RPC 运行循环边界与实验性限制">RPC 运行循环边界与实验性限制</span>
 </div>
 <ul class="ref-ul" style="margin-bottom: 0;">

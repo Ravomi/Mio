@@ -41,7 +41,7 @@
         } catch (e) {}
       }
       if (iconEl) {
-        iconEl.textContent = mode === 'dark' ? '☾' : mode === 'auto' ? '◐' : '☀';
+        iconEl.textContent = mode === 'dark' ? '' : mode === 'auto' ? '◐' : '';
       }
       if (labelEl) {
         var labels = {
@@ -56,16 +56,16 @@
       }
     }
 
-    var savedMode = 'light';
+    var savedMode = 'dark';
     try {
-      savedMode = localStorage.getItem('mio:theme') || 'light';
+      savedMode = localStorage.getItem('mio:theme') || 'dark';
     } catch (e) {}
 
     applyTheme(savedMode, false);
 
     if (btn) {
       btn.addEventListener('click', function () {
-        var cur = document.documentElement.dataset.themeMode || 'light';
+        var cur = document.documentElement.dataset.themeMode || 'dark';
         var next = cur === 'light' ? 'dark' : cur === 'dark' ? 'auto' : 'light';
         applyTheme(next, true);
       });
@@ -73,7 +73,7 @@
 
     if (media && media.addEventListener) {
       media.addEventListener('change', function () {
-        if ((document.documentElement.dataset.themeMode || 'light') === 'auto') {
+        if ((document.documentElement.dataset.themeMode || 'dark') === 'auto') {
           applyTheme('auto', false);
         }
       });
@@ -154,7 +154,7 @@
         try {
           try {if(!navigator.clipboard)throw new Error('unavailable');await navigator.clipboard.writeText(text.trim());}
           catch(e){fallback(text.trim());}
-          btn.textContent=currentLang==='en'?'Copied ✓':'已复制 ✓';live.textContent=btn.textContent;
+          btn.textContent=currentLang==='en'?'Copied ':'已复制 ';live.textContent=btn.textContent;
         } catch(e) {btn.textContent=currentLang==='en'?'Copy failed; select the code':'复制失败，请选择代码';live.textContent=btn.textContent;}
         setTimeout(function(){btn.textContent=currentLang==='en'?'Copy':'复制';},2000);
       });
