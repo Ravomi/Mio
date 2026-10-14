@@ -5,6 +5,7 @@
 
 pub mod accounts;
 pub mod antigravity;
+pub mod compact;
 pub mod context;
 pub mod deepseek;
 pub mod deepseek_pow;
@@ -208,6 +209,7 @@ pub struct RunOptions {
     pub instructions: String,
     pub max_turns: usize,
     pub thinking: Option<ThinkingLevel>,
+    pub auto_compact_bytes: Option<usize>,
 }
 
 impl Default for RunOptions {
@@ -216,6 +218,7 @@ impl Default for RunOptions {
             instructions: String::new(),
             max_turns: 32,
             thinking: None,
+            auto_compact_bytes: None,
         }
     }
 }
@@ -399,6 +402,17 @@ pub async fn run_with_tools(
         }
     }
     let agent = builder.build();
+
+    let history = if let Some(threshold) = options.auto_compact_bytes
+        && threshold > 0
+        && compact::history_bytes(&history) > threshold
+    {
+        let (compacted, _) =
+            compact::compact_history(&history, compact::DEFAULT_KEEP_RECENT_MESSAGES, None);
+        compacted
+    } else {
+        history
+    };
 
     // Rig's FinalResponse contains only this run's new messages, not input history.
     let mut complete_history = history.clone();
