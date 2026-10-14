@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mio - Rust 原生编程 Agent 引擎与 CLI</title>
-  <meta name="description" content="Mio (mio-agent) 是用 Rust 构建的无头编程 Agent 引擎与 CLI。2.5 毫秒冷启动、5.6 MB 内存占用，内置有界文件检索、唯一匹配替换、四路只读子代理与可分叉会话树，可零 IPC 嵌入 Rust 应用。">
+  <meta name="description" content="Mio (mio-coding-agent) 是用 Rust 构建的无头编程 Agent 引擎与 CLI。2.5 毫秒冷启动、5.6 MB 内存占用，内置有界文件检索、唯一匹配替换、四路只读子代理与可分叉会话树，可零 IPC 嵌入 Rust 应用。">
   <meta name="theme-color" content="#1b1d20">
 
   <meta property="og:title" content="Mio - Rust 原生编程 Agent 引擎与 CLI">
@@ -71,7 +71,7 @@
 
       <div class="hero-right">
         <div class="hero-top-row">
-          <span class="small muted" data-zh="mio-agent v0.1.0 · MIT 许可" data-en="mio-agent v0.1.0 · MIT License">mio-agent v0.1.0 · MIT 许可</span>
+          <span class="small muted" data-zh="mio-coding-agent v0.1.0 · MIT 许可" data-en="mio-coding-agent v0.1.0 · MIT License">mio-coding-agent v0.1.0 · MIT 许可</span>
           <div class="top-links">
             <button type="button" id="langToggleBtn" aria-label="切换中英文">EN</button>
             <button type="button" id="themeToggleBtn" aria-label="切换石墨深浅外观" data-zh="浅灰台面" data-en="Light slate">浅灰台面</button>
@@ -83,7 +83,7 @@
           <div class="ui-probe" data-ui id="livePageProbe" role="region" aria-label="实时读取当前页面的 Mio 工作区探针">
             <div>
               <div class="ui-header">
-                <span class="ui-title">mio-agent::Workspace · 实时页面探针</span>
+                <span class="ui-title">mio-coding-agent::Workspace · 实时页面探针</span>
                 <span class="ui-status" id="probeModeBadge">read · active</span>
               </div>
 
@@ -165,7 +165,7 @@
           <div class="showcase-state-word" data-zh="唯一匹配门控" data-en="Match gate">唯一匹配门控</div>
           <div class="showcase-fragment" data-ui>
             <div class="ui-header">
-              <span class="ui-title">mio-agent::edit · 唯一匹配校验与宿主审批门控</span>
+              <span class="ui-title">mio-coding-agent::edit · 唯一匹配校验与宿主审批门控</span>
               <span class="ui-status" id="showcaseGateBadge">1 unique match · 待确认</span>
             </div>
             <pre class="ui-terminal-pre" id="showcaseDiffPre" style="margin-top: 0.75rem;"><code>--- a/src/workspace.rs
@@ -198,7 +198,7 @@
 [ready] 可随时运行 mio --resume --fork 从当前节点分叉探索新方案</code></pre>
             <div class="ui-footer-row">
               <span id="showcaseResultFoot">修改有依据，歧义零容忍</span>
-              <span>mio-agent::SessionStore</span>
+              <span>mio-coding-agent::SessionStore</span>
             </div>
           </div>
         </div>
@@ -318,7 +318,7 @@
         <!-- Capability 4 -->
         <article class="capability-block" data-reveal>
           <h3 data-zh="四种形态与进程内嵌入" data-en="Four execution modes and Rust SDK">四种形态与进程内嵌入</h3>
-          <p data-zh="同一套 Rust 核心支持终端交互 REPL、单次 JSON Lines 事件流、双向 Stdio RPC 协议（支持实时 steer 注入与外部 MCP 桥接），也可直接通过 Host trait 零 IPC 链接进你的桌面或服务端宿主。" data-en="Run interactive REPL, one-shot JSONL streams, bidirectional stdio RPC with live steering and MCP bridges, or embed mio-agent in-process via the Rust Host trait.">
+          <p data-zh="同一套 Rust 核心支持终端交互 REPL、单次 JSON Lines 事件流、双向 Stdio RPC 协议（支持实时 steer 注入与外部 MCP 桥接），也可直接通过 Host trait 零 IPC 链接进你的桌面或服务端宿主。" data-en="Run interactive REPL, one-shot JSONL streams, bidirectional stdio RPC with live steering and MCP bridges, or embed mio-coding-agent in-process via the Rust Host trait.">
             同一套 Rust 核心支持终端交互 REPL、单次 JSON Lines 事件流、双向 Stdio RPC 协议（支持实时 <code>steer</code> 注入与外部 MCP 桥接），也可直接通过 <code>Host</code> trait 零 IPC 链接进你的桌面或服务端宿主。
           </p>
           <div class="control-surface" role="group" aria-label="选择运行与集成形态">
@@ -811,8 +811,8 @@ hyperfine -N --warmup 3 './target/release/mio --help' 'codex --help' 'claude --h
     <section class="wrap cta-quiet-section" aria-label="开始使用 Mio">
       <div class="grid">
         <div class="cta-quiet-col" data-reveal>
-          <p class="cta-sentence" data-zh="在终端以 2.5 毫秒启动它，或将 mio-agent 直接编译进你的下一个 Rust 应用。" data-en="Start it in your terminal in 2.5 milliseconds, or link mio-agent directly into your next Rust application.">
-            在终端以 2.5 毫秒启动它，或将 mio-agent 直接编译进你的下一个 Rust 应用。
+          <p class="cta-sentence" data-zh="在终端以 2.5 毫秒启动它，或将 mio-coding-agent 直接编译进你的下一个 Rust 应用。" data-en="Start it in your terminal in 2.5 milliseconds, or link mio-coding-agent directly into your next Rust application.">
+            在终端以 2.5 毫秒启动它，或将 mio-coding-agent 直接编译进你的下一个 Rust 应用。
           </p>
           <div class="cta-actions">
             <a href="https://github.com/Ravomi/Mio" target="_blank" rel="noopener noreferrer" class="button" data-zh="获取 GitHub 源码" data-en="Get source on GitHub">获取 GitHub 源码</a>

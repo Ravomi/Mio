@@ -7,7 +7,7 @@ use crate::{
 };
 use bytes::Bytes;
 use futures_util::{StreamExt, stream};
-use rig_core::{
+use mio_core::{
     http_client::{
         self, HttpClientExt, LazyBody, MultipartForm, Request, Response, StreamingResponse,
         framing::SseFramer,

@@ -1,4 +1,4 @@
-use mio_agent::{
+use mio_coding_agent::{
     Arguments, Host, HostFuture, Workspace, checked_path, workspace::MAX_READ_OUTPUT_BYTES,
 };
 use std::{fs::File, io::Write, path::Path, sync::Arc};
@@ -8,7 +8,7 @@ impl Host for DummyHost {
     fn shell(&self, _cmd: &str, _cwd: &Path) -> HostFuture<Result<String, String>> {
         Box::pin(async { Ok(String::new()) })
     }
-    fn on_event(&self, _event: mio_agent::AgentEvent) {}
+    fn on_event(&self, _event: mio_coding_agent::AgentEvent) {}
 }
 
 #[tokio::test]
@@ -318,7 +318,7 @@ async fn test_grep_chinese_long_line_and_total_budget() {
 
     assert!(grep_res.contains("chinese_long.txt:1: prefix target_key"));
     assert!(grep_res.contains("[TRUNCATED LINE]"));
-    assert!(grep_res.len() <= mio_agent::workspace::MAX_GREP_TOTAL_BYTES);
+    assert!(grep_res.len() <= mio_coding_agent::workspace::MAX_GREP_TOTAL_BYTES);
 
     // 2. 总字节上限测试（生成多行匹配，总长度超过 64 KiB）
     let many_matches_file = folder.path().join("many_matches.txt");
@@ -334,7 +334,7 @@ async fn test_grep_chinese_long_line_and_total_budget() {
         .unwrap();
 
     assert!(total_res.contains("达到最大输出字节数限制"));
-    assert!(total_res.len() <= mio_agent::workspace::MAX_GREP_TOTAL_BYTES);
+    assert!(total_res.len() <= mio_coding_agent::workspace::MAX_GREP_TOTAL_BYTES);
 }
 
 #[tokio::test]

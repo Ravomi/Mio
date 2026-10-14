@@ -1,4 +1,4 @@
-//! mio-agent: Headless coding agent engine extracted from Ravomi.
+//! mio-coding-agent: Headless coding agent engine extracted from Ravomi.
 //!
 //! Mio 采用 Rig 驱动多轮 LLM 对话与工具调用循环。通过 Host trait 抽象终端与外部环境交互，
 //! 由库内部负责文件读写安全校验、120 秒超时控制以及结构化事件流派发。
@@ -19,9 +19,9 @@ pub mod workspace;
 pub use workspace::{Arguments, Workspace, checked_path};
 
 use futures_util::StreamExt;
-use rig_agent::{AgentBuilder, agent::MultiTurnStreamItem};
-pub use rig_core::message::Message;
-use rig_core::{
+use mio_agent::{AgentBuilder, agent::MultiTurnStreamItem};
+pub use mio_core::message::Message;
+use mio_core::{
     DynModel,
     operation::Completion,
     providers::openai::{OpenAIConfig, wire::Route},

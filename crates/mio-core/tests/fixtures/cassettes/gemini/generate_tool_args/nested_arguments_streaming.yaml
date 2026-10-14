@@ -1,0 +1,20 @@
+when:
+  path: /v1beta/models/gemini-2.5-flash:streamGenerateContent
+  method: POST
+  query_param:
+  - name: alt
+    value: sse
+  - name: key
+    value: '[REDACTED]'
+  header:
+  - name: accept
+    value: text/event-stream
+  - name: content-type
+    value: application/json
+  body: '{"contents":[{"parts":[{"text":"Book this trip by calling the plan_trip tool exactly once with these exact values: itinerary.city = \"Kyoto\", itinerary.days = 3, itinerary.activities = [\"temples\", \"tea ceremony\"], itinerary.lodging.name = \"Sakura Inn\", itinerary.lodging.rooms = 2. After the tool returns, repeat its confirmation code in one short sentence.","thought":false}],"role":"user"}],"generationConfig":{"temperature":0.0},"safetySettings":null,"systemInstruction":{"parts":[{"text":"You are a travel booking assistant. Use the plan_trip tool for every booking request and copy the requested values into the tool arguments exactly as given.","thought":false}],"role":"model"},"toolConfig":null,"tools":[{"codeExecution":null,"functionDeclarations":[{"description":"Book a trip from a nested itinerary object.","name":"plan_trip","parametersJsonSchema":{"properties":{"itinerary":{"description":"The trip to book.","properties":{"activities":{"items":{"type":"string"},"type":"array"},"city":{"type":"string"},"days":{"type":"integer"},"lodging":{"properties":{"name":{"type":"string"},"rooms":{"type":"integer"}},"required":["name","rooms"],"type":"object"}},"required":["city","days","activities","lodging"],"type":"object"}},"required":["itinerary"],"type":"object"}}]}]}'
+then:
+  status: 200
+  header:
+  - name: content-type
+    value: text/event-stream
+  body: "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"args\":{\"itinerary\":{\"activities\":[\"temples\",\"tea ceremony\"],\"city\":\"Kyoto\",\"days\":3,\"lodging\":{\"name\":\"Sakura Inn\",\"rooms\":2}}},\"name\":\"plan_trip\"},\"thoughtSignature\":\"CiQBaRR9E6qXMv1kyuWO01YlcEbY8UWQwIUqQToAd6U3Y6KKdtMKXgFpFH0TvIoeijhw8KuLYSJ11DesEIRuIUNtyRJj9Zyqkoo+FyEWwJfceig878ZBKqj5il0EAnPpZ6ipq6smt2Fn6G9eu/+gufmIIpfPkCZREBl5NTr6m6OVL2iBfcoK0gEBaRR9EyGODifBlR67iPY6ZrE1ixVqGAy6XASps+AhoQ2SDNS5k+4decochq2LbTjdpbbA35jWcxf5tYTXoNerwAP3Ck26pUKBsBpoQypctugLtMjfEqzLQMbhzX11jYMkV7fM7Ds/Hcq60LKQFkJP1ro5qlNqSp3vv+boLXT6fZ5tx4nSRDTLw/j7UBVwUOzKskjWAbzRKlWQ0vfUK+t4dAvbOpRAoAmMiyMVlnXJx6wuBIeNGbdHL7WTWpseeL0Y/vpWh9E6Kv//mUCFKyH1VfQKtAEBaRR9E7t3Gw/fUsA7QLv/UxHP9k7pW7bCWLVt+UU4XEPxZKCz0RLYKZoPG+lDEHu7paW4HHKO2EaFjryXk9xl4auPPmv5DX8u383x+9JxpYH+Gc2p64FWcplrKTFk4+nhBlhwqiN9YW27wZkb1AzQDa07pTZN0NQW66DpvEG7rGnwr7M6N4GGp/GlQDBmdpRamgu+RB91FEkxk2PDLTp50hPORmSUiFtCM6mzvtA23IFP/XQKZAFpFH0TnjMF+VmVeiX0r5n5vDWd7x+vaVMOyC1yfO+dWvKCv7EbCl7ZfvwlZ9eequSEc+AYFvDyci4KOhXo6d5jKwaZ+pYnAgw70qmFztGfza6ETmGVInr6Vuj/JmqPcVf4NUU=\"}],\"role\":\"model\"},\"finishMessage\":\"Model generated function call(s).\",\"finishReason\":\"STOP\",\"index\":0}],\"modelVersion\":\"gemini-2.5-flash\",\"responseId\":\"pw3Bape1PJCP6dkPjqS2mQU\",\"usageMetadata\":{\"candidatesTokenCount\":56,\"promptTokenCount\":301,\"promptTokensDetails\":[{\"modality\":\"TEXT\",\"tokenCount\":301}],\"serviceTier\":\"standard\",\"thoughtsTokenCount\":134,\"totalTokenCount\":491}}\r\n\r\n"

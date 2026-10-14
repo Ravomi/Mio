@@ -3,7 +3,7 @@ use crate::{
     AgentEvent, Config, Host, HostFuture, Message, Provider, RunOptions, RunTools, Services,
 };
 use futures_util::FutureExt;
-use rig_core::tool::PortableTool;
+use mio_core::tool::PortableTool;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{

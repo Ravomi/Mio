@@ -5,7 +5,7 @@ use crate::accounts::{Status, save_private};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{StreamExt, stream};
-use rig_core::{
+use mio_core::{
     http_client::{
         self, HttpClientExt, LazyBody, MultipartForm, Request, Response, StreamingResponse,
         framing::SseFramer,

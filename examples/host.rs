@@ -1,4 +1,4 @@
-use mio_agent::{AgentEvent, Config, Host, HostFuture, Provider, Services, run};
+use mio_coding_agent::{AgentEvent, Config, Host, HostFuture, Provider, Services, run};
 use std::{path::Path, sync::Arc};
 
 struct ExampleHost;

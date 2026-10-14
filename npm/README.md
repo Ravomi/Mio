@@ -1,6 +1,6 @@
 # Mio (`@ravomi/mio`)
 
-Node.js wrapper and lazy prebuilt binary installer for Mio (`mio-agent`), the headless coding agent engine extracted from Ravomi.
+Node.js wrapper and lazy prebuilt binary installer for Mio (`mio-coding-agent`), the headless coding agent engine extracted from Ravomi.
 
 ## Requirements
 

@@ -12,7 +12,7 @@ Mio 将模型调用、代码工具和对话历史组织成完整工作流程：�
 
 ## 为什么使用 Mio
 
-- **终端与应用共用一个核心。** `mio` 命令行与 `mio-agent` Rust 库使用相同的工具循环；桌面宿主可以进程内调用，无需额外维护另一套 Agent 后台。
+- **终端与应用共用一个核心。** `mio` 命令行与 `mio-coding-agent` Rust 库使用相同的工具循环；桌面宿主可以进程内调用，无需额外维护另一套 Agent 后台。
 - **修改有依据。** 内置分页读取、文本检索、文件查找和精确替换。替换内容必须唯一匹配，歧义时不修改文件；输出和扫描规模有明确上限。
 - **项目规则随仓库走。** 加载 `AGENTS.md`、项目 Skills 和提示词模板，同一项目的编码约定可重复使用。
 - **任务可以接着做。** 保存完整消息与工具结果，支持恢复和创建会话分支，继续探索时保留原会话。
@@ -125,7 +125,7 @@ JSON Lines 事件形状示例：
 
 ## Rust 集成与模型接入
 
-`run` 保留简洁入口；`run_with_options` 可附加项目指令与配置工具轮次。`Host` 负责 `shell` 和 `on_event`。原生宿主可复用 `mio_agent::shell::execute`，也可自行提供执行策略、PTY 或隔离环境。回调仅为通知，不能拦截文件工具。
+`run` 保留简洁入口；`run_with_options` 可附加项目指令与配置工具轮次。`Host` 负责 `shell` 和 `on_event`。原生宿主可复用 `mio_coding_agent::shell::execute`，也可自行提供执行策略、PTY 或隔离环境。回调仅为通知，不能拦截文件工具。
 
 完整示例见 [`examples/host.rs`](examples/host.rs)。示例 Shell 明确返回“未实现”，不会伪造执行结果。`Config`、`Services` 支持库层的 OpenAI 兼容接口、Codex 与 DeepSeek，以及实验性的 Antigravity / DeepSeek 网页适配；CLI 暂不提供 OAuth 登录向导。
 
@@ -186,3 +186,13 @@ cargo clippy --all-targets --locked -- -D warnings
 Mio 从 [Ravomi](https://github.com/Ravomi/ravomi-app) 的 Agent 代码中抽离，独立发展为通用编程 Agent。来源记录见 [CREDITS.md](CREDITS.md)。
 
 感谢 **[Rig](https://github.com/0xPlaygrounds/rig)** 提供 Rust LLM 框架基础。Mio 保留 Rig 依赖及第三方许可，以 **MIT** 发布；相关声明见 [LICENSE](LICENSE)、[licenses/](licenses/) 和 [CREDITS.md](CREDITS.md)。
+
+## Rust 分层
+
+- `mio-core`：模型接入、消息、流式协议（`crates/mio-core`）。
+- `mio-agent`：通用 Agent 循环、工具调用、运行状态（`crates/mio-agent`）。
+- `mio-coding-agent`：编程工具、会话、宿主集成及 `mio` CLI（根包）。
+
+原来的产品库 `mio-agent` 已改名为 `mio-coding-agent`，Rust 导入相应改为
+`mio_coding_agent`；命令仍为 `mio`。底层源码基于 Rig 0.44.0，保留 MIT
+许可与上游署名。参见 [源码来源与维护说明](docs/rig-source.md)。

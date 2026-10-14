@@ -122,7 +122,7 @@ jobs:
       - name: Build target binary
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} --locked
+          cargo build -p mio-coding-agent --bin mio --release --target ${{ matrix.target }} --locked
 
       - name: Smoke test native binary
         shell: bash
