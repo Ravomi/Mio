@@ -9,7 +9,7 @@ use crate::{
     test_utils::{MockCompletionModel, MockStreamEvent, MockTurn},
     tool::{Tool, ToolContext, ToolErrorKind, ToolExecutionError},
 };
-use mio_core::message::ToolChoice;
+use mio_core::message::{Message, ToolChoice};
 
 struct MetadataFailingTool;
 
@@ -1014,4 +1014,35 @@ async fn a_model_spec_drops_a_refused_cache_and_reads_a_handler_routes_label() {
         "the refused call was not sent"
     );
     assert_eq!(own.requests().len(), 1, "the refused run sent nothing");
+}
+
+#[test]
+fn building_a_run_moves_explicit_history() {
+    let agent = AgentBuilder::new(MockCompletionModel::text("ok")).build();
+    let history = vec![
+        Message::user("large input".repeat(4096)),
+        Message::assistant("reply"),
+    ];
+    let mut runner = agent.prompt("next").history(history.clone());
+    let allocation = runner.chat_history.as_ref().unwrap().as_ptr();
+    let run = runner.build_run(None);
+    assert!(runner.chat_history.is_none());
+    assert_eq!(run.input_chat_history(), history);
+    assert_eq!(run.input_chat_history().as_ptr(), allocation);
+    assert_eq!(run.messages(), &[Message::user("next")]);
+}
+
+#[test]
+fn building_a_run_prefers_loaded_history_and_releases_the_override() {
+    let agent = AgentBuilder::new(MockCompletionModel::text("ok")).build();
+    let mut runner = agent
+        .prompt("next")
+        .history(vec![Message::user("discarded")]);
+    let loaded = vec![Message::user("loaded"), Message::assistant("reply")];
+    let expected = loaded.clone();
+    let allocation = loaded.as_ptr();
+    let run = runner.build_run(Some(loaded));
+    assert_eq!(run.input_chat_history(), expected);
+    assert!(runner.chat_history.is_none());
+    assert_eq!(run.input_chat_history().as_ptr(), allocation);
 }

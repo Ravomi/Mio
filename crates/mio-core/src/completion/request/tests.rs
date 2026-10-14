@@ -712,3 +712,38 @@ mod generation_option_shortcuts {
         assert!(GenerationOptions::new().is_default());
     }
 }
+
+#[test]
+fn inlining_no_documents_reuses_history_allocation() {
+    let mut request = CompletionRequest::new("a large conversation".repeat(4096));
+    let expected = request.messages_for_telemetry();
+    let allocation = request.chat_history.as_ptr();
+    request.inline_documents();
+    assert_eq!(request.chat_history.as_ptr(), allocation);
+    assert_eq!(request.chat_history, expected);
+    assert!(request.documents.is_empty());
+}
+
+#[test]
+fn inlining_documents_matches_telemetry_and_is_idempotent() {
+    for messages in [
+        vec![],
+        vec![Message::system("system")],
+        vec![Message::system("system"), Message::user("question")],
+        vec![Message::assistant("earlier reply")],
+    ] {
+        let mut request = CompletionRequest::new("next")
+            .document(test_document("first", "First document"))
+            .document(test_document("second", "Second document"));
+        request.chat_history = messages;
+        let expected = request.messages_for_telemetry();
+        request.inline_documents();
+        assert_eq!(request.chat_history, expected);
+        assert!(request.documents.is_empty());
+        request.inline_documents();
+        assert_eq!(
+            request.chat_history, expected,
+            "documents must not be duplicated"
+        );
+    }
+}

@@ -979,6 +979,15 @@ impl CompletionRequest {
         Some(Message::User { content })
     }
 
+    /// Fold documents into the owned request without copying its conversation.
+    /// The telemetry view remains non-mutating; request preparation owns this data.
+    pub(crate) fn inline_documents(&mut self) {
+        if let Some(documents) = self.normalized_documents() {
+            insert_after_leading_system(&mut self.chat_history, documents);
+        }
+        self.documents.clear();
+    }
+
     pub(crate) fn chat_history_with_documents(&self) -> Vec<Message> {
         let mut chat_history = self.chat_history.clone();
         if let Some(documents) = self.normalized_documents() {
