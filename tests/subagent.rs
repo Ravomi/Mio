@@ -1,3 +1,5 @@
+#[path = "../src/test_http.rs"]
+mod http;
 use mio_coding_agent::{
     AgentEvent, Arguments, Config, Host, HostFuture, Message, RunOptions, Workspace,
     subagent::{Delegate, Executor, Status, SubagentManager, Task},
@@ -361,4 +363,86 @@ async fn writable_child_obeys_parent_approval() {
             assert!(result.error.unwrap().contains("denied by parent"));
         }
     }
+}
+
+#[tokio::test]
+async fn model_reconfiguration_preserves_sessions_and_rejects_active_children() {
+    use std::{io::Write, net::TcpListener};
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = manager(
+        dir.path(),
+        1,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = Arc::new(TestHost::default());
+    let held = manager
+        .delegate(request("held", "hold"), host.clone())
+        .unwrap();
+    assert!(
+        manager
+            .reconfigure(
+                Config {
+                    model: "next".into(),
+                    ..Config::default()
+                },
+                RunOptions::default(),
+                None
+            )
+            .is_err()
+    );
+    manager.kill(held.run_id).await.unwrap();
+    let first = manager
+        .delegate(request("worker", "first"), host.clone())
+        .unwrap();
+    assert_eq!(
+        manager
+            .status(first.run_id, Duration::from_secs(2))
+            .await
+            .unwrap()
+            .status,
+        Status::Completed
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            if let Ok((stream, _)) = listener.accept() {
+                break stream;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (_, body) = http::read_json(&mut stream);
+        assert_eq!(body["model"], "next");
+        assert!(body["messages"].to_string().contains("first"));
+        let chunk = serde_json::json!({"id":"t","object":"chat.completion.chunk","created":0,"model":"next","choices":[{"index":0,"delta":{"role":"assistant","content":"resumed"},"finish_reason":"stop"}]}).to_string();
+        let response = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+    });
+    manager
+        .reconfigure(
+            Config {
+                model: "next".into(),
+                base_url: format!("http://{address}/v1"),
+                api_key: "local-test".into(),
+                ..Config::default()
+            },
+            RunOptions::default(),
+            None,
+        )
+        .unwrap();
+    let resumed = manager.delegate(request("worker", "second"), host).unwrap();
+    let finished = manager
+        .status(resumed.run_id, Duration::from_secs(3))
+        .await
+        .unwrap();
+    assert_eq!(finished.status, Status::Completed, "{:?}", finished.error);
+    assert_eq!(finished.output, "resumed");
+    server.join().unwrap();
 }

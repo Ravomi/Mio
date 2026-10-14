@@ -39,3 +39,11 @@
 `status` 还可能为 `cancelled` 或 `error`。`error` 状态前会发送错误事件。EOF 关闭时不保证发送结束事件，客户端需同时处理进程退出。
 
 Mio RPC 不承诺与 Pi 的所有协议记录兼容。`--approve` 在 RPC 中对需要交互审批的操作拒绝执行；当前没有 RPC 审批对话流程。
+
+## 模型切换
+
+空闲时可发送 `{"type":"set_model","id":"m1","model":"deepseek/deepseek-chat"}`，或在文本交互中使用 `/model deepseek/deepseek-chat`。只写模型名会沿用当前连接；带供应商前缀则同时切换对应端点、凭据和账户服务。切回已使用的供应商会恢复本进程保存的连接配置（包括启动时的自定义地址）。首次切到 `custom` 时可通过 `MIO_BASE_URL` 指定地址。
+
+命名供应商优先使用其专用密钥环境变量，再使用 `MIO_API_KEY`；不会使用其他供应商的专用密钥兜底。`custom` 使用 `MIO_API_KEY` 或 `OPENAI_API_KEY`。缺少 Antigravity 账户或不支持的原生协议会返回失败并保留原配置；不会静默换供应商。`get_state.provider` 返回当前供应商名称。
+
+后续子任务同步采用新模型配置，已完成子会话的历史保留。有活动子任务时拒绝切换。`--thinking` 当前仅向 Antigravity 传递，不代表所有供应商都支持同一推理参数。

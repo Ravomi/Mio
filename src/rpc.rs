@@ -170,27 +170,19 @@ pub fn resolve_provider_endpoint(
         }
         "deepseek" => {
             let base = explicit_base.unwrap_or_else(|| "https://api.deepseek.com/v1".into());
-            let key = read_first_env(&["MIO_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"]);
+            let key = read_first_env(&["DEEPSEEK_API_KEY", "MIO_API_KEY"]);
             Ok((Provider::Deepseek, base, key))
         }
         "custom" => {
             let base = explicit_base.unwrap_or_else(|| "https://api.openai.com/v1".into());
-            let key = read_first_env(&[
-                "MIO_API_KEY",
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "GEMINI_API_KEY",
-                "DEEPSEEK_API_KEY",
-                "OPENROUTER_API_KEY",
-            ]);
+            let key = read_first_env(&["MIO_API_KEY", "OPENAI_API_KEY"]);
             Ok((Provider::Custom, base, key))
         }
         other => {
             if let Some(preset) = PROVIDER_PRESETS.iter().find(|p| p.name == other) {
                 let base = explicit_base.unwrap_or_else(|| preset.base_url.to_owned());
-                let mut vars = vec!["MIO_API_KEY"];
-                vars.extend_from_slice(preset.env_vars);
-                vars.push("OPENAI_API_KEY");
+                let mut vars = preset.env_vars.to_vec();
+                vars.push("MIO_API_KEY");
                 let key = read_first_env(&vars);
                 Ok((Provider::Custom, base, key))
             } else {
