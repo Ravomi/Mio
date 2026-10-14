@@ -489,3 +489,138 @@ async fn aggregate_workspace_respects_explicit_exclusions() {
     assert!(workspace.execute(args).await.is_err());
     assert!(!dir.path().join("out").exists());
 }
+
+struct SyncDenyHost;
+impl Host for SyncDenyHost {
+    fn shell(&self, _cmd: &str, _cwd: &Path) -> HostFuture<Result<String, String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+    fn on_event(&self, _event: mio_coding_agent::AgentEvent) {}
+    fn approve_tool(&self, _operation: &str, _target: &str) -> Result<(), String> {
+        Err("sync denial".into())
+    }
+}
+
+type ApprovalReceiver =
+    Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>>;
+
+struct AsyncGateHost {
+    gate_rx: ApprovalReceiver,
+    started_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+}
+impl Host for AsyncGateHost {
+    fn shell(&self, _cmd: &str, _cwd: &Path) -> HostFuture<Result<String, String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+    fn on_event(&self, _event: mio_coding_agent::AgentEvent) {}
+    fn approve_tool_async(
+        &self,
+        _operation: &str,
+        _target: &str,
+    ) -> HostFuture<Result<(), String>> {
+        let gate_rx = Arc::clone(&self.gate_rx);
+        let started_tx = Arc::clone(&self.started_tx);
+        Box::pin(async move {
+            if let Some(tx) = started_tx.lock().await.take() {
+                let _ = tx.send(());
+            }
+            let mut guard = gate_rx.lock().await;
+            let rx = guard.take().expect("receiver already used");
+            rx.await.map_err(|_| "channel canceled".to_string())?
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_sync_approve_tool_deny_blocks_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::new(dir.path(), Arc::new(SyncDenyHost)).unwrap();
+    let file_path = dir.path().join("deny.txt");
+    let args = serde_json::from_value(serde_json::json!({
+        "operation": "write",
+        "path": "deny.txt",
+        "value": "should not be written"
+    }))
+    .unwrap();
+
+    let res = workspace.execute(args).await;
+    assert!(res.is_err());
+    assert_eq!(res.unwrap_err(), "sync denial");
+    assert!(!file_path.exists());
+}
+
+#[tokio::test]
+async fn test_async_approve_tool_gate_pending_and_resolution() {
+    // 1. Allow 流程：oneshot 在 pending 时文件未修改，发送 Ok(()) 后才写
+    let dir = tempfile::tempdir().unwrap();
+    let (tx_allow, rx_allow) = tokio::sync::oneshot::channel();
+    let (started_tx_allow, started_rx_allow) = tokio::sync::oneshot::channel();
+    let gate_host = Arc::new(AsyncGateHost {
+        gate_rx: Arc::new(tokio::sync::Mutex::new(Some(rx_allow))),
+        started_tx: Arc::new(tokio::sync::Mutex::new(Some(started_tx_allow))),
+    });
+    let workspace = Workspace::new(dir.path(), gate_host).unwrap();
+    let target_file = dir.path().join("allow.txt");
+    let args = serde_json::from_value(serde_json::json!({
+        "operation": "write",
+        "path": "allow.txt",
+        "value": "hello async approval"
+    }))
+    .unwrap();
+
+    let join_handle = tokio::spawn({
+        let ws = workspace;
+        async move { ws.execute(args).await }
+    });
+
+    // 等待明确通知到达 gate
+    started_rx_allow.await.unwrap();
+    assert!(
+        !join_handle.is_finished(),
+        "任务应在审批挂起期间处于 pending"
+    );
+    assert!(!target_file.exists(), "审批挂起期间文件绝对不能被修改");
+
+    // 允许执行
+    tx_allow.send(Ok(())).unwrap();
+    let exec_res = join_handle.await.unwrap();
+    assert!(exec_res.is_ok());
+    assert!(target_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&target_file).unwrap(),
+        "hello async approval"
+    );
+
+    // 2. Deny 流程：oneshot 发送 Err，审批前未写，拒绝后无副作用
+    let dir_deny = tempfile::tempdir().unwrap();
+    let (tx_deny, rx_deny) = tokio::sync::oneshot::channel();
+    let (started_tx_deny, started_rx_deny) = tokio::sync::oneshot::channel();
+    let gate_host_deny = Arc::new(AsyncGateHost {
+        gate_rx: Arc::new(tokio::sync::Mutex::new(Some(rx_deny))),
+        started_tx: Arc::new(tokio::sync::Mutex::new(Some(started_tx_deny))),
+    });
+    let workspace_deny = Workspace::new(dir_deny.path(), gate_host_deny).unwrap();
+    let target_file_deny = dir_deny.path().join("denied.txt");
+    let args_deny = serde_json::from_value(serde_json::json!({
+        "operation": "write",
+        "path": "denied.txt",
+        "value": "should never be written"
+    }))
+    .unwrap();
+
+    let join_deny = tokio::spawn({
+        let ws = workspace_deny;
+        async move { ws.execute(args_deny).await }
+    });
+
+    // 等待明确通知到达 gate
+    started_rx_deny.await.unwrap();
+    assert!(!join_deny.is_finished());
+    assert!(!target_file_deny.exists());
+
+    tx_deny.send(Err("user rejected".into())).unwrap();
+    let exec_res_deny = join_deny.await.unwrap();
+    assert!(exec_res_deny.is_err());
+    assert_eq!(exec_res_deny.unwrap_err(), "user rejected");
+    assert!(!target_file_deny.exists(), "审批拒绝后无写副作用");
+}

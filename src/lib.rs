@@ -67,6 +67,12 @@ pub trait Host: Send + Sync {
     fn approve_tool(&self, _operation: &str, _target: &str) -> Result<(), String> {
         Ok(())
     }
+
+    /// 异步审批钩子，默认调用同步 `approve_tool`。
+    fn approve_tool_async(&self, operation: &str, target: &str) -> HostFuture<Result<(), String>> {
+        let result = self.approve_tool(operation, target);
+        Box::pin(async move { result })
+    }
 }
 
 /// Agent 执行过程中发出的结构化事件。

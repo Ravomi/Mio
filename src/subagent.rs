@@ -548,6 +548,10 @@ impl Host for ChildHost {
         self.inner.approve_tool(operation, target)
     }
 
+    fn approve_tool_async(&self, operation: &str, target: &str) -> HostFuture<Result<(), String>> {
+        self.inner.approve_tool_async(operation, target)
+    }
+
     fn shell(&self, command: &str, cwd: &Path) -> HostFuture<Result<String, String>> {
         self.inner.shell(command, cwd)
     }

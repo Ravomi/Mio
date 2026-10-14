@@ -38,7 +38,50 @@
 
 `status` 还可能为 `cancelled` 或 `error`。`error` 状态前会发送错误事件。EOF 关闭时不保证发送结束事件，客户端需同时处理进程退出。
 
-Mio RPC 不承诺与 Pi 的所有协议记录兼容。`--approve` 在 RPC 中对需要交互审批的操作拒绝执行；当前没有 RPC 审批对话流程。
+## 工具审批流程 (--approve)
+
+在启动时传入 `--approve` 参数后，RPC 模式下写文件、执行 Shell 等敏感操作会触发非阻塞的异步审批通知，而不会像非 TTY 文本或 `--json` 模式下直接拒绝。
+
+审批请求由引擎向客户端发出：
+
+```json
+{
+  "type": "approval_request",
+  "request_id": "c88fcfb5-2fd5-41d3-9bc3-066e04746654",
+  "operation": "write",
+  "target": "src/main.rs",
+  "timeout_ms": 120000
+}
+```
+
+客户端通过发送 `approve_response` 指令回复允许或拒绝：
+
+```json
+{
+  "type": "approve_response",
+  "request_id": "c88fcfb5-2fd5-41d3-9bc3-066e04746654",
+  "approved": true
+}
+```
+
+Mio 回复该指令的标准 response：
+
+```json
+{
+  "type": "response",
+  "command": "approve_response",
+  "id": "c88fcfb5-2fd5-41d3-9bc3-066e04746654",
+  "success": true,
+  "data": { "approved": true }
+}
+```
+
+- **超时与限制**：每个审批请求的超时时间为 120 秒（`120000` 毫秒），基于统一单调时钟 deadline 判定；最大 pending 审批并发数为 64，超过限制将直接拒绝新请求。请求 drop 或 resolve 后名额立即释放，无需等待 120 秒。
+- **语义与状态**：
+  - `approved: false`（拒绝）：工具调用失败并向模型返回拒绝信息，Agent 轮次继续按错误分支流转。
+  - `unknown` / `stale` / 重复 resolve：对不存在、已超时或已 resolve 的 `request_id` 回复 `success: false` 并附带错误信息。
+  - `abort` / EOF：任务被 abort 或输入遇到 EOF 时，所有待处理审批被即时取消、future 释放并移出 pending 队列，正在等待的工具操作不会向磁盘写入。
+- **状态监控**：`get_state` 命令的返回数据中包含 `pendingApprovalCount` 字段，可实时监控当前等待审批的请求数量。
 
 ## 模型切换
 

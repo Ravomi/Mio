@@ -344,7 +344,7 @@ pub async fn build_dynamic_tools_from_specs(
                             operation: qualified.clone(),
                             target: target.clone(),
                         });
-                        let outcome = match host.approve_tool(&qualified, &target) {
+                        let outcome = match host.approve_tool_async(&qualified, &target).await {
                             Ok(()) => client.call_tool(&raw_name, args).await,
                             Err(err) => Err(err),
                         };

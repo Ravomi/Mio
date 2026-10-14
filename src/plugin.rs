@@ -750,7 +750,7 @@ pub fn load_plugin_tools(
                             operation: qualified.clone(),
                             target: args_json.clone(),
                         });
-                        let outcome = match host.approve_tool(&qualified, &args_json) {
+                        let outcome = match host.approve_tool_async(&qualified, &args_json).await {
                             Ok(()) => execute_plugin_command(&command, &args_json, &cwd_buf).await,
                             Err(err) => Err(err),
                         };

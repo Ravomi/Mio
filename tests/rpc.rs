@@ -43,6 +43,15 @@ impl RpcClient {
         environment: &[(&str, &str)],
         persist: bool,
     ) -> Self {
+        Self::configured_all(subagents, provider, environment, persist, false)
+    }
+    fn configured_all(
+        subagents: bool,
+        provider: &str,
+        environment: &[(&str, &str)],
+        persist: bool,
+        approve: bool,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -102,6 +111,9 @@ impl RpcClient {
             ]);
         if !persist {
             command.arg("--no-session");
+        }
+        if approve {
+            command.arg("--approve");
         }
         let mut child = command
             .stdin(Stdio::piped())
@@ -648,4 +660,282 @@ fn prompt_save_failure_reports_settled_error_no_done_and_does_not_leak_into_next
         st_final["messageCount"].as_u64().unwrap(),
         init_msg_count + 2
     );
+}
+
+#[test]
+fn approve_flow_allow_deny_and_unknown_request() {
+    let mut client = RpcClient::configured_all(false, "custom", &[], false, true);
+    let target_file = client._dir.path().join("approved.txt");
+    let denied_file = client._dir.path().join("denied.txt");
+
+    // 1. Allow 流程
+    let (s1, _) = prompt(&mut client, "write approved");
+    let write_call = json!({
+        "name": "workspace",
+        "arguments": json!({
+            "operation": "write",
+            "path": "approved.txt",
+            "value": "hello approval"
+        }).to_string()
+    });
+    reply(s1, Some(write_call));
+
+    let req_event = client.until(|e| e["type"] == "approval_request");
+    let req_id = req_event["request_id"].as_str().unwrap().to_string();
+    assert_eq!(req_event["operation"], "write");
+    assert_eq!(req_event["target"], "approved.txt");
+    assert!(!target_file.exists());
+
+    client.send(json!({"type":"get_state","id":"st1"}));
+    let st1 = client.response("st1");
+    assert_eq!(st1["data"]["pendingApprovalCount"], 1);
+
+    // 重复 / 未知 request_id 回复 success false
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": "non-existent-req-id",
+        "approved": true
+    }));
+    let unk_resp = client.response("non-existent-req-id");
+    assert_eq!(unk_resp["success"], false);
+
+    // 发送真实同意
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": req_id,
+        "approved": true
+    }));
+    let ok_resp = client.response(&req_id);
+    assert_eq!(ok_resp["success"], true);
+
+    // 重复同一 request_id 回复 success false
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": req_id,
+        "approved": true
+    }));
+    let dup_resp = client.response(&req_id);
+    assert_eq!(dup_resp["success"], false);
+
+    // 下一 model request 到达时文件已经写入
+    let (s2, req2) = client.request();
+    assert!(target_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&target_file).unwrap(),
+        "hello approval"
+    );
+    assert!(req2.to_string().contains("tool_call_id"));
+    reply(s2, None);
+    client.settled("completed");
+
+    // 2. Deny 流程
+    let (s3, _) = prompt(&mut client, "write denied");
+    let write_call_deny = json!({
+        "name": "workspace",
+        "arguments": json!({
+            "operation": "write",
+            "path": "denied.txt",
+            "value": "should not exist"
+        }).to_string()
+    });
+    reply(s3, Some(write_call_deny));
+
+    let req_event_deny = client.until(|e| e["type"] == "approval_request");
+    let req_id_deny = req_event_deny["request_id"].as_str().unwrap().to_string();
+    assert!(!denied_file.exists());
+
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": req_id_deny,
+        "approved": false
+    }));
+    let deny_ack = client.response(&req_id_deny);
+    assert_eq!(deny_ack["success"], true);
+
+    // 下一 model request 到达时文件仍不存在且包含拒绝结果
+    let (s4, req4) = client.request();
+    assert!(!denied_file.exists());
+    assert!(req4.to_string().contains("rejected"));
+    reply(s4, None);
+    client.settled("completed");
+}
+
+#[test]
+fn approve_abort_and_eof_handling() {
+    let mut client = RpcClient::configured_all(false, "custom", &[], false, true);
+    let target_file = client._dir.path().join("abort.txt");
+
+    // 1. abort 等待审批时应立即 settled cancelled 并清 pending，旧 reply 失败，下一 prompt 正常运行
+    let (s1, _) = prompt(&mut client, "write abort");
+    reply(
+        s1,
+        Some(json!({
+            "name": "workspace",
+            "arguments": json!({
+                "operation": "write",
+                "path": "abort.txt",
+                "value": "abort test"
+            }).to_string()
+        })),
+    );
+
+    let req_event = client.until(|e| e["type"] == "approval_request");
+    let req_id = req_event["request_id"].as_str().unwrap().to_string();
+
+    client.send(json!({"type":"abort","id":"ab1"}));
+    assert_eq!(client.response("ab1")["data"]["aborted"], true);
+    client.settled("cancelled");
+    assert!(!target_file.exists());
+
+    // 旧 reply 失败
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": req_id,
+        "approved": true
+    }));
+    let old_reply_resp = client.response(&req_id);
+    assert_eq!(old_reply_resp["success"], false);
+
+    // 下一 prompt 正常运行
+    let (s2, _) = prompt(&mut client, "clean follow-up");
+    reply(s2, None);
+    client.settled("completed");
+
+    // 2. EOF 等待审批关闭 stdin 进程正常退出且无文件
+    let target_file_eof = client._dir.path().join("eof.txt");
+    let (s3, _) = prompt(&mut client, "write eof");
+    reply(
+        s3,
+        Some(json!({
+            "name": "workspace",
+            "arguments": json!({
+                "operation": "write",
+                "path": "eof.txt",
+                "value": "eof test"
+            }).to_string()
+        })),
+    );
+    let _ = client.until(|e| e["type"] == "approval_request");
+
+    // 关闭 stdin
+    drop(client.child.stdin.take());
+    client.wait_exit();
+    assert!(!target_file_eof.exists());
+}
+
+#[test]
+fn subagent_approval_flow_and_parent_abort() {
+    let mut client = RpcClient::configured_all(true, "custom", &[], false, true);
+    let target_file = client._dir.path().join("child_output.txt");
+
+    // Parent 首次模型 reply subagent.delegate task read_only:false
+    let (parent_init_stream, _) = prompt(&mut client, "start subagent task");
+    let delegate_call = json!({
+        "name": "subagent",
+        "arguments": json!({
+            "operation": "delegate",
+            "task": {
+                "session": "child-session",
+                "goal": "write child file",
+                "prompt": "child-prompt",
+                "read_only": false
+            }
+        }).to_string()
+    });
+    reply(parent_init_stream, Some(delegate_call));
+
+    // 获取 child 和 parent 续接两个 HTTP 请求
+    let (stream_a, req_a) = client.request();
+    let (stream_b, req_b) = client.request();
+
+    let is_child_req = |req: &Value| -> bool {
+        if let Some(messages) = req.get("messages").and_then(|m| m.as_array()) {
+            for m in messages {
+                if m.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    if let Some(content) = m.get("content").and_then(|c| c.as_str()) {
+                        if content == "child-prompt" {
+                            return true;
+                        }
+                    } else if let Some(parts) = m.get("content").and_then(|c| c.as_array()) {
+                        let mut texts = String::new();
+                        for part in parts {
+                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                texts.push_str(text);
+                            } else if let Some(text) = part.as_str() {
+                                texts.push_str(text);
+                            }
+                        }
+                        if texts == "child-prompt" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    let a_is_child = is_child_req(&req_a);
+    let b_is_child = is_child_req(&req_b);
+    assert!(
+        a_is_child != b_is_child,
+        "Expected exactly one child request, got a={a_is_child}, b={b_is_child}"
+    );
+
+    let (child_stream, _parent_cont_stream) = if a_is_child {
+        (stream_a, stream_b)
+    } else {
+        (stream_b, stream_a)
+    };
+
+    // parent 连接保持（_parent_cont_stream 保持不 reply），child 模型 reply workspace.write
+    let child_write_call = json!({
+        "name": "workspace",
+        "arguments": json!({
+            "operation": "write",
+            "path": "child_output.txt",
+            "value": "child created content"
+        }).to_string()
+    });
+    reply(child_stream, Some(child_write_call));
+
+    // 收到 approval_request 且文件不存在
+    let req_event = client.until(|e| e["type"] == "approval_request");
+    let req_id = req_event["request_id"].as_str().unwrap().to_string();
+    assert_eq!(req_event["operation"], "write");
+    assert_eq!(req_event["target"], "child_output.txt");
+    assert!(!target_file.exists());
+
+    // 发 approve_response true
+    client.send(json!({
+        "type": "approve_response",
+        "request_id": req_id,
+        "approved": true
+    }));
+    let ok_resp = client.response(&req_id);
+    assert_eq!(ok_resp["success"], true);
+
+    // child 下一 HTTP 请求到达确认文件内容
+    let (child_cont_stream, req_child_cont) = client.request();
+    assert!(target_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&target_file).unwrap(),
+        "child created content"
+    );
+    assert!(req_child_cont.to_string().contains("tool_call_id"));
+
+    // 随后 abort 父任务清理所有连接/审批，无需等子任务完整成功
+    client.send(json!({"type":"abort","id":"abort_sub"}));
+    assert_eq!(client.response("abort_sub")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(child_cont_stream);
+
+    // pendingApprovalCount=0 并可再 prompt
+    client.send(json!({"type":"get_state","id":"st_after_abort"}));
+    let state_resp = client.response("st_after_abort");
+    assert_eq!(state_resp["data"]["pendingApprovalCount"], 0);
+
+    let (s_after, _) = prompt(&mut client, "prompt after subagent abort");
+    reply(s_after, None);
+    client.settled("completed");
 }

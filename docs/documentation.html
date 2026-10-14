@@ -315,10 +315,10 @@ mio --auto-compact -p "大规模批量重构"</code></pre>
 <div class="ref-callout danger">
 <div class="ref-callout-title">
 <span></span>
-<span data-en="Tool Approval Behavior in Non-TTY / JSON" data-zh="--approve 交互审批在非 TTY / JSON 下的拒绝行为">--approve 交互审批在非 TTY / JSON 下的拒绝行为</span>
+<span data-en="Tool Approval Behavior in CLI vs RPC" data-zh="--approve 交互审批在 CLI 与 RPC 下的差异行为">--approve 交互审批在 CLI 与 RPC 下的差异行为</span>
 </div>
-<p class="ref-p" data-en="When --approve is enabled in a non-terminal environment or under --json mode, approve_tool() cannot prompt interactively and directly rejects sensitive tool calls. It will never silently allow destructive actions." data-zh="当传入 --approve 开启工具确认时，若当前终端为非 TTY 环境或启用了 --json，approve_tool() 无法弹出交互式提示，将直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作并抛出错误（Tool requires interactive approval (--approve)）。绝不会在非交互场景下静默放行危险命令。" style="margin-bottom: 0;">
-                当传入 <code>--approve</code> 开启工具确认时，若当前终端为<strong>非 TTY 环境</strong>或启用了 <code>--json</code>，<code>approve_tool()</code> 无法弹出交互式提示，将<strong>直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作</strong>并抛出错误（<em>Tool requires interactive approval (--approve)</em>）。绝不会在非交互场景下静默放行危险命令。
+<p class="ref-p" data-en="When --approve is enabled in a non-terminal CLI environment or under --json mode, approve_tool() cannot prompt interactively and directly rejects sensitive tool calls (Tool requires interactive approval (--approve)). In --mode rpc, approve_tool_async() initiates an asynchronous approval_request flow and waits for approve_response over stdio. It will never silently allow destructive actions." data-zh="当传入 --approve 开启工具确认时，普通 CLI 终端下若处于非 TTY 环境或启用了 --json，approve_tool() 无法弹出交互式提示，将直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作（Tool requires interactive approval (--approve)）；而在 --mode rpc 模式下，则通过 approval_request 事件与 approve_response 指令进行非阻塞异步审批等待。绝不会在未审批时静默放行危险命令。" style="margin-bottom: 0;">
+                当传入 <code>--approve</code> 开启工具确认时，普通 CLI 终端下若处于<strong>非 TTY 环境</strong>或启用了 <code>--json</code>，<code>approve_tool()</code> 无法弹出交互式提示，将<strong>直接拒绝所有涉及写入、修改、Shell 或 MCP 的敏感操作</strong>并抛出错误（<em>Tool requires interactive approval (--approve)</em>）；而在 <code>--mode rpc</code> 模式下，则通过 <code>approval_request</code> 事件与 <code>approve_response</code> 指令进行非阻塞异步审批等待。绝不会在未审批时静默放行危险命令。
               </p>
 </div>
 <div class="code-block">
@@ -412,8 +412,8 @@ mio --plugin-list</code></pre>
 <li class="ref-li" data-en-html="&lt;strong&gt;Busy State &amp; get_state Snapshot&lt;/strong&gt;: While busy, mutating commands (prompt, set_model, compact, session operations) are rejected. get_state reflects session snapshot taken at the start of the current turn along with real-time queue counts." data-zh-html="&lt;strong&gt;繁忙状态拦截与快照&lt;/strong&gt;：繁忙期间状态变更指令（如新 prompt、set_model、compact、会话分支等）会被直接拒绝；get_state 返回本轮开始时的历史快照以及实时的 steer/follow_up 待处理队列计数。">
 <strong>繁忙状态拦截与快照</strong>：繁忙期间状态变更指令（如新 prompt、set_model、compact、会话分支等）会被直接拒绝；<code>get_state</code> 返回本轮开始时的历史快照以及实时的 steer/follow_up 待处理队列计数。
                 </li>
-<li class="ref-li" data-en-html="&lt;strong&gt;approve_response Boundary&lt;/strong&gt;: --approve in RPC rejects actions requiring interactive approval as there is no interactive approval dialog over stdio RPC." data-zh-html="&lt;strong&gt;approve_response 边界&lt;/strong&gt;：RPC 模式下暂未接入交互式审批对话流，--approve 遇到需交互审批的操作将直接拒绝执行。">
-<strong>approve_response 边界</strong>：RPC 模式下暂未接入交互式审批对话流，<code>--approve</code> 遇到需交互审批的操作将直接拒绝执行。
+<li class="ref-li" data-en-html="&lt;strong&gt;approve_response Boundary&lt;/strong&gt;: In --mode rpc with --approve, sensitive operations emit approval_request events and await approve_response. Plain non-TTY CLI and --json reject directly, while RPC supports asynchronous interactive approval over stdio." data-zh-html="&lt;strong&gt;approve_response 边界&lt;/strong&gt;：在 --mode rpc 配合 --approve 时，敏感工具操作通过 approval_request 事件与 approve_response 指令进行非阻塞异步审批等待；普通非 TTY/--json 模式直接拒绝，RPC 模式已完整实现 stdio 审批流。">
+<strong>approve_response 边界</strong>：在 <code>--mode rpc</code> 配合 <code>--approve</code> 时，敏感工具操作通过 <code>approval_request</code> 事件与 <code>approve_response</code> 指令进行非阻塞异步审批等待；普通非 TTY/<code>--json</code> 模式直接拒绝，RPC 模式已完整实现 stdio 审批流。
                 </li>
 </ul>
 </div>
@@ -498,8 +498,8 @@ mio --plugin-list</code></pre>
 <tr>
 <td><code>approve_response</code></td>
 <td><code>{"request_id": "...", "approved": bool}</code></td>
-<td data-en="Acknowledgment only; not wired to interactive approval." data-zh="仅返回确认；尚未连接交互审批。">仅返回确认；尚未连接交互审批。</td>
-<td><span class="badge badge-gray">实验性 (空实现)</span></td>
+<td data-en="Resolve a pending tool approval request (true to permit, false to reject)." data-zh="回应待处理的工具审批请求（true 放行，false 拒绝）">回应待处理的工具审批请求（true 放行，false 拒绝）</td>
+<td data-en="Implemented" data-zh="已实现">已实现</td>
 </tr>
 </tbody>
 </table>

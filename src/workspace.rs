@@ -102,7 +102,7 @@ impl Workspace {
             return Err(format!("只读工作区禁止执行 '{op}' 操作"));
         }
         if is_write {
-            self.host.approve_tool(op, &args.target())?;
+            self.host.approve_tool_async(op, &args.target()).await?;
         }
 
         let mut output = match op {
