@@ -287,3 +287,78 @@ async fn output_and_polling_are_bounded_and_completed_status_is_immediate() {
     .unwrap();
     assert_eq!(repeated.status, Status::Completed);
 }
+
+struct ApprovalHost {
+    allow: bool,
+    calls: AtomicUsize,
+}
+impl Host for ApprovalHost {
+    fn shell(&self, _: &str, _: &Path) -> HostFuture<Result<String, String>> {
+        Box::pin(async { Ok("executed".into()) })
+    }
+    fn on_event(&self, _: AgentEvent) {}
+    fn approve_tool(&self, _: &str, _: &str) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.allow {
+            Ok(())
+        } else {
+            Err("denied by parent".into())
+        }
+    }
+}
+struct WriteExecutor;
+impl Executor for WriteExecutor {
+    fn execute(&self, task: Task) -> HostFuture<Result<Vec<Message>, String>> {
+        Box::pin(async move {
+            let workspace = Workspace::new(&task.cwd, task.host)?;
+            let args = serde_json::from_value(
+                serde_json::json!({"operation":"write","path":"child.txt","value":"child"}),
+            )
+            .unwrap();
+            workspace.execute(args).await?;
+            Ok(vec![Message::assistant("written")])
+        })
+    }
+}
+#[tokio::test]
+async fn writable_child_obeys_parent_approval() {
+    for allow in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(ApprovalHost {
+            allow,
+            calls: AtomicUsize::new(0),
+        });
+        let manager = SubagentManager::with_executor(
+            dir.path(),
+            Config {
+                model: "test".into(),
+                ..Config::default()
+            },
+            RunOptions::default(),
+            1,
+            Duration::from_secs(5),
+            Arc::new(WriteExecutor),
+        )
+        .unwrap();
+        let mut task = request("writer", "write");
+        task.read_only = false;
+        let run = manager.delegate(task, host.clone()).unwrap();
+        let result = manager
+            .status(run.run_id, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.status,
+            if allow {
+                Status::Completed
+            } else {
+                Status::Failed
+            }
+        );
+        assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(dir.path().join("child.txt").exists(), allow);
+        if !allow {
+            assert!(result.error.unwrap().contains("denied by parent"));
+        }
+    }
+}
