@@ -13,6 +13,17 @@ license = "MIT"
 description = "Headless coding agent engine extracted from Ravomi"
 repository = "https://github.com/Ravomi/Mio"
 readme = "README.md"
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/CREDITS.md",
+    "/licenses",
+    "/examples",
+    "/tests",
+    "/Cargo.lock",
+    "/Cargo.toml",
+]
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
