@@ -56,6 +56,17 @@ The provider tests also retain the referenced cassette fixtures under
 commit above (not present in the published crate archives). This is the subset
 referenced by the local tests, not the entire upstream cassette corpus.
 
+## History ownership optimizations
+
+Request preparation inserts documents into its owned history in place; the
+non-mutating telemetry view retains its existing behavior. A fresh agent run
+takes explicit history from its runner after memory resolution, preserving
+loaded-history precedence. The coding layer moves completed response messages
+into the persisted transcript. Regression tests check allocation reuse,
+document ordering/idempotence and history precedence. No latency percentage is
+claimed; the product still retains its initial history copy, and resumed run
+snapshots keep their existing clone semantics.
+
 ## Maintenance and validation
 
 Preserve upstream MIT notices and archive/revision provenance when updating.

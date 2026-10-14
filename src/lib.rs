@@ -284,7 +284,7 @@ pub async fn run_with_tools(
                 host.on_event(AgentEvent::Text(text));
             }
             MultiTurnStreamItem::FinalResponse(response) => {
-                complete_history.extend_from_slice(response.messages());
+                complete_history.extend(response.messages);
                 final_history = Some(std::mem::take(&mut complete_history));
             }
             _ => {}

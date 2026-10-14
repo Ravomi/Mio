@@ -239,7 +239,7 @@ impl AgentRunner {
     /// The eager half of [`stream`](Self::stream): resolve memory, build the
     /// run and return the driver as a stream. Called on the first poll,
     /// under `ambient`, the span the stream was built in.
-    async fn start_stream(self, ambient: tracing::Span) -> StreamingResult {
+    async fn start_stream(mut self, ambient: tracing::Span) -> StreamingResult {
         let (agent_span, created_agent_span) = self.open_agent_span(ambient);
 
         let bus = self.config.bus.clone();

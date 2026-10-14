@@ -557,7 +557,8 @@ impl<O> AgentRunner<O> {
     /// replaces the configured chat history (e.g. with memory-loaded
     /// history) and applies only to a fresh run. The one construction site,
     /// so the blocking and streaming drivers configure runs identically.
-    pub(crate) fn build_run(&self, history_override: Option<Vec<Message>>) -> AgentRun {
+    /// Transfers explicit input history; called once after memory resolution.
+    pub(crate) fn build_run(&mut self, history_override: Option<Vec<Message>>) -> AgentRun {
         let prompt = match &self.origin {
             RunOrigin::Resume(run) => return run.clone(),
             RunOrigin::Prompt(prompt) => prompt.clone(),
@@ -575,11 +576,7 @@ impl<O> AgentRunner<O> {
             tool_choice: self.config.tool_choice.clone(),
             ..crate::run::spec::RunSpec::new()
         };
-        let run = AgentRun::from_spec(
-            &spec,
-            prompt,
-            history_override.or_else(|| self.chat_history.clone()),
-        );
+        let run = AgentRun::from_spec(&spec, prompt, history_override.or(self.chat_history.take()));
         match &self.output_tool_name {
             Some(name) => run.with_output_tool_name(name.clone()),
             None => run,
@@ -714,7 +711,7 @@ impl AgentRunner {
         async move { self.run_under(run_under).await }.instrument(ambient)
     }
 
-    async fn run_under(self, ambient: tracing::Span) -> Result<PromptResponse, PromptError> {
+    async fn run_under(mut self, ambient: tracing::Span) -> Result<PromptResponse, PromptError> {
         let (agent_span, created_agent_span) = self.open_agent_span(ambient);
         let bus = self.config.bus.clone();
         let hook_ctx = self.hook_context(false);

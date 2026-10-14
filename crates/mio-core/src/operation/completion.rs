@@ -125,8 +125,7 @@ impl Operation for Completion {
         // Documents join the history before it is adapted, so the adapter's
         // rules apply to them, unless the encoder sends them itself.
         if !target.takes_documents() {
-            request.chat_history = request.chat_history_with_documents();
-            request.documents.clear();
+            request.inline_documents();
         }
         let stored = target.continues_stored(&request);
         let shape = crate::completion::history::Request {
