@@ -277,7 +277,7 @@ pub struct RunTools {
     pub read_only: bool,
     pub subagents: Option<Arc<subagent::SubagentManager>>,
     pub tool_filter: ToolFilter,
-    pub extra_tools: Vec<rig_agent::tool::DynamicTool>,
+    pub extra_tools: Vec<mio_agent::tool::DynamicTool>,
 }
 
 impl From<RunOptions> for RunTools {

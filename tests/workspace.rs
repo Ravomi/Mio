@@ -431,7 +431,7 @@ async fn test_regex_grep_glob_find_unified_diff_and_tool_filter() {
     assert!(diff_out.contains("+pub fn alpha_v2() {}"));
 
     // ToolFilter enforcement
-    let filter = mio_agent::ToolFilter::from_cli(Some("read,grep"), None, false).unwrap();
+    let filter = mio_coding_agent::ToolFilter::from_cli(Some("read,grep"), None, false).unwrap();
     let filtered_ws = Workspace::new(folder.path(), host)
         .unwrap()
         .with_tool_filter(filter);
