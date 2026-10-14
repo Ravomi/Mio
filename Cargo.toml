@@ -7,13 +7,24 @@ license = "MIT"
 description = "Headless coding agent engine extracted from Ravomi"
 repository = "https://github.com/Ravomi/Mio"
 readme = "README.md"
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/CREDITS.md",
+    "/licenses",
+    "/examples",
+    "/tests",
+    "/Cargo.lock",
+    "/Cargo.toml",
+]
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-rig-core = { path = "third_party/rig/rig-core", default-features = false, features = ["reqwest", "rustls"] }
-rig-agent = { path = "third_party/rig/rig-agent", default-features = false }
-rig-reqwest = { path = "third_party/rig/rig-reqwest", default-features = false, features = ["rustls"] }
+rig-core = { version = "=0.44.0", path = "third_party/rig/rig-core", default-features = false, features = ["reqwest", "rustls"] }
+rig-agent = { version = "=0.44.0", path = "third_party/rig/rig-agent", default-features = false }
+rig-reqwest = { version = "=0.44.0", path = "third_party/rig/rig-reqwest", default-features = false, features = ["rustls"] }
 tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "fs", "io-util", "io-std", "signal", "process", "net", "rt-multi-thread"] }
 futures-util = "=0.3.34"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "form", "stream", "system-proxy"] }
