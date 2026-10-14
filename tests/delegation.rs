@@ -1,4 +1,4 @@
-use mio_agent::{
+use mio_coding_agent::{
     AgentEvent, Config, Host, HostFuture, Message, RunOptions,
     delegation::{
         DelegateParams, DelegationAdapter, DelegationConstraints, DelegationMode, KillParams,
@@ -109,7 +109,7 @@ async fn test_async_and_sync_delegation_flow() {
         .unwrap();
 
     let meta = match res_async {
-        mio_agent::delegation::DelegateResponse::Async(m) => m,
+        mio_coding_agent::delegation::DelegateResponse::Async(m) => m,
         _ => panic!("Expected async response"),
     };
     assert_eq!(meta.session, "s1");
@@ -142,7 +142,7 @@ async fn test_async_and_sync_delegation_flow() {
         .unwrap();
 
     let snap = match res_sync {
-        mio_agent::delegation::DelegateResponse::Sync(s) => s,
+        mio_coding_agent::delegation::DelegateResponse::Sync(s) => s,
         _ => panic!("Expected sync response"),
     };
     assert_eq!(snap.session, "s2");
@@ -176,7 +176,7 @@ async fn test_single_task_timeout() {
         .unwrap();
 
     let snap = match res {
-        mio_agent::delegation::DelegateResponse::Sync(s) => s,
+        mio_coding_agent::delegation::DelegateResponse::Sync(s) => s,
         _ => panic!("Expected sync response"),
     };
     assert_eq!(snap.status, Status::TimedOut);
@@ -224,7 +224,7 @@ async fn test_cwd_boundary_conversion_and_enforcement() {
         .await
         .unwrap();
     let snap = match res {
-        mio_agent::delegation::DelegateResponse::Sync(s) => s,
+        mio_coding_agent::delegation::DelegateResponse::Sync(s) => s,
         _ => panic!("Expected sync response"),
     };
     assert_eq!(snap.cwd, sub.canonicalize().unwrap());
@@ -252,7 +252,7 @@ async fn test_resume_and_session_queries() {
         .await
         .unwrap();
     let s1 = match r1 {
-        mio_agent::delegation::DelegateResponse::Sync(s) => s,
+        mio_coding_agent::delegation::DelegateResponse::Sync(s) => s,
         _ => panic!(),
     };
     assert_eq!(s1.status, Status::Completed);
@@ -273,7 +273,7 @@ async fn test_resume_and_session_queries() {
         .await
         .unwrap();
     let s2 = match r2 {
-        mio_agent::delegation::DelegateResponse::Sync(s) => s,
+        mio_coding_agent::delegation::DelegateResponse::Sync(s) => s,
         _ => panic!(),
     };
     assert_eq!(s2.status, Status::Completed);
@@ -320,7 +320,7 @@ async fn test_kill_operation() {
         .await
         .unwrap();
     let meta = match res {
-        mio_agent::delegation::DelegateResponse::Async(m) => m,
+        mio_coding_agent::delegation::DelegateResponse::Async(m) => m,
         _ => panic!(),
     };
 
