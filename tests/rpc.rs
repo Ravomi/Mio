@@ -35,6 +35,14 @@ impl RpcClient {
         Self::configured(subagents, "custom", &[])
     }
     fn configured(subagents: bool, provider: &str, environment: &[(&str, &str)]) -> Self {
+        Self::configured_with_persist(subagents, provider, environment, false)
+    }
+    fn configured_with_persist(
+        subagents: bool,
+        provider: &str,
+        environment: &[(&str, &str)],
+        persist: bool,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -74,7 +82,7 @@ impl RpcClient {
         if subagents {
             command.arg("--subagents");
         }
-        let mut child = command
+        command
             .current_dir(dir.path())
             .env("HOME", dir.path())
             .env("MIO_CONFIG_DIR", dir.path())
@@ -85,14 +93,17 @@ impl RpcClient {
                 "rpc",
                 "--no-context",
                 "--no-mcp",
-                "--no-session",
                 "--provider",
                 provider,
                 "--model",
                 "test",
                 "--base-url",
                 &format!("http://{address}/v1"),
-            ])
+            ]);
+        if !persist {
+            command.arg("--no-session");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -477,4 +488,164 @@ fn cross_provider_switch_uses_target_endpoint_and_credentials() {
     reply(stream, None);
     client.settled("completed");
     server.join().unwrap();
+}
+
+#[test]
+fn session_persistence_save_failure_retains_state_and_allows_retry() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+
+    // Initial prompts to populate session and verify file creation
+    for index in 0..6 {
+        let (s, _) = prompt(&mut client, &format!("prompt {index}"));
+        reply(s, None);
+        client.settled("completed");
+    }
+
+    // Get current state
+    client.send(json!({"type":"get_state","id":"st1"}));
+    let st1 = client.response("st1")["data"].clone();
+    let session_file = std::path::PathBuf::from(st1["sessionFile"].as_str().unwrap());
+    assert!(session_file.exists());
+    let session_dir = session_file.parent().unwrap().to_path_buf();
+    let backup_dir = session_dir.with_extension("backup");
+
+    let orig_id = st1["sessionId"].as_str().unwrap().to_string();
+    let orig_file = st1["sessionFile"].as_str().unwrap().to_string();
+    let orig_msg_count = st1["messageCount"].as_u64().unwrap();
+    assert_eq!(orig_msg_count, 12);
+
+    // Backup session dir and replace with a regular file to make saves deterministically fail
+    std::fs::rename(&session_dir, &backup_dir).unwrap();
+    std::fs::write(&session_dir, b"blocker file").unwrap();
+
+    for (cmd_type, req_json) in [
+        ("compact", json!({"type":"compact","id":"c1"})),
+        (
+            "set_session_name",
+            json!({"type":"set_session_name","id":"n1","name":"new-name"}),
+        ),
+        ("fork_session", json!({"type":"fork_session","id":"f1"})),
+        (
+            "new_session",
+            json!({"type":"new_session","id":"ns1","name":"fresh"}),
+        ),
+    ] {
+        let req_id = req_json["id"].as_str().unwrap().to_string();
+        client.send(req_json);
+        let resp = client.response(&req_id);
+        assert_eq!(resp["success"], false);
+        assert!(!resp["data"]["error"].as_str().unwrap().is_empty());
+
+        let check_id = format!("st_{cmd_type}");
+        client.send(json!({"type":"get_state","id":check_id}));
+        let st = client.response(&check_id)["data"].clone();
+        assert_eq!(st["sessionId"].as_str().unwrap(), orig_id);
+        assert_eq!(st["sessionName"], st1["sessionName"]);
+        assert_eq!(st["sessionFile"].as_str().unwrap(), orig_file);
+        assert_eq!(st["messageCount"].as_u64().unwrap(), orig_msg_count);
+    }
+
+    // Clear blocker and restore directory
+    std::fs::remove_file(&session_dir).unwrap();
+    std::fs::rename(&backup_dir, &session_dir).unwrap();
+
+    // Retry operations successfully and verify files updated
+    client.send(json!({"type":"set_session_name","id":"n_retry","name":"renamed-ok"}));
+    let resp = client.response("n_retry");
+    assert_eq!(resp["success"], true);
+    let disk_content = std::fs::read_to_string(&session_file).unwrap();
+    assert!(disk_content.contains("renamed-ok"));
+
+    client.send(json!({"type":"compact","id":"c_retry"}));
+    let resp = client.response("c_retry");
+    assert_eq!(resp["success"], true);
+    let compacted_messages = resp["data"]["compacted_messages"].as_u64().unwrap();
+    let original_messages = resp["data"]["original_messages"].as_u64().unwrap();
+    assert!(compacted_messages < original_messages);
+    let disk_content = std::fs::read_to_string(&session_file).unwrap();
+    let parsed: Value = serde_json::from_str(&disk_content).unwrap();
+    assert_eq!(
+        parsed["history"].as_array().unwrap().len(),
+        compacted_messages as usize
+    );
+
+    client.send(json!({"type":"fork_session","id":"f_retry"}));
+    let resp = client.response("f_retry");
+    assert_eq!(resp["success"], true);
+    let forked_id = resp["data"]["sessionId"].as_str().unwrap();
+    let forked_file = session_dir.join(format!("{forked_id}.json"));
+    assert!(forked_file.exists());
+
+    client.send(json!({"type":"new_session","id":"ns_retry","name":"new-ok"}));
+    let resp = client.response("ns_retry");
+    assert_eq!(resp["success"], true);
+    let new_id = resp["data"]["sessionId"].as_str().unwrap();
+    let new_file = session_dir.join(format!("{new_id}.json"));
+    assert!(new_file.exists());
+}
+
+#[test]
+fn prompt_save_failure_reports_settled_error_no_done_and_does_not_leak_into_next_turn() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+
+    // Initial prompt to establish session file
+    let (s1, _) = prompt(&mut client, "first successful message");
+    reply(s1, None);
+    client.settled("completed");
+
+    client.send(json!({"type":"get_state","id":"st_init"}));
+    let st_init = client.response("st_init")["data"].clone();
+    let session_file = std::path::PathBuf::from(st_init["sessionFile"].as_str().unwrap());
+    let session_dir = session_file.parent().unwrap().to_path_buf();
+    let backup_dir = session_dir.with_extension("backup_prompt");
+    let init_msg_count = st_init["messageCount"].as_u64().unwrap();
+
+    // Introduce save failure by replacing parent dir with file
+    std::fs::rename(&session_dir, &backup_dir).unwrap();
+    std::fs::write(&session_dir, b"blocker file").unwrap();
+
+    // Send prompt, model responds ok, but save will fail
+    let (s2, _) = prompt(&mut client, "this turn will fail saving");
+    reply(s2, None);
+
+    // Expect agent_settled with status error and verify no "done" event
+    let mut saw_done = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = client
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("event deadline");
+        if event["type"] == "done" {
+            saw_done = true;
+        }
+        if event["type"] == "agent_settled" {
+            assert_eq!(event["status"], "error");
+            break;
+        }
+    }
+    assert!(!saw_done, "Must not emit 'done' when saving session fails");
+
+    // Verify get_state messageCount did not grow
+    client.send(json!({"type":"get_state","id":"st_after_fail"}));
+    let st_after = client.response("st_after_fail")["data"].clone();
+    assert_eq!(st_after["messageCount"].as_u64().unwrap(), init_msg_count);
+
+    // Restore directory
+    std::fs::remove_file(&session_dir).unwrap();
+    std::fs::rename(&backup_dir, &session_dir).unwrap();
+
+    // Next prompt should not contain the failed turn content
+    let (s3, req3) = prompt(&mut client, "clean follow-up turn");
+    assert!(!req3.to_string().contains("this turn will fail saving"));
+    reply(s3, None);
+    client.settled("completed");
+
+    // State now reflects the successful turns (each turn adds user message + assistant reply)
+    client.send(json!({"type":"get_state","id":"st_final"}));
+    let st_final = client.response("st_final")["data"].clone();
+    assert_eq!(
+        st_final["messageCount"].as_u64().unwrap(),
+        init_msg_count + 2
+    );
 }

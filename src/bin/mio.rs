@@ -1501,14 +1501,16 @@ impl Runner {
         Ok(())
     }
 
-    fn save_session(&mut self) -> Result<(), String> {
-        if self.no_session {
-            return Ok(());
+    fn commit_session(&mut self, mut candidate: Session, path: PathBuf) -> Result<(), String> {
+        if !self.no_session {
+            let parent = path.parent().ok_or("Invalid session path")?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create session directory: {e}"))?;
+            candidate.save(&path)?;
         }
-        let parent = self.path.parent().ok_or("Invalid session path")?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create session directory: {e}"))?;
-        self.session.save(&self.path)
+        self.session = candidate;
+        self.path = path;
+        Ok(())
     }
 
     async fn turn(&mut self, prompt: &str) -> Result<(), String> {
@@ -1592,8 +1594,9 @@ impl Runner {
                 return Err("Parent ended before collecting child tasks; unfinished children cancelled. File changes are not rolled back.".into());
             }
         }
-        self.session.history = history;
-        self.save_session()?;
+        let mut candidate = self.session.clone();
+        candidate.history = history;
+        self.commit_session(candidate, self.path.clone())?;
         if self.host.json {
             println!(
                 "{}",
@@ -1817,12 +1820,18 @@ async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Resu
                     DEFAULT_KEEP_RECENT_MESSAGES,
                     instructions.as_deref(),
                 );
-                runner.session.history = compacted;
-                let _ = runner.save_session();
-                println!(
-                    "{}",
-                    rpc_response("compact", id.as_deref(), true, json!(stats))
-                );
+                let mut candidate = runner.session.clone();
+                candidate.history = compacted;
+                match runner.commit_session(candidate, runner.path.clone()) {
+                    Ok(()) => println!(
+                        "{}",
+                        rpc_response("compact", id.as_deref(), true, json!(stats))
+                    ),
+                    Err(error) => println!(
+                        "{}",
+                        rpc_response("compact", id.as_deref(), false, json!({"error": error}))
+                    ),
+                }
             }
             RpcCommand::GetState { id } => {
                 println!(
@@ -1855,51 +1864,87 @@ async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Resu
                 ),
             },
 
-            RpcCommand::NewSession { id, name } => {
-                let mut s = Session::new(cwd)?;
-                s.set_name(name);
-                runner.path = directory.join(format!("{}.json", s.id));
-                runner.session = s;
-                println!(
+            RpcCommand::NewSession { id, name } => match Session::new(cwd) {
+                Ok(mut s) => {
+                    s.set_name(name);
+                    let path = directory.join(format!("{}.json", s.id));
+                    match runner.commit_session(s, path) {
+                        Ok(()) => println!(
+                            "{}",
+                            rpc_response(
+                                "new_session",
+                                id.as_deref(),
+                                true,
+                                json!({"sessionId": runner.session.id, "name": runner.session.name})
+                            )
+                        ),
+                        Err(error) => println!(
+                            "{}",
+                            rpc_response(
+                                "new_session",
+                                id.as_deref(),
+                                false,
+                                json!({"error": error})
+                            )
+                        ),
+                    }
+                }
+                Err(error) => println!(
                     "{}",
-                    rpc_response(
-                        "new_session",
-                        id.as_deref(),
-                        true,
-                        json!({"sessionId": runner.session.id, "name": runner.session.name})
-                    )
-                );
-            }
+                    rpc_response("new_session", id.as_deref(), false, json!({"error": error}))
+                ),
+            },
             RpcCommand::ForkSession { id } => {
-                runner.session = runner.session.fork();
-                runner.path = directory.join(format!("{}.json", runner.session.id));
-                let _ = runner.save_session();
-                println!(
-                    "{}",
-                    rpc_response(
-                        "fork_session",
-                        id.as_deref(),
-                        true,
-                        json!({"sessionId": runner.session.id})
-                    )
-                );
+                let candidate = runner.session.fork();
+                let path = directory.join(format!("{}.json", candidate.id));
+                match runner.commit_session(candidate, path) {
+                    Ok(()) => println!(
+                        "{}",
+                        rpc_response(
+                            "fork_session",
+                            id.as_deref(),
+                            true,
+                            json!({"sessionId": runner.session.id})
+                        )
+                    ),
+                    Err(error) => println!(
+                        "{}",
+                        rpc_response(
+                            "fork_session",
+                            id.as_deref(),
+                            false,
+                            json!({"error": error})
+                        )
+                    ),
+                }
             }
             RpcCommand::SetSessionName { id, name } => {
-                runner.session.set_name(Some(name));
-                let _ = runner.save_session();
-                println!(
-                    "{}",
-                    rpc_response(
-                        "set_session_name",
-                        id.as_deref(),
-                        true,
-                        json!({
-                            "sessionId": runner.session.id,
-                            "sessionName": runner.session.name,
-                            "session_name": runner.session.name,
-                        })
-                    )
-                );
+                let mut candidate = runner.session.clone();
+                candidate.set_name(Some(name));
+                match runner.commit_session(candidate, runner.path.clone()) {
+                    Ok(()) => println!(
+                        "{}",
+                        rpc_response(
+                            "set_session_name",
+                            id.as_deref(),
+                            true,
+                            json!({
+                                "sessionId": runner.session.id,
+                                "sessionName": runner.session.name,
+                                "session_name": runner.session.name,
+                            })
+                        )
+                    ),
+                    Err(error) => println!(
+                        "{}",
+                        rpc_response(
+                            "set_session_name",
+                            id.as_deref(),
+                            false,
+                            json!({"error": error})
+                        )
+                    ),
+                }
             }
             RpcCommand::ExportHtml { id, output_path } => {
                 let out_path = match output_path {
@@ -2417,12 +2462,22 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                 continue;
             }
             "/new" | "/fork" => {
-                runner.session = if trimmed == "/fork" {
+                let candidate = if trimmed == "/fork" {
                     runner.session.fork()
                 } else {
-                    Session::new(&cwd)?
+                    match Session::new(&cwd) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Mio: {e}");
+                            continue;
+                        }
+                    }
                 };
-                runner.path = directory.join(format!("{}.json", runner.session.id));
+                let target_path = directory.join(format!("{}.json", candidate.id));
+                if let Err(e) = runner.commit_session(candidate, target_path) {
+                    eprintln!("Mio: {e}");
+                    continue;
+                }
                 eprintln!("Selected session {}", runner.session.id);
                 continue;
             }
@@ -2434,9 +2489,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                         runner.session.name.as_deref().unwrap_or("(unnamed)")
                     );
                 } else {
-                    runner.session.set_name(Some(title.to_owned()));
-                    if !runner.session.history.is_empty() {
-                        let _ = runner.save_session();
+                    let mut candidate = runner.session.clone();
+                    candidate.set_name(Some(title.to_owned()));
+                    if let Err(e) = runner.commit_session(candidate, runner.path.clone()) {
+                        eprintln!("Mio: {e}");
+                        continue;
                     }
                     eprintln!("Session named '{title}'");
                 }
@@ -2449,9 +2506,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                     DEFAULT_KEEP_RECENT_MESSAGES,
                     if focus.is_empty() { None } else { Some(focus) },
                 );
-                runner.session.history = compacted;
-                if !runner.session.history.is_empty() {
-                    let _ = runner.save_session();
+                let mut candidate = runner.session.clone();
+                candidate.history = compacted;
+                if let Err(e) = runner.commit_session(candidate, runner.path.clone()) {
+                    eprintln!("Mio: {e}");
+                    continue;
                 }
                 eprintln!(
                     "Compacted {} -> {} messages ({} -> {} bytes)",
