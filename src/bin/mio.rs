@@ -1622,7 +1622,7 @@ impl Runner {
         if let Some(level) = thinking.or(inline_thinking) {
             options.thinking = Some(level);
         }
-        mio_coding_agent::validate_thinking(config.provider, options.thinking)?;
+        mio_coding_agent::validate_model_thinking(&config, options.thinking)?;
         options.catalog_provider = Some(name.clone());
         mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
         if let Some(manager) = self.subagents.as_mut() {
@@ -2476,6 +2476,7 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             None
         },
     };
+    mio_coding_agent::validate_model_thinking(&config, options.thinking)?;
     mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
     let subagents = if args.subagents {
         Some(Arc::new(if let Some(account) = &antigravity {

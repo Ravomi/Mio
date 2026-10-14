@@ -1118,3 +1118,20 @@ fn context_budget_model_switch_recomputes_catalog_and_keeps_override() {
         );
     }
 }
+
+#[test]
+fn known_nonreasoning_model_switch_is_rejected_without_changing_state() {
+    let mut client = RpcClient::new();
+    client.send(json!({"type":"set_model","id":"valid","model":"test:high"}));
+    assert_eq!(client.response("valid")["success"], true);
+    client.send(json!({"type":"set_model","id":"invalid","model":"gpt-4.1"}));
+    let response = client.response("invalid");
+    assert_eq!(response["success"], false);
+    assert!(response.to_string().contains("does not reason"));
+    client.send(json!({"type":"get_state","id":"state"}));
+    let state = client.response("state");
+    assert_eq!(state["data"]["model"], "test");
+    assert_eq!(state["data"]["thinkingLevel"], "high");
+    client.send(json!({"type":"set_model","id":"off","model":"gpt-4.1:off"}));
+    assert_eq!(client.response("off")["success"], true);
+}

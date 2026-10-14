@@ -133,3 +133,34 @@ async fn unsupported_thinking_fails_before_network_or_account_lookup() {
         );
     }
 }
+
+#[tokio::test]
+async fn unsupported_known_model_has_a_local_reason_and_never_connects() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let error = run_with_options(
+        Config {
+            provider: Provider::Custom,
+            model: "gpt-4.1".into(),
+            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+            api_key: "not-a-secret-test".into(),
+        },
+        vec![],
+        "hello",
+        dir.path(),
+        Arc::new(QuietHost),
+        Services::default(),
+        RunOptions {
+            thinking: Some(ThinkingLevel::High),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("does not reason"), "{error}");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

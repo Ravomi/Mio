@@ -129,6 +129,30 @@ impl ThinkingLevel {
             Self::Max => "max",
         }
     }
+
+    fn reasoning(self) -> mio_core::completion::Reasoning {
+        match self {
+            ThinkingLevel::Off => mio_core::completion::Reasoning::Off,
+            ThinkingLevel::Minimal => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Minimal)
+            }
+            ThinkingLevel::Low => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Low)
+            }
+            ThinkingLevel::Medium => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Medium)
+            }
+            ThinkingLevel::High => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::High)
+            }
+            ThinkingLevel::Xhigh => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::XHigh)
+            }
+            ThinkingLevel::Max => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Max)
+            }
+        }
+    }
 }
 
 impl FromStr for ThinkingLevel {
@@ -175,6 +199,27 @@ pub fn validate_thinking(
         },
         _ => Ok(()),
     }
+}
+
+/// Validate local provider/model capabilities without account or network access.
+pub fn validate_model_thinking(
+    config: &Config,
+    thinking: Option<ThinkingLevel>,
+) -> Result<(), String> {
+    let (_, model, inline) = parse_model_spec(&config.model);
+    let thinking = thinking.or(inline);
+    validate_thinking(config.provider, thinking)?;
+    if matches!(config.provider, Provider::Custom | Provider::Codex)
+        && let Some(thinking) = thinking
+        && let Some(id) = mio_core::providers::registry::ProviderId::catalog("openai")
+        && let Some(spec) = mio_core::catalog::Catalog::builtin().find(id, &model)
+    {
+        spec.validate(
+            &mio_core::completion::GenerationOptions::default().reasoning(thinking.reasoning()),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Parse `[provider/]model[:thinking]` shorthand into `(provider, model, thinking)`.
@@ -356,7 +401,7 @@ pub async fn run_with_tools(
         return Err("请先在模型设置中填写模型名和服务地址".into());
     }
     let effective_thinking = options.thinking.or(inline_thinking);
-    validate_thinking(config.provider, effective_thinking)?;
+    validate_model_thinking(&config, effective_thinking)?;
     let budget = context_budget::ContextBudget::resolve(&config, &options)?;
     let canonical_cwd = cwd
         .canonicalize()
@@ -427,28 +472,7 @@ pub async fn run_with_tools(
         Provider::Antigravity | Provider::DeepseekWeb
     ) && let Some(thinking) = effective_thinking
     {
-        let reasoning = match thinking {
-            ThinkingLevel::Off => mio_core::completion::Reasoning::Off,
-            ThinkingLevel::Minimal => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Minimal)
-            }
-            ThinkingLevel::Low => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Low)
-            }
-            ThinkingLevel::Medium => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Medium)
-            }
-            ThinkingLevel::High => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::High)
-            }
-            ThinkingLevel::Xhigh => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::XHigh)
-            }
-            ThinkingLevel::Max => {
-                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Max)
-            }
-        };
-        builder = builder.reasoning(reasoning);
+        builder = builder.reasoning(thinking.reasoning());
     }
     if !tools.tool_filter.is_disabled() {
         if tools.tool_filter.allows("workspace") {

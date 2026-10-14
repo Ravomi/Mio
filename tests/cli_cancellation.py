@@ -150,6 +150,17 @@ def drain_master(master_fd, total_timeout=1.0, idle_timeout=0.05):
             break
     return out
 
+def wait_for_output(master_fd, expected, timeout=5.0):
+    output = b""
+    deadline = time.monotonic() + timeout
+    while expected not in output:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"Missing {expected!r}: {output!r}"
+        ready, _, _ = select.select([master_fd], [], [], remaining)
+        assert ready, f"Missing {expected!r}: {output!r}"
+        output += os.read(master_fd, 4096)
+    return output
+
 def run_test(bin_path, case: str):
     server = MockServer()
     master_fd, slave_fd = pty.openpty()
@@ -186,12 +197,18 @@ def run_test(bin_path, case: str):
         time.sleep(0.3)
         assert proc.poll() is None, "mio exited prematurely"
 
+        # Invalid /thinking must leave the REPL usable; the valid setting must reach children.
+        os.write(master_fd, b"/thinking invalid-level\n")
+        wait_for_output(master_fd, b"Cannot set thinking level:")
+        os.write(master_fd, b"/thinking high\n")
+        wait_for_output(master_fd, b"Thinking level set to high")
         # 发送第一个 prompt
         os.write(master_fd, b"delegate a task\n")
 
         # 收到第一个 parent HTTP 请求
         parent_conn1 = server.get_connection(timeout=5.0)
-        read_http_request(parent_conn1, timeout=5.0)
+        first_req, _ = read_http_request(parent_conn1, timeout=5.0)
+        assert first_req.get("reasoning_effort") == "high", first_req
         
         # 回复 parent：delegate child
         delegate_args = json.dumps({
@@ -222,6 +239,8 @@ def run_test(bin_path, case: str):
         # 读取两个请求内容以区分哪个是 child
         req_a, _ = read_http_request(conn_a, timeout=5.0)
         req_b, _ = read_http_request(conn_b, timeout=5.0)
+        assert req_a.get("reasoning_effort") == "high", req_a
+        assert req_b.get("reasoning_effort") == "high", req_b
 
         # child 的 messages 中 role == 'user' 精确为 child-prompt (兼容 str 和 text 数组)
         def is_child_request(req):
