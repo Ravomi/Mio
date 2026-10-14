@@ -381,6 +381,7 @@ async fn execute(args: Args) -> Result<(), String> {
     let options = RunOptions {
         instructions,
         max_turns: args.max_turns.unwrap_or(32),
+        ..RunOptions::default()
     };
     let subagents = if args.subagents {
         Some(Arc::new(if let Some(account) = &antigravity {

@@ -33,7 +33,7 @@ use mio_core::{
     streaming::{Item, StreamEvent},
 };
 use serde::{Deserialize, Serialize};
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, str::FromStr, sync::Arc};
 
 /// 异步 Shell 任务的 Boxed Future。
 pub type HostFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -90,6 +90,87 @@ pub enum Provider {
     DeepseekWeb,
 }
 
+/// 思考预算等级（对齐 Pi `--thinking` 等级）。
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ThinkingLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl FromStr for ThinkingLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" => Ok(Self::Off),
+            "minimal" | "min" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" | "med" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => Err(format!(
+                "Invalid thinking level '{other}'; expected off, minimal, low, medium, high, xhigh, or max"
+            )),
+        }
+    }
+}
+
+/// Parse `[provider/]model[:thinking]` shorthand into `(provider, model, thinking)`.
+pub fn parse_model_spec(raw: &str) -> (Option<String>, String, Option<ThinkingLevel>) {
+    let trimmed = raw.trim();
+    let (before_thinking, thinking) = match trimmed.rsplit_once(':') {
+        Some((prefix, suffix)) if !prefix.is_empty() => match ThinkingLevel::from_str(suffix) {
+            Ok(level) => (prefix, Some(level)),
+            Err(_) => (trimmed, None),
+        },
+        _ => (trimmed, None),
+    };
+    if let Some((prov, rest)) = before_thinking.split_once('/') {
+        let lower = prov.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "custom"
+                | "openai"
+                | "anthropic"
+                | "google"
+                | "gemini"
+                | "deepseek"
+                | "antigravity"
+                | "codex"
+                | "openrouter"
+                | "groq"
+                | "mistral"
+                | "xai"
+                | "ollama"
+        ) && !rest.trim().is_empty()
+        {
+            return (Some(lower), rest.trim().to_owned(), thinking);
+        }
+    }
+    (None, before_thinking.to_owned(), thinking)
+}
+
 /// Agent 运行配置。
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +207,7 @@ pub struct Services<'a> {
 pub struct RunOptions {
     pub instructions: String,
     pub max_turns: usize,
+    pub thinking: Option<ThinkingLevel>,
 }
 
 impl Default for RunOptions {
@@ -133,6 +215,7 @@ impl Default for RunOptions {
         Self {
             instructions: String::new(),
             max_turns: 32,
+            thinking: None,
         }
     }
 }
@@ -216,9 +299,11 @@ pub async fn run_with_tools(
     if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
         return Err("输入需为 1–65536 字节".into());
     }
-    if config.model.trim().is_empty() {
+    let (_, clean_model, inline_thinking) = parse_model_spec(&config.model);
+    if clean_model.trim().is_empty() {
         return Err("请先在模型设置中填写模型名和服务地址".into());
     }
+    let effective_thinking = options.thinking.or(inline_thinking);
     let canonical_cwd = cwd
         .canonicalize()
         .map_err(|e| format!("工作目录不可用：{e}"))?;
@@ -230,30 +315,30 @@ pub async fn run_with_tools(
         Provider::Antigravity => services
             .antigravity
             .ok_or("Google 账号服务不可用")?
-            .client(&config.model)
+            .client_with_thinking(&clean_model, effective_thinking.map(|t| t.as_str()))
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::DeepseekWeb => services
             .deepseek
             .ok_or("DeepSeek 账号服务不可用")?
             .client()
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::Codex => services
             .accounts
             .ok_or("账号服务不可用")?
             .codex()
             .await?
-            .completion(config.model)
+            .completion(clean_model)
             .into(),
         Provider::Custom | Provider::Deepseek => {
             let client = OpenAIConfig::new(config.api_key)
                 .with_route(Route::Chat)
                 .with_base_url(config.base_url)
                 .client();
-            client.completion(config.model).into()
+            client.completion(clean_model).into()
         }
     };
 
