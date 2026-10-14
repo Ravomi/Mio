@@ -198,9 +198,11 @@ def run_test(bin_path, case: str):
         assert proc.poll() is None, "mio exited prematurely"
 
         # Invalid /thinking must leave the REPL usable; the valid setting must reach children.
-        os.write(master_fd, b"/thinking invalid-level\n")
+        # Editing keys at an empty prompt must stay no-ops (DEL must not become text).
+        os.write(master_fd, b"\x7f\x08\x0b\x15\x17/thinking invalid-level\n")
         wait_for_output(master_fd, b"Cannot set thinking level:")
-        os.write(master_fd, b"/thinking high\n")
+        # Ctrl-U clears the line; Ctrl-W deletes the previous word.
+        os.write(master_fd, b"discard\x15/thinking wrong\x17high\n")
         wait_for_output(master_fd, b"Thinking level set to high")
         # 发送第一个 prompt
         os.write(master_fd, b"delegate a task\n")

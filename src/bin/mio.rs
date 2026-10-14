@@ -950,50 +950,43 @@ impl InteractiveEditor {
                         self.handle_tab(cwd);
                         self.render(cwd).map_err(|e| e.to_string())?;
                     }
-                    11 => {
+                    11 if self.cursor < self.buf.len() => {
                         // Ctrl-K: delete from cursor to end of line
-                        if self.cursor < self.buf.len() {
-                            self.buf.truncate(self.cursor);
-                            self.render(cwd).map_err(|e| e.to_string())?;
-                        }
+                        self.buf.truncate(self.cursor);
+                        self.render(cwd).map_err(|e| e.to_string())?;
                     }
                     12 => {
                         // Ctrl-L: clear screen
                         eprint!("\x1b[2J\x1b[H");
                         self.render(cwd).map_err(|e| e.to_string())?;
                     }
-                    21 => {
+                    21 if self.cursor > 0 => {
                         // Ctrl-U: delete from cursor to start of line
-                        if self.cursor > 0 {
-                            self.buf.drain(..self.cursor);
-                            self.cursor = 0;
-                            self.render(cwd).map_err(|e| e.to_string())?;
-                        }
+                        self.buf.drain(..self.cursor);
+                        self.cursor = 0;
+                        self.render(cwd).map_err(|e| e.to_string())?;
                     }
-                    23 => {
+                    23 if self.cursor > 0 => {
                         // Ctrl-W: delete previous word
-                        if self.cursor > 0 {
-                            let mut i = self.cursor;
-                            while i > 0 && self.buf[i - 1].is_ascii_whitespace() {
-                                i -= 1;
-                            }
-                            while i > 0 && !self.buf[i - 1].is_ascii_whitespace() {
-                                i -= 1;
-                            }
-                            self.buf.drain(i..self.cursor);
-                            self.cursor = i;
-                            self.render(cwd).map_err(|e| e.to_string())?;
+                        let mut i = self.cursor;
+                        while i > 0 && self.buf[i - 1].is_ascii_whitespace() {
+                            i -= 1;
                         }
-                    }
-                    8 | 127 => {
-                        if self.cursor > 0 {
-                            let prev = self.prev_char_boundary();
-                            self.buf.drain(prev..self.cursor);
-                            self.cursor = prev;
-                            self.ghost_dismissed = false;
-                            self.render(cwd).map_err(|e| e.to_string())?;
+                        while i > 0 && !self.buf[i - 1].is_ascii_whitespace() {
+                            i -= 1;
                         }
+                        self.buf.drain(i..self.cursor);
+                        self.cursor = i;
+                        self.render(cwd).map_err(|e| e.to_string())?;
                     }
+                    8 | 127 if self.cursor > 0 => {
+                        let prev = self.prev_char_boundary();
+                        self.buf.drain(prev..self.cursor);
+                        self.cursor = prev;
+                        self.ghost_dismissed = false;
+                        self.render(cwd).map_err(|e| e.to_string())?;
+                    }
+                    8 | 127 => {}
                     b'\r' | b'\n' => {
                         let mut submitted = String::from_utf8_lossy(&self.buf).into_owned();
                         let trimmed_sub = submitted.trim();

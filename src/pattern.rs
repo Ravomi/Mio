@@ -555,15 +555,11 @@ impl NfaRegex {
                 self.add_state(set, *out2, chars, pos);
             }
             State::Consume { atom, out } => match atom {
-                Atom::AnchorStart => {
-                    if pos == 0 {
-                        self.add_state(set, *out, chars, pos);
-                    }
+                Atom::AnchorStart if pos == 0 => {
+                    self.add_state(set, *out, chars, pos);
                 }
-                Atom::AnchorEnd => {
-                    if pos == chars.len() {
-                        self.add_state(set, *out, chars, pos);
-                    }
+                Atom::AnchorEnd if pos == chars.len() => {
+                    self.add_state(set, *out, chars, pos);
                 }
                 Atom::WordBoundary(expected) => {
                     let prev_word = pos > 0 && is_word_char(chars[pos - 1]);
