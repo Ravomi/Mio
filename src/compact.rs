@@ -27,7 +27,7 @@ pub fn history_bytes(history: &[Message]) -> usize {
 }
 
 /// Compact `history`, preserving up to `keep_recent` recent messages verbatim
-/// (aligned to a non-tool-result user message boundary) and summarizing older messages.
+/// (aligned to a complete tool exchange boundary) and summarizing older messages.
 pub fn compact_history(
     history: &[Message],
     keep_recent: usize,
@@ -70,6 +70,12 @@ pub fn compact_history(
     let summary = build_structured_summary(older, custom_focus);
 
     let mut compacted = Vec::with_capacity(2 + recent.len());
+    compacted.extend(
+        older
+            .iter()
+            .filter(|m| matches!(m, Message::System { .. }))
+            .cloned(),
+    );
     compacted.push(Message::user(
         "[System Context Compaction: Earlier conversation turns have been summarized below to conserve context window.]",
     ));
@@ -91,45 +97,84 @@ pub fn compact_history(
     )
 }
 
+/// Boundaries after complete tool exchanges. Pending calls are never separated
+/// from results, including parallel calls completed by separate messages.
+pub(crate) fn safe_boundaries(history: &[Message]) -> Vec<usize> {
+    use mio_core::message::{AssistantContent, UserContent};
+    let mut pending = std::collections::BTreeSet::new();
+    let mut boundaries = Vec::new();
+    for (index, message) in history.iter().enumerate() {
+        match message {
+            Message::Assistant(message) => {
+                for content in &message.content {
+                    if let AssistantContent::ToolCall(call) = content {
+                        pending.insert(call.id.clone());
+                    }
+                }
+            }
+            Message::User { content } => {
+                for content in content {
+                    if let UserContent::ToolResult(result) = content {
+                        pending.remove(&result.call);
+                    }
+                }
+            }
+            Message::System { .. } => {}
+        }
+        if pending.is_empty() {
+            boundaries.push(index + 1);
+        }
+    }
+    boundaries
+}
+
 fn find_safe_split_index(history: &[Message], target: usize) -> usize {
-    // Walk backward or forward from `target` to find a `user` message that does NOT contain tool results.
-    for idx in (1..=target).rev() {
-        if is_plain_user_message(&history[idx]) {
-            return idx;
-        }
-    }
-    for (idx, msg) in history.iter().enumerate().skip(target + 1) {
-        if is_plain_user_message(msg) {
-            return idx;
-        }
-    }
-    0
+    let boundaries = safe_boundaries(history);
+    boundaries
+        .iter()
+        .copied()
+        .rfind(|&i| i <= target)
+        .or_else(|| boundaries.into_iter().find(|&i| i < history.len()))
+        .unwrap_or(0)
 }
 
-fn is_plain_user_message(msg: &Message) -> bool {
-    let Ok(val) = serde_json::to_value(msg) else {
-        return false;
-    };
-    if val["role"].as_str() != Some("user") {
-        return false;
-    }
-    if let Some(arr) = val["content"].as_array() {
-        !arr.iter().any(|item| {
-            item["type"].as_str() == Some("tool_result")
-                || item.get("tool_result").is_some()
-                || item.get("call_id").is_some()
-        })
-    } else {
-        true
-    }
-}
-
-fn build_structured_summary(messages: &[Message], custom_focus: Option<&str>) -> String {
+pub(crate) fn build_structured_summary(messages: &[Message], custom_focus: Option<&str>) -> String {
     let mut user_goals = Vec::new();
     let mut tool_actions = Vec::new();
     let mut assistant_notes = Vec::new();
+    let mut tool_results = Vec::new();
 
     for msg in messages {
+        if let Message::User { content } = msg {
+            for content in content {
+                if let mio_core::message::UserContent::ToolResult(result) = content {
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            mio_core::message::ToolResultContent::Text(text) => {
+                                Some(text.text.clone())
+                            }
+                            mio_core::message::ToolResultContent::Json { value } => {
+                                Some(value.to_string())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    tool_results.push(format!(
+                        "{} [{}]: {}",
+                        result.name,
+                        if result.is_error {
+                            "error/refused"
+                        } else {
+                            "returned"
+                        },
+                        collapse_whitespace(&text, 240)
+                    ));
+                }
+            }
+        }
         let Ok(val) = serde_json::to_value(msg) else {
             continue;
         };
@@ -157,7 +202,7 @@ fn build_structured_summary(messages: &[Message], custom_focus: Option<&str>) ->
 
     if !user_goals.is_empty() {
         out.push_str("\n### User Requests\n");
-        for goal in user_goals.iter().take(12) {
+        for goal in user_goals.iter().skip(user_goals.len().saturating_sub(12)) {
             out.push_str("- ");
             out.push_str(goal);
             out.push('\n');
@@ -165,8 +210,11 @@ fn build_structured_summary(messages: &[Message], custom_focus: Option<&str>) ->
     }
 
     if !tool_actions.is_empty() {
-        out.push_str("\n### Tool Operations Performed\n");
-        for action in tool_actions.iter().take(20) {
+        out.push_str("\n### Tool Operations Requested\n");
+        for action in tool_actions
+            .iter()
+            .skip(tool_actions.len().saturating_sub(20))
+        {
             out.push_str("- ");
             out.push_str(action);
             out.push('\n');
@@ -179,6 +227,18 @@ fn build_structured_summary(messages: &[Message], custom_focus: Option<&str>) ->
         for note in &assistant_notes[start..] {
             out.push_str("- ");
             out.push_str(note);
+            out.push('\n');
+        }
+    }
+
+    if !tool_results.is_empty() {
+        out.push_str("\n### Recent Tool Results\n");
+        for result in tool_results
+            .iter()
+            .skip(tool_results.len().saturating_sub(8))
+        {
+            out.push_str("- ");
+            out.push_str(result);
             out.push('\n');
         }
     }

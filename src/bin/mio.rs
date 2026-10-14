@@ -66,6 +66,8 @@ Without a prompt, starts an interactive conversation in a terminal or reads stdi
   --no-shell            Disable shell execution (file tools remain available)
   --subagents           Enable native child sessions (4 concurrent; memory only)
   --auto-compact        Automatically compact history when exceeding 512 KiB
+  --context-window N    Override deployment context capacity (tokens; >= 1024)
+  --max-output-tokens N Output token cap and reserve within the context window
   --max-turns N         Tool-loop budget, 1–256 (default: 32)
   --plugin-install SPEC Install plugin from community registry, github:owner/repo, or path
   --plugin-remove NAME  Remove an installed plugin from .mio/plugins/NAME
@@ -1081,6 +1083,8 @@ struct Args {
     no_shell: bool,
     subagents: bool,
     auto_compact: bool,
+    context_window: Option<u32>,
+    max_output_tokens: Option<u32>,
     max_turns: Option<usize>,
     plugin_install: Option<String>,
     plugin_remove: Option<String>,
@@ -1102,6 +1106,17 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--model" => parsed.model = Some(value()?),
             "--provider" => parsed.provider = Some(value()?),
             "--thinking" => parsed.thinking = Some(ThinkingLevel::from_str(&value()?)?),
+            "--context-window" => {
+                parsed.context_window =
+                    Some(value()?.parse().map_err(|_| "Invalid --context-window")?)
+            }
+            "--max-output-tokens" => {
+                parsed.max_output_tokens = Some(
+                    value()?
+                        .parse()
+                        .map_err(|_| "Invalid --max-output-tokens")?,
+                )
+            }
             "--list-models" => {
                 parsed.list_models = true;
                 if let Some(next) = args.peek()
@@ -1608,6 +1623,8 @@ impl Runner {
             options.thinking = Some(level);
         }
         mio_coding_agent::validate_thinking(config.provider, options.thinking)?;
+        options.catalog_provider = Some(name.clone());
+        mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
         if let Some(manager) = self.subagents.as_mut() {
             Arc::get_mut(manager)
                 .ok_or("Cannot switch a shared or active subagent manager")?
@@ -1748,6 +1765,7 @@ fn rpc_state(runner: &Runner, running: bool, queued: usize) -> serde_json::Value
         "model": runner.config.model,
         "provider": runner.provider_name,
         "thinkingLevel": runner.options.thinking,
+        "contextBudget": mio_coding_agent::context_budget::ContextBudget::resolve(&runner.config, &runner.options).ok(),
         "messageCount": runner.session.history.len(),
         "isStreaming": running,
         "followUpCount": queued,
@@ -2447,6 +2465,9 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     };
     let options = RunOptions {
         instructions,
+        context_window: args.context_window,
+        max_output_tokens: args.max_output_tokens,
+        catalog_provider: Some(provider_str.to_owned()),
         max_turns: args.max_turns.unwrap_or(32),
         thinking: args.thinking.or(shorthand_thinking),
         auto_compact_bytes: if args.auto_compact {
@@ -2455,6 +2476,7 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             None
         },
     };
+    mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
     let subagents = if args.subagents {
         Some(Arc::new(if let Some(account) = &antigravity {
             SubagentManager::new_with_antigravity(

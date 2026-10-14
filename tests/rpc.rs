@@ -52,6 +52,16 @@ impl RpcClient {
         persist: bool,
         approve: bool,
     ) -> Self {
+        Self::configured_args(subagents, provider, environment, persist, approve, &[])
+    }
+    fn configured_args(
+        subagents: bool,
+        provider: &str,
+        environment: &[(&str, &str)],
+        persist: bool,
+        approve: bool,
+        args: &[&str],
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -116,6 +126,7 @@ impl RpcClient {
             command.arg("--approve");
         }
         let mut child = command
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -942,11 +953,19 @@ fn subagent_approval_flow_and_parent_abort() {
 
 #[test]
 fn thinking_switch_reaches_parent_and_child_requests() {
-    let mut client = RpcClient::with_subagents(true);
+    let mut client = RpcClient::configured_args(
+        true,
+        "custom",
+        &[],
+        false,
+        false,
+        &["--context-window", "24576", "--max-output-tokens", "256"],
+    );
     client.send(json!({"type":"set_model","id":"thinking","model":"test:high"}));
     assert_eq!(client.response("thinking")["success"], true);
     let (stream, request) = prompt(&mut client, "delegate");
     assert_eq!(request["reasoning_effort"], "high");
+    assert_eq!(request["max_tokens"], 256);
     reply(
         stream,
         Some(
@@ -957,6 +976,7 @@ fn thinking_switch_reaches_parent_and_child_requests() {
     for _ in 0..2 {
         let (stream, request) = client.request();
         assert_eq!(request["reasoning_effort"], "high");
+        assert_eq!(request["max_tokens"], 256);
         // Keep both requests outstanding until cancellation so parent cleanup cannot race child capture.
         outstanding.push(stream);
     }
@@ -975,4 +995,126 @@ fn unsupported_thinking_switch_preserves_old_state() {
     assert!(refused.to_string().contains("不支持 medium"));
     client.send(json!({"type":"get_state","id":"state"}));
     assert_eq!(client.response("state")["data"]["thinkingLevel"], "high");
+}
+
+#[test]
+fn context_budget_blocks_oversized_input_before_any_model_request() {
+    let mut client = RpcClient::configured_args(
+        false,
+        "custom",
+        &[],
+        false,
+        false,
+        &[
+            "--no-tools",
+            "--context-window",
+            "2048",
+            "--max-output-tokens",
+            "128",
+        ],
+    );
+    client.send(json!({"type":"prompt","id":"large","message":"中".repeat(1000)}));
+    assert_eq!(client.response("large")["success"], true);
+    let error = client.until(|event| event["type"] == "error");
+    assert!(error.to_string().contains("Context budget:"), "{error}");
+    client.settled("error");
+    assert!(client.requests.try_recv().is_err());
+    let (stream, request) = prompt(&mut client, "recover");
+    assert_eq!(request["max_tokens"], 128);
+    reply(stream, None);
+    client.settled("completed");
+}
+
+#[test]
+fn context_budget_rechecks_after_tools_and_preserves_call_result_pairs() {
+    let mut client = RpcClient::configured_args(
+        false,
+        "custom",
+        &[],
+        false,
+        false,
+        &[
+            "--tools",
+            "read",
+            "--context-window",
+            "8192",
+            "--max-output-tokens",
+            "512",
+        ],
+    );
+    // Two old turns fit alone; a medium tool result forces request-only compaction.
+    for index in 0..2 {
+        let (stream, _) = prompt(&mut client, &format!("old-{index}:{}", "x".repeat(1600)));
+        reply(stream, None);
+        client.settled("completed");
+    }
+    std::fs::write(client._dir.path().join("medium.txt"), "m".repeat(3600)).unwrap();
+    let (stream, _) = prompt(&mut client, "read medium");
+    reply(
+        stream,
+        Some(json!({"name":"read","arguments":json!({"path":"medium.txt"}).to_string()})),
+    );
+    let (stream, request) = client.request();
+    let messages = request["messages"].as_array().unwrap();
+    assert!(
+        request.to_string().contains("Earlier context summary"),
+        "{request}"
+    );
+    let call_index = messages
+        .iter()
+        .position(|m| m["tool_calls"].is_array())
+        .unwrap();
+    let result_index = messages.iter().position(|m| m["role"] == "tool").unwrap();
+    assert!(call_index < result_index);
+    assert_eq!(
+        messages[call_index]["tool_calls"][0]["id"],
+        messages[result_index]["tool_call_id"]
+    );
+    assert!(
+        messages[result_index]["content"]
+            .as_str()
+            .unwrap()
+            .contains(&"m".repeat(3600))
+    );
+    assert_eq!(request["max_tokens"], 512);
+    reply(stream, None);
+    client.settled("completed");
+    // The active tool result itself cannot be removed: stop locally before another HTTP call.
+    std::fs::write(client._dir.path().join("huge.txt"), "z".repeat(20000)).unwrap();
+    let (stream, _) = prompt(&mut client, "read huge");
+    reply(
+        stream,
+        Some(json!({"name":"read","arguments":json!({"path":"huge.txt"}).to_string()})),
+    );
+    let error = client.until(|event| event["type"] == "error");
+    assert!(error.to_string().contains("Context budget:"), "{error}");
+    client.settled("error");
+    assert!(client.requests.try_recv().is_err());
+}
+
+#[test]
+fn context_budget_model_switch_recomputes_catalog_and_keeps_override() {
+    for args in [
+        vec![],
+        vec!["--context-window", "8192", "--max-output-tokens", "512"],
+    ] {
+        let mut client = RpcClient::configured_args(false, "custom", &[], false, false, &args);
+        client.send(json!({"type":"set_model","id":"switch","model":"openai/gpt-4.1"}));
+        assert_eq!(client.response("switch")["success"], true);
+        client.send(json!({"type":"get_state","id":"state"}));
+        let state = client.response("state");
+        let budget = &state["data"]["contextBudget"];
+        assert_eq!(
+            budget["context_window"],
+            if args.is_empty() { 1_047_576 } else { 8192 }
+        );
+        assert_eq!(
+            budget["source"],
+            if args.is_empty() {
+                "catalog"
+            } else {
+                "override"
+            }
+        );
+    }
 }

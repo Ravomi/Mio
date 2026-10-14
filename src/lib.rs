@@ -7,6 +7,7 @@ pub mod accounts;
 pub mod antigravity;
 pub mod compact;
 pub mod context;
+pub mod context_budget;
 pub mod deepseek;
 pub mod deepseek_pow;
 pub mod delegation;
@@ -249,6 +250,12 @@ pub struct RunOptions {
     pub max_turns: usize,
     pub thinking: Option<ThinkingLevel>,
     pub auto_compact_bytes: Option<usize>,
+    /// Explicit deployment context capacity; otherwise use the bundled catalog or fallback.
+    pub context_window: Option<u32>,
+    /// Output reserve and provider request cap (web adapters may not support a cap).
+    pub max_output_tokens: Option<u32>,
+    /// Catalog vendor for a custom compatible endpoint; never changes routing.
+    pub catalog_provider: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -258,6 +265,9 @@ impl Default for RunOptions {
             max_turns: 32,
             thinking: None,
             auto_compact_bytes: None,
+            context_window: None,
+            max_output_tokens: None,
+            catalog_provider: None,
         }
     }
 }
@@ -347,6 +357,7 @@ pub async fn run_with_tools(
     }
     let effective_thinking = options.thinking.or(inline_thinking);
     validate_thinking(config.provider, effective_thinking)?;
+    let budget = context_budget::ContextBudget::resolve(&config, &options)?;
     let canonical_cwd = cwd
         .canonicalize()
         .map_err(|e| format!("工作目录不可用：{e}"))?;
@@ -408,7 +419,8 @@ pub async fn run_with_tools(
         options.instructions
     );
     let mut builder = AgentBuilder::new(model)
-        .preamble(preamble)
+        .preamble(preamble.clone())
+        .max_tokens(u64::from(budget.max_output_tokens))
         .dynamic_tools(Vec::new());
     if !matches!(
         config.provider,
@@ -475,6 +487,11 @@ pub async fn run_with_tools(
         }
     }
     let agent = builder.build();
+    let definitions = agent
+        .tool_definitions(None)
+        .await
+        .map_err(|_| "Context budget: cannot resolve tool definitions")?;
+    let budget_hook = context_budget::BudgetHook::new(budget, &preamble, &definitions)?;
 
     let history = if let Some(threshold) = options.auto_compact_bytes
         && threshold > 0
@@ -493,6 +510,7 @@ pub async fn run_with_tools(
         .prompt(prompt)
         .history(history)
         .max_turns(options.max_turns)
+        .add_hook(budget_hook)
         .stream();
 
     let mut final_history = None;
@@ -502,6 +520,11 @@ pub async fn run_with_tools(
             mio_agent::run::PromptError::Provider(
                 mio_core::error::ProviderError::UnsupportedOption(option),
             ) => option.to_string(),
+            mio_agent::run::PromptError::Cancelled { reason, .. }
+                if reason.starts_with("Context budget:") =>
+            {
+                reason
+            }
             _ => "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string(),
         })? {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {

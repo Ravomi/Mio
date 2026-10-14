@@ -286,6 +286,8 @@ mio --template review-pr -p "feat(mcp): support dynamic tool registration"</code
 <ul class="ref-ul" style="margin-bottom: 0;">
 <li class="ref-li" data-en="Compaction keeps roughly six recent messages, adjusting the boundary to retain complete tool interactions, and replaces older history with a local extractive summary." data-zh="压缩保留约 6 条最近消息，并调整边界以保留完整工具交互；更旧的历史转换成本地抽取摘要。">压缩保留约 6 条最近消息，并调整边界以保留完整工具交互；更旧的历史转换成本地抽取摘要。</li>
 <li class="ref-li" data-en="Local summaries extract user intent, tool operations and results from older history without calling an LLM. Details may be lost." data-zh="本地摘要：从旧历史抽取用户意图、工具操作与关键结果，不调用 LLM。摘要可能丢失细节。">本地摘要：从旧历史抽取用户意图、工具操作与关键结果，不调用 LLM。摘要可能丢失细节。</li>
+<li class="ref-li" data-en="Every model call, including tool continuations, checks instructions, tool schemas, history and current input using conservative UTF-8 byte estimates, plus output reserve and a 5% margin. This is not an exact tokenizer. Capacity comes from the bundled catalog; unknown models fall back to 32768. Override deployment limits with --context-window and --max-output-tokens." data-zh="每次模型调用（含工具续轮）都以 UTF-8 字节保守估算指令、工具定义、历史和当前输入，加上输出预留与 5% 余量；不是精确 tokenizer。容量取内置目录，未知模型回退 32768；可用 --context-window 和 --max-output-tokens 覆盖部署上限。">每次模型调用（含工具续轮）都以 UTF-8 字节保守估算指令、工具定义、历史和当前输入，加上输出预留与 5% 余量；不是精确 tokenizer。容量取内置目录，未知模型回退 32768；可用 <code>--context-window</code> 和 <code>--max-output-tokens</code> 覆盖部署上限。</li>
+<li class="ref-li" data-en="Budget compaction changes only the request, preserving system messages and complete tool pairs. Irreducible input fails locally. Text context only; media is rejected. DeepSeek web cannot enforce an output cap and rejects an explicit override." data-zh="预算压缩只改变模型请求，保留系统消息与完整工具配对；仍超限则本地报错。当前仅估算文本，媒体消息明确拒绝。DeepSeek 网页端不能执行输出上限，显式覆盖会报错。">预算压缩只改变模型请求，保留系统消息与完整工具配对；仍超限则本地报错。当前仅估算文本，媒体消息明确拒绝。DeepSeek 网页端不能执行输出上限，显式覆盖会报错。</li>
 <li class="ref-li" data-en-html="&lt;strong&gt;Auto Compaction Threshold&lt;/strong&gt;: With --auto-compact, triggers when serialized history exceeds 512 KiB (DEFAULT_AUTO_COMPACT_BYTES)." data-zh-html="&lt;strong&gt;自动压缩触发阈值&lt;/strong&gt;：指定 --auto-compact 时，历史记录超过 512 KiB (DEFAULT_AUTO_COMPACT_BYTES) 就会自动在回合执行前压缩。">
 <strong>自动压缩触发阈值</strong>：指定 <code>--auto-compact</code> 时，历史记录超过 512 KiB (<code>DEFAULT_AUTO_COMPACT_BYTES</code>) 就会自动在回合执行前压缩。
                 </li>
@@ -774,6 +776,14 @@ fn main() {}
 <td>None (Flag)</td>
 <td><code>false</code></td>
 <td data-en="Compact history before a turn when it exceeds 512 KiB." data-zh="历史超过 512 KiB 时自动执行上下文压缩。">历史超过 512 KiB 时自动执行上下文压缩。</td>
+</tr>
+<tr>
+<td><code>--context-window</code></td><td><code>N &gt;= 1024</code></td><td>Catalog / 32768</td>
+<td data-en="Override deployment context capacity in tokens; retained across model switches and inherited by children." data-zh="覆盖部署的上下文容量；切换模型时保留，子任务继承。">覆盖部署的上下文容量；切换模型时保留，子任务继承。</td>
+</tr>
+<tr>
+<td><code>--max-output-tokens</code></td><td><code>N &gt; 0</code></td><td>min(4096, window/4, catalog output)</td>
+<td data-en="Output reserve and provider cap; must leave input room plus a 5% margin. Unsupported by DeepSeek web." data-zh="输出预留与请求上限；必须留下输入空间及 5% 余量。DeepSeek 网页端不支持。">输出预留与请求上限；必须留下输入空间及 5% 余量。DeepSeek 网页端不支持。</td>
 </tr>
 <tr>
 <td><code>--max-turns</code></td>
