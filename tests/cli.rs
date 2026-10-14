@@ -210,14 +210,16 @@ fn cli_list_models_session_naming_export_and_rpc_mode() {
     // 2. Create a named session and export it to HTML
     let sessions_dir = dir.path().join(".mio/sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
-    let mut named_session = mio_agent::session::Session::new(dir.path()).unwrap();
+    let mut named_session = mio_coding_agent::session::Session::new(dir.path()).unwrap();
     named_session.name = Some("alpha-feature".into());
     named_session
         .history
-        .push(mio_agent::Message::user("Build alpha feature"));
+        .push(mio_coding_agent::Message::user("Build alpha feature"));
     named_session
         .history
-        .push(mio_agent::Message::assistant("Alpha feature complete."));
+        .push(mio_coding_agent::Message::assistant(
+            "Alpha feature complete.",
+        ));
     let session_path = sessions_dir.join(format!("{}.json", named_session.id));
     named_session.save(&session_path).unwrap();
 

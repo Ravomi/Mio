@@ -74,9 +74,961 @@ Credentials: MIO_API_KEY (or provider-specific OPENAI_API_KEY, ANTHROPIC_API_KEY
 DEEPSEEK_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, XAI_API_KEY, MISTRAL_API_KEY).
 Sessions: .mio/sessions/*.json, saved after successful turns (unless --no-session).
 Interactive commands: /help, /new, /fork, /sessions, /name, /compact, /export, /model,
-/thinking, /plugins, /plugin, /subagents, /status, /clear, /exit. Ctrl-C cancels and exits.
+/thinking, /plugins, /plugin, /subagents, /status, /clear, /exit.
+Tab completes commands, models, plugins, and @file paths; Up/Down browses history; Ctrl-C exits.
 Shell is noninteractive and runs with your user permissions, not in a sandbox.
 ";
+
+const INTERACTIVE_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "显示帮助与命令说明"),
+    ("/status", "查看当前会话、模型与消息统计"),
+    (
+        "/model ",
+        "查看或切换模型 (如 /model antigravity/claude-sonnet-4-5)",
+    ),
+    (
+        "/thinking ",
+        "设置思考深度 (off, minimal, low, medium, high, xhigh, max)",
+    ),
+    ("/new", "创建新会话"),
+    ("/fork", "从当前会话分叉新分支"),
+    ("/sessions", "列出当前工作区已保存的会话"),
+    ("/name ", "设置或查看当前会话名称"),
+    ("/compact", "归纳压缩早期对话历史"),
+    ("/export ", "导出当前会话为独立 HTML 报告"),
+    ("/plugins", "列出当前工作区已安装的插件"),
+    (
+        "/plugin ",
+        "管理插件 (list, search, install, remove, init, validate)",
+    ),
+    ("/subagents", "查看当前会话中的子代理运行状态"),
+    ("/clear", "清空终端屏幕"),
+    ("/exit", "退出 Mio"),
+    ("/quit", "退出 Mio"),
+];
+
+const INTERACTIVE_THINKING_LEVELS: &[(&str, &str)] = &[
+    ("off", "关闭扩展思考"),
+    ("minimal", "极简思考预算"),
+    ("low", "低思考深度"),
+    ("medium", "中等思考深度"),
+    ("high", "高思考深度"),
+    ("xhigh", "超高思考深度"),
+    ("max", "最大思考深度"),
+];
+
+const INTERACTIVE_PLUGIN_SUBCOMMANDS: &[(&str, &str)] = &[
+    ("list", "列出当前工作区已安装插件"),
+    ("search ", "搜索官方社区插件注册表"),
+    ("install ", "安装社区插件、GitHub 仓库或本地插件"),
+    ("remove ", "卸载当前工作区中的已安装插件"),
+    ("init ", "在指定目录初始化新插件脚手架"),
+    ("validate ", "校验插件目录或注册表格式"),
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CompletionItem {
+    replacement: String,
+    display: String,
+    description: String,
+}
+
+fn char_display_width(c: char) -> usize {
+    let u = c as u32;
+    if u < 0x20
+        || (0x7f..0xa0).contains(&u)
+        || (0x0300..=0x036f).contains(&u)
+        || (0x1ab0..=0x1aff).contains(&u)
+        || (0x1dc0..=0x1dff).contains(&u)
+        || (0x20d0..=0x20ff).contains(&u)
+        || (0xfe20..=0xfe2f).contains(&u)
+    {
+        0
+    } else if (0x1100..=0x115f).contains(&u)
+        || u == 0x2329
+        || u == 0x232a
+        || (0x2e80..=0x303e).contains(&u)
+        || (0x3040..=0xa4cf).contains(&u)
+        || (0xac00..=0xd7a3).contains(&u)
+        || (0xf900..=0xfaff).contains(&u)
+        || (0xfe10..=0xfe19).contains(&u)
+        || (0xfe30..=0xfe6f).contains(&u)
+        || (0xff00..=0xff60).contains(&u)
+        || (0xffe0..=0xffe6).contains(&u)
+        || (0x1f300..=0x1faff).contains(&u)
+        || (0x20000..=0x3fffd).contains(&u)
+    {
+        2
+    } else {
+        1
+    }
+}
+
+fn str_display_width(s: &str) -> usize {
+    s.chars().map(char_display_width).sum()
+}
+
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    let mut width = 0;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let w = char_display_width(ch);
+        if width + w > max_width {
+            break;
+        }
+        width += w;
+        out.push(ch);
+    }
+    out
+}
+
+#[cfg(unix)]
+fn terminal_columns() -> usize {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 20 {
+            ws.ws_col as usize
+        } else {
+            80
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_columns() -> usize {
+    80
+}
+
+fn workspace_path_candidates(cwd: &Path, partial: &str) -> Vec<CompletionItem> {
+    let (dir_rel, file_prefix) = match partial.rfind('/') {
+        Some(idx) => (&partial[..=idx], &partial[idx + 1..]),
+        None => ("", partial),
+    };
+    let search_dir = if dir_rel.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        cwd.join(dir_rel)
+    };
+    let Ok(entries) = std::fs::read_dir(search_dir) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if name.starts_with('.') && !file_prefix.starts_with('.') {
+            continue;
+        }
+        if matches!(name.as_str(), "target" | "node_modules" | ".git")
+            && !file_prefix.starts_with(&name)
+        {
+            continue;
+        }
+        if name.starts_with(file_prefix) {
+            let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
+            if is_dir {
+                let rel = format!("{dir_rel}{name}/");
+                dirs.push(CompletionItem {
+                    display: rel.clone(),
+                    replacement: rel,
+                    description: "目录".to_owned(),
+                });
+            } else {
+                let rel = format!("{dir_rel}{name}");
+                files.push(CompletionItem {
+                    display: rel.clone(),
+                    replacement: rel,
+                    description: "文件".to_owned(),
+                });
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.replacement.cmp(&b.replacement));
+    files.sort_by(|a, b| a.replacement.cmp(&b.replacement));
+    dirs.extend(files);
+    dirs
+}
+
+fn completion_candidates(prefix_line: &str, cwd: &Path) -> (usize, Vec<CompletionItem>) {
+    // 1. Slash command argument completion
+    if let Some(rest) = prefix_line.strip_prefix("/thinking ")
+        && !rest.contains(' ')
+    {
+        let start = "/thinking ".len();
+        let list = INTERACTIVE_THINKING_LEVELS
+            .iter()
+            .filter(|(lvl, _)| lvl.starts_with(rest))
+            .map(|(lvl, desc)| CompletionItem {
+                replacement: (*lvl).to_owned(),
+                display: (*lvl).to_owned(),
+                description: (*desc).to_owned(),
+            })
+            .collect();
+        return (start, list);
+    }
+    if let Some(rest) = prefix_line.strip_prefix("/model ")
+        && !rest.contains(' ')
+    {
+        let start = "/model ".len();
+        let catalog = list_catalog_models(None);
+        let mut ready_matches = Vec::new();
+        let mut other_matches = Vec::new();
+        for entry in catalog {
+            let full = format!("{}/{}", entry.provider, entry.model);
+            let matched = full.starts_with(rest) || entry.model.starts_with(rest);
+            if matched {
+                let item = CompletionItem {
+                    replacement: full.clone(),
+                    display: full,
+                    description: format!(
+                        "[{}] {} · {}",
+                        if entry.configured { "ready" } else { "unset" },
+                        if entry.supports_thinking {
+                            "thinking"
+                        } else {
+                            "standard"
+                        },
+                        entry.env_var
+                    ),
+                };
+                if entry.configured {
+                    ready_matches.push(item);
+                } else {
+                    other_matches.push(item);
+                }
+            }
+        }
+        ready_matches.extend(other_matches);
+        return (start, ready_matches);
+    }
+    if let Some(rest) = prefix_line.strip_prefix("/plugin ") {
+        if !rest.contains(' ') {
+            let start = "/plugin ".len();
+            let list = INTERACTIVE_PLUGIN_SUBCOMMANDS
+                .iter()
+                .filter(|(sub, _)| sub.starts_with(rest))
+                .map(|(sub, desc)| CompletionItem {
+                    replacement: (*sub).to_owned(),
+                    display: sub.trim().to_owned(),
+                    description: (*desc).to_owned(),
+                })
+                .collect();
+            return (start, list);
+        }
+        if let Some(arg) = rest.strip_prefix("install ")
+            && !arg.contains(' ')
+        {
+            let start = "/plugin install ".len();
+            if arg.starts_with('.') || arg.starts_with('/') {
+                return (start, workspace_path_candidates(cwd, arg));
+            }
+            let mut list: Vec<CompletionItem> =
+                mio_coding_agent::plugin::search_community_plugins(None)
+                    .into_iter()
+                    .filter(|p| p.name.starts_with(arg))
+                    .map(|p| CompletionItem {
+                        replacement: p.name.clone(),
+                        display: p.name,
+                        description: format!("v{} · {}", p.version, p.description),
+                    })
+                    .collect();
+            list.extend(workspace_path_candidates(cwd, arg));
+            return (start, list);
+        }
+        if let Some(arg) = rest.strip_prefix("remove ")
+            && !arg.contains(' ')
+        {
+            let start = "/plugin remove ".len();
+            let list = mio_coding_agent::plugin::discover_plugins(cwd)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.manifest.name.starts_with(arg))
+                .map(|p| CompletionItem {
+                    replacement: p.manifest.name.clone(),
+                    display: p.manifest.name,
+                    description: format!("v{} · {}", p.manifest.version, p.manifest.description),
+                })
+                .collect();
+            return (start, list);
+        }
+        for sub in ["init ", "validate "] {
+            if let Some(arg) = rest.strip_prefix(sub)
+                && !arg.contains(' ')
+            {
+                let start = "/plugin ".len() + sub.len();
+                return (start, workspace_path_candidates(cwd, arg));
+            }
+        }
+    }
+    if let Some(rest) = prefix_line.strip_prefix("/export ")
+        && !rest.contains(' ')
+    {
+        let start = "/export ".len();
+        return (start, workspace_path_candidates(cwd, rest));
+    }
+
+    // 2. Slash command name completion
+    if prefix_line.starts_with('/') && !prefix_line.contains(char::is_whitespace) {
+        let list = INTERACTIVE_SLASH_COMMANDS
+            .iter()
+            .filter(|(cmd, _)| {
+                cmd.starts_with(prefix_line) || cmd.trim_end().starts_with(prefix_line)
+            })
+            .map(|(cmd, desc)| CompletionItem {
+                replacement: (*cmd).to_owned(),
+                display: cmd.trim_end().to_owned(),
+                description: (*desc).to_owned(),
+            })
+            .collect();
+        return (0, list);
+    }
+
+    // 3. @file workspace path completion on current token
+    let token_start = prefix_line
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let token = &prefix_line[token_start..];
+    if let Some(partial) = token.strip_prefix('@')
+        && !partial.contains(':')
+    {
+        let start = token_start + 1;
+        return (
+            start,
+            workspace_path_candidates(cwd, partial)
+                .into_iter()
+                .map(|mut item| {
+                    item.display = format!("@{}", item.display);
+                    item
+                })
+                .collect(),
+        );
+    }
+    if token.starts_with("./") || token.starts_with("../") || token.contains('/') {
+        return (token_start, workspace_path_candidates(cwd, token));
+    }
+
+    (prefix_line.len(), Vec::new())
+}
+
+fn compute_ghost_suggestion(
+    buf: &str,
+    cursor: usize,
+    history: &[String],
+    cwd: &Path,
+) -> Option<String> {
+    if cursor != buf.len() || buf.is_empty() {
+        return None;
+    }
+    let (start, candidates) = completion_candidates(buf, cwd);
+    let current_part = &buf[start..];
+    if !current_part.is_empty() {
+        for cand in candidates {
+            if cand.replacement.starts_with(current_part)
+                && cand.replacement.len() > current_part.len()
+            {
+                return Some(cand.replacement[current_part.len()..].to_owned());
+            }
+        }
+    }
+    for item in history.iter().rev() {
+        if item.starts_with(buf) && item.len() > buf.len() {
+            return Some(item[buf.len()..].to_owned());
+        }
+    }
+    None
+}
+
+enum ReadOutcome {
+    Line(String),
+    Exit,
+}
+
+#[derive(Default)]
+enum EscState {
+    #[default]
+    None,
+    Esc,
+    Csi(Vec<u8>),
+}
+
+struct TabCycleState {
+    replace_start: usize,
+    candidates: Vec<CompletionItem>,
+    index: usize,
+}
+
+struct InteractiveEditor {
+    buf: Vec<u8>,
+    cursor: usize,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    saved_line: String,
+    ghost_dismissed: bool,
+    had_ghost: bool,
+    esc: EscState,
+    tab_cycle: Option<TabCycleState>,
+}
+
+#[cfg(unix)]
+struct RawTerminalGuard {
+    fd: libc::c_int,
+    original: Option<libc::termios>,
+}
+
+#[cfg(unix)]
+impl RawTerminalGuard {
+    fn acquire() -> Self {
+        let fd = libc::STDIN_FILENO;
+        unsafe {
+            let mut orig: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd, &mut orig) != 0 {
+                return Self { fd, original: None };
+            }
+            let mut raw = orig;
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+            raw.c_iflag &= !(libc::IXON | libc::ICRNL);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            if libc::tcsetattr(fd, libc::TCSADRAIN, &raw) != 0 {
+                return Self { fd, original: None };
+            }
+            Self {
+                fd,
+                original: Some(orig),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawTerminalGuard {
+    fn drop(&mut self) {
+        if let Some(orig) = self.original.take() {
+            unsafe {
+                let _ = libc::tcsetattr(self.fd, libc::TCSADRAIN, &orig);
+            }
+        }
+    }
+}
+
+impl InteractiveEditor {
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            cursor: 0,
+            history: Vec::new(),
+            history_index: None,
+            saved_line: String::new(),
+            ghost_dismissed: false,
+            had_ghost: false,
+            esc: EscState::None,
+            tab_cycle: None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.buf).ok()
+    }
+
+    fn set_str(&mut self, s: &str) {
+        self.buf.clear();
+        self.buf.extend_from_slice(s.as_bytes());
+        self.cursor = self.buf.len();
+    }
+
+    fn reset_line(&mut self) {
+        self.buf.clear();
+        self.cursor = 0;
+        self.history_index = None;
+        self.ghost_dismissed = false;
+        self.had_ghost = false;
+        self.esc = EscState::None;
+        self.tab_cycle = None;
+    }
+
+    fn push_history(&mut self, entry: &str) {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.history.last().is_none_or(|last| last != trimmed) {
+            self.history.push(trimmed.to_owned());
+        }
+    }
+
+    fn prev_char_boundary(&self) -> usize {
+        let mut idx = self.cursor.min(self.buf.len());
+        while idx > 0 {
+            idx -= 1;
+            if (self.buf[idx] & 0xc0) != 0x80 {
+                break;
+            }
+        }
+        idx
+    }
+
+    fn next_char_boundary(&self) -> usize {
+        let mut idx = (self.cursor + 1).min(self.buf.len());
+        while idx < self.buf.len() && (self.buf[idx] & 0xc0) == 0x80 {
+            idx += 1;
+        }
+        idx
+    }
+
+    fn current_ghost(&self, cwd: &Path) -> Option<String> {
+        if self.ghost_dismissed {
+            None
+        } else {
+            let s = self.as_str()?;
+            compute_ghost_suggestion(s, self.cursor, &self.history, cwd)
+        }
+    }
+
+    fn handle_tab(&mut self, cwd: &Path) {
+        self.step_completion(cwd, true);
+    }
+
+    fn step_completion(&mut self, cwd: &Path, forward: bool) -> bool {
+        if let Some(cycle) = &mut self.tab_cycle {
+            if forward {
+                cycle.index = (cycle.index + 1) % cycle.candidates.len();
+            } else {
+                cycle.index = (cycle.index + cycle.candidates.len() - 1) % cycle.candidates.len();
+            }
+            let chosen = cycle.candidates[cycle.index].replacement.clone();
+            let start = cycle.replace_start.min(self.buf.len());
+            self.buf.truncate(start);
+            self.buf.extend_from_slice(chosen.as_bytes());
+            self.cursor = self.buf.len();
+            self.ghost_dismissed = true;
+            return true;
+        }
+        let Some(s) = self.as_str().map(str::to_owned) else {
+            return false;
+        };
+        let prefix = &s[..self.cursor.min(s.len())];
+        let (replace_start, candidates) = completion_candidates(prefix, cwd);
+        if !candidates.is_empty() {
+            let idx = if forward { 0 } else { candidates.len() - 1 };
+            let chosen = candidates[idx].replacement.clone();
+            let tail = &s[self.cursor.min(s.len())..];
+            let mut next = String::with_capacity(replace_start + chosen.len() + tail.len());
+            next.push_str(&s[..replace_start]);
+            next.push_str(&chosen);
+            let new_cursor = next.len();
+            next.push_str(tail);
+            self.buf = next.into_bytes();
+            self.cursor = new_cursor;
+            if candidates.len() > 1 && tail.is_empty() {
+                self.tab_cycle = Some(TabCycleState {
+                    replace_start,
+                    candidates,
+                    index: idx,
+                });
+                self.ghost_dismissed = true;
+            } else {
+                self.ghost_dismissed = false;
+            }
+            return true;
+        }
+        if let Some(ghost) = self.current_ghost(cwd) {
+            self.buf.extend_from_slice(ghost.as_bytes());
+            self.cursor = self.buf.len();
+            return true;
+        }
+        false
+    }
+
+    fn render(&mut self, cwd: &Path) -> io::Result<()> {
+        let Some(s) = self.as_str().map(str::to_owned) else {
+            return Ok(());
+        };
+        let ghost = self.current_ghost(cwd);
+        let mut out = String::from("\r\x1b[2K\x1b[Jmio> ");
+        out.push_str(&s);
+        if let Some(ref g) = ghost {
+            out.push_str("\x1b[38;2;130;180;220m");
+            out.push_str(g);
+            out.push_str("\x1b[0m");
+            self.had_ghost = true;
+        } else {
+            self.had_ghost = false;
+        }
+
+        let live_candidates = if self.tab_cycle.is_none() && !self.ghost_dismissed && !s.is_empty()
+        {
+            let prefix = &s[..self.cursor.min(s.len())];
+            let (_, list) = completion_candidates(prefix, cwd);
+            list
+        } else {
+            Vec::new()
+        };
+
+        let menu_view: Option<(&[CompletionItem], usize)> = if let Some(cycle) = &self.tab_cycle {
+            Some((&cycle.candidates, cycle.index))
+        } else if !live_candidates.is_empty() {
+            Some((&live_candidates, 0))
+        } else {
+            None
+        };
+
+        let mut menu_lines = 0usize;
+        if let Some((items, selected_idx)) = menu_view {
+            let cols = terminal_columns();
+            let max_line_width = cols.saturating_sub(2);
+            let total = items.len();
+            let win_len = total.min(6);
+            let win_start = if selected_idx >= win_len {
+                selected_idx + 1 - win_len
+            } else {
+                0
+            };
+            let pad_col = items[win_start..win_start + win_len]
+                .iter()
+                .map(|it| str_display_width(&it.display))
+                .max()
+                .unwrap_or(10)
+                .clamp(12, 34);
+
+            for (offset, item) in items[win_start..win_start + win_len].iter().enumerate() {
+                let idx = win_start + offset;
+                let disp_w = str_display_width(&item.display);
+                let pad_spaces = " ".repeat(pad_col.saturating_sub(disp_w) + 2);
+                let prefix_w = 4 + disp_w + pad_spaces.len();
+                let desc_budget = max_line_width.saturating_sub(prefix_w);
+                let desc = truncate_to_width(&item.description, desc_budget);
+
+                out.push_str("\r\n");
+                if idx == selected_idx {
+                    out.push_str("\x1b[1;38;2;149;205;247m  ▸ ");
+                    out.push_str(&item.display);
+                    out.push_str(&pad_spaces);
+                    out.push_str("\x1b[0m\x1b[38;2;195;210;225m");
+                    out.push_str(&desc);
+                    out.push_str("\x1b[0m");
+                } else {
+                    out.push_str("\x1b[38;2;155;170;185m    ");
+                    out.push_str(&item.display);
+                    out.push_str(&pad_spaces);
+                    out.push_str("\x1b[0m\x1b[38;2;115;130;145m");
+                    out.push_str(&desc);
+                    out.push_str("\x1b[0m");
+                }
+                menu_lines += 1;
+            }
+            if total > win_len {
+                let footer = format!("    … ({}/{total} · Tab/↑↓ 切换补全)", selected_idx + 1);
+                let footer_clipped = truncate_to_width(&footer, max_line_width);
+                out.push_str("\r\n\x1b[38;2;115;130;145m");
+                out.push_str(&footer_clipped);
+                out.push_str("\x1b[0m");
+                menu_lines += 1;
+            }
+            self.had_ghost = true;
+        }
+
+        if menu_lines > 0 {
+            out.push_str(&format!("\x1b[{menu_lines}A"));
+        }
+        let cursor_col = 5 + str_display_width(&s[..self.cursor.min(s.len())]);
+        out.push_str(&format!("\r\x1b[{cursor_col}C"));
+
+        let mut stderr = io::stderr().lock();
+        stderr.write_all(out.as_bytes())?;
+        stderr.flush()
+    }
+
+    #[cfg(unix)]
+    fn read_line(&mut self, cwd: &Path) -> Result<ReadOutcome, String> {
+        self.reset_line();
+        let guard = RawTerminalGuard::acquire();
+        if guard.original.is_none() {
+            drop(guard);
+            eprint!("mio> ");
+            io::stderr().flush().map_err(|e| e.to_string())?;
+            let mut line = String::new();
+            let n = io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| e.to_string())?;
+            if n == 0 {
+                return Ok(ReadOutcome::Exit);
+            }
+            return Ok(ReadOutcome::Line(line));
+        }
+        self.render(cwd).map_err(|e| e.to_string())?;
+        let mut buf = [0u8; 64];
+        loop {
+            let n = unsafe {
+                libc::read(
+                    libc::STDIN_FILENO,
+                    buf.as_mut_ptr().cast::<libc::c_void>(),
+                    buf.len(),
+                )
+            };
+            if n < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    eprint!("^C\r\n");
+                    let _ = io::stderr().flush();
+                    return Ok(ReadOutcome::Exit);
+                }
+                return Err(err.to_string());
+            }
+            if n == 0 {
+                eprint!("\r\n");
+                let _ = io::stderr().flush();
+                return Ok(ReadOutcome::Exit);
+            }
+            for &byte in &buf[..n as usize] {
+                match &mut self.esc {
+                    EscState::None => {
+                        if byte == 0x1b {
+                            self.esc = EscState::Esc;
+                            continue;
+                        }
+                    }
+                    EscState::Esc => {
+                        if byte == b'[' || byte == b'O' {
+                            self.esc = EscState::Csi(Vec::new());
+                        } else {
+                            self.esc = EscState::None;
+                            self.tab_cycle = None;
+                            self.ghost_dismissed = true;
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                        continue;
+                    }
+                    EscState::Csi(seq) => {
+                        seq.push(byte);
+                        if (0x40..=0x7e).contains(&byte) {
+                            let params = seq.clone();
+                            self.esc = EscState::None;
+                            match params.as_slice() {
+                                b"Z" => {
+                                    // Shift+Tab: step completion backward
+                                    self.step_completion(cwd, false);
+                                    self.render(cwd).map_err(|e| e.to_string())?;
+                                }
+                                b"A" => {
+                                    if self.tab_cycle.is_some() {
+                                        self.step_completion(cwd, false);
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    } else if !self.history.is_empty() {
+                                        self.tab_cycle = None;
+                                        let next_idx = match self.history_index {
+                                            None => {
+                                                self.saved_line =
+                                                    String::from_utf8_lossy(&self.buf).into_owned();
+                                                self.history.len() - 1
+                                            }
+                                            Some(i) => i.saturating_sub(1),
+                                        };
+                                        self.history_index = Some(next_idx);
+                                        let entry = self.history[next_idx].clone();
+                                        self.set_str(&entry);
+                                        self.ghost_dismissed = true;
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    }
+                                }
+                                b"B" => {
+                                    if self.tab_cycle.is_some() {
+                                        self.step_completion(cwd, true);
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    } else if let Some(i) = self.history_index {
+                                        self.tab_cycle = None;
+                                        let entry = if i + 1 < self.history.len() {
+                                            self.history_index = Some(i + 1);
+                                            self.history[i + 1].clone()
+                                        } else {
+                                            self.history_index = None;
+                                            self.saved_line.clone()
+                                        };
+                                        self.set_str(&entry);
+                                        self.ghost_dismissed = true;
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    } else if self.buf.starts_with(b"/") {
+                                        self.step_completion(cwd, true);
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    }
+                                }
+                                b"C" => {
+                                    self.tab_cycle = None;
+                                    if self.cursor < self.buf.len() {
+                                        self.cursor = self.next_char_boundary();
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    } else if let Some(ghost) = self.current_ghost(cwd) {
+                                        self.buf.extend_from_slice(ghost.as_bytes());
+                                        self.cursor = self.buf.len();
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    }
+                                }
+                                b"D" => {
+                                    self.tab_cycle = None;
+                                    if self.cursor > 0 {
+                                        self.cursor = self.prev_char_boundary();
+                                        self.render(cwd).map_err(|e| e.to_string())?;
+                                    }
+                                }
+                                b"H" | b"1~" => {
+                                    self.tab_cycle = None;
+                                    self.cursor = 0;
+                                    self.render(cwd).map_err(|e| e.to_string())?;
+                                }
+                                b"F" | b"4~" => {
+                                    self.tab_cycle = None;
+                                    self.cursor = self.buf.len();
+                                    self.render(cwd).map_err(|e| e.to_string())?;
+                                }
+                                b"3~" if self.cursor < self.buf.len() => {
+                                    self.tab_cycle = None;
+                                    let next = self.next_char_boundary();
+                                    self.buf.drain(self.cursor..next);
+                                    self.render(cwd).map_err(|e| e.to_string())?;
+                                }
+                                _ => {
+                                    self.tab_cycle = None;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                }
+
+                if byte != b'\t' {
+                    self.tab_cycle = None;
+                }
+
+                match byte {
+                    3 => {
+                        // Ctrl-C: clear completion menu/ghost and immediately exit interactive session
+                        let current = String::from_utf8_lossy(&self.buf);
+                        eprint!("\r\x1b[2K\x1b[Jmio> {current}^C\r\n");
+                        let _ = io::stderr().flush();
+                        return Ok(ReadOutcome::Exit);
+                    }
+                    4 => {
+                        // Ctrl-D: exit when empty, otherwise delete char under cursor
+                        if self.buf.is_empty() {
+                            eprint!("\r\x1b[2K\x1b[J\r\n");
+                            let _ = io::stderr().flush();
+                            return Ok(ReadOutcome::Exit);
+                        } else if self.cursor < self.buf.len() {
+                            let next = self.next_char_boundary();
+                            self.buf.drain(self.cursor..next);
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    1 => {
+                        // Ctrl-A: Home
+                        self.cursor = 0;
+                        self.render(cwd).map_err(|e| e.to_string())?;
+                    }
+                    5 => {
+                        // Ctrl-E: End or accept ghost
+                        if self.cursor < self.buf.len() {
+                            self.cursor = self.buf.len();
+                        } else if let Some(ghost) = self.current_ghost(cwd) {
+                            self.buf.extend_from_slice(ghost.as_bytes());
+                            self.cursor = self.buf.len();
+                        }
+                        self.render(cwd).map_err(|e| e.to_string())?;
+                    }
+                    9 => {
+                        // Tab: complete command, argument, or @file path (cycles on repeated Tab)
+                        self.handle_tab(cwd);
+                        self.render(cwd).map_err(|e| e.to_string())?;
+                    }
+                    11 => {
+                        // Ctrl-K: delete from cursor to end of line
+                        if self.cursor < self.buf.len() {
+                            self.buf.truncate(self.cursor);
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    12 => {
+                        // Ctrl-L: clear screen
+                        eprint!("\x1b[2J\x1b[H");
+                        self.render(cwd).map_err(|e| e.to_string())?;
+                    }
+                    21 => {
+                        // Ctrl-U: delete from cursor to start of line
+                        if self.cursor > 0 {
+                            self.buf.drain(..self.cursor);
+                            self.cursor = 0;
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    23 => {
+                        // Ctrl-W: delete previous word
+                        if self.cursor > 0 {
+                            let mut i = self.cursor;
+                            while i > 0 && self.buf[i - 1].is_ascii_whitespace() {
+                                i -= 1;
+                            }
+                            while i > 0 && !self.buf[i - 1].is_ascii_whitespace() {
+                                i -= 1;
+                            }
+                            self.buf.drain(i..self.cursor);
+                            self.cursor = i;
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    8 | 127 => {
+                        if self.cursor > 0 {
+                            let prev = self.prev_char_boundary();
+                            self.buf.drain(prev..self.cursor);
+                            self.cursor = prev;
+                            self.ghost_dismissed = false;
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    b'\r' | b'\n' => {
+                        let mut submitted = String::from_utf8_lossy(&self.buf).into_owned();
+                        let trimmed_sub = submitted.trim();
+                        if trimmed_sub.starts_with('/')
+                            && !trimmed_sub.contains(char::is_whitespace)
+                        {
+                            let (_, cands) = completion_candidates(trimmed_sub, cwd);
+                            if cands.len() == 1 && !cands[0].replacement.ends_with(' ') {
+                                submitted = cands[0].replacement.clone();
+                            }
+                        }
+                        eprint!("\r\x1b[2K\x1b[Jmio> {submitted}\r\n");
+                        let _ = io::stderr().flush();
+                        self.push_history(&submitted);
+                        return Ok(ReadOutcome::Line(submitted));
+                    }
+                    b if b >= 0x20 => {
+                        self.buf.insert(self.cursor, b);
+                        self.cursor += 1;
+                        self.ghost_dismissed = false;
+                        if self.as_str().is_some() {
+                            self.render(cwd).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn read_line(&mut self, _cwd: &Path) -> Result<ReadOutcome, String> {
+        eprint!("mio> ");
+        io::stderr().flush().map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        let n = io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(ReadOutcome::Exit);
+        }
+        Ok(ReadOutcome::Line(line))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum OutputMode {
@@ -1102,7 +2054,7 @@ async fn execute(args: Args) -> Result<(), String> {
         return Err("--json requires -p, piped input, or --mode rpc".into());
     }
     eprintln!(
-        "Mio · {} · model: {}{}\n/help for commands. Shell {}. Workspace: {}",
+        "Mio · {} · model: {}{}\n/help for commands · Tab completes · Ctrl-C exits. Shell {}. Workspace: {}",
         env!("CARGO_PKG_VERSION"),
         runner.config.model,
         runner
@@ -1113,15 +2065,8 @@ async fn execute(args: Args) -> Result<(), String> {
         if args.no_shell { "disabled" } else { "enabled" },
         cwd.display()
     );
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    loop {
-        eprint!("mio> ");
-        io::stderr().flush().map_err(|e| e.to_string())?;
-        let line = tokio::select! {
-            line = lines.next_line() => line.map_err(|e| e.to_string())?,
-            signal = tokio::signal::ctrl_c() => { signal.map_err(|e| e.to_string())?; break; }
-        };
-        let Some(line) = line else { break };
+    let mut editor = InteractiveEditor::new();
+    while let ReadOutcome::Line(line) = editor.read_line(&cwd)? {
         let trimmed = line.trim();
         match trimmed {
             "" => continue,
@@ -1357,7 +2302,14 @@ async fn execute(args: Args) -> Result<(), String> {
                 }
                 continue;
             }
-            _ => runner.turn(&render(&line)?).await?,
+            _ => match render(&line) {
+                Ok(rendered) => {
+                    if let Err(err) = runner.turn(&rendered).await {
+                        eprintln!("Mio: {err}");
+                    }
+                }
+                Err(err) => eprintln!("Mio: {err}"),
+            },
         }
     }
     Ok(())
@@ -1425,5 +2377,44 @@ mod tests {
         }
         let list = session_list(dir.path()).unwrap();
         assert_eq!(list[0].id, fork.id);
+    }
+
+    #[test]
+    fn interactive_tab_completes_commands_plugins_and_at_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Test").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        // 1. Slash command completion
+        let mut editor = InteractiveEditor::new();
+        editor.set_str("/he");
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("/help"));
+
+        // 2. Tab cycling across multiple matching slash commands (/p -> /plugins -> /plugin )
+        editor.reset_line();
+        editor.set_str("/p");
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("/plugins"));
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("/plugin "));
+
+        // 3. /plugin install community completion
+        editor.reset_line();
+        editor.set_str("/plugin install rust");
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("/plugin install rust-expert"));
+
+        // 4. @file path completion
+        editor.reset_line();
+        editor.set_str("check @REA");
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("check @README.md"));
+
+        editor.reset_line();
+        editor.set_str("check @sr");
+        editor.handle_tab(dir.path());
+        assert_eq!(editor.as_str(), Some("check @src/"));
     }
 }
