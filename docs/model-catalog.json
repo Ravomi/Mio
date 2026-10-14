@@ -1,0 +1,265 @@
+{
+  "version": "1.0",
+  "description": "Static snapshot of Mio built-in provider presets from src/rpc.rs PROVIDER_PRESETS. Does not read user credentials.",
+  "totalProviders": 10,
+  "totalModels": 27,
+  "providers": [
+    {
+      "name": "antigravity",
+      "displayName": "Antigravity (Google Cloud Code PA)",
+      "protocol": "Google Cloud Code PA (OAuth Profile)",
+      "baseUrl": "https://cloudcode-pa.googleapis.com",
+      "envVars": [
+        "MIO_CONFIG_DIR"
+      ],
+      "requiresGateway": false,
+      "notesZh": "凭据查找优先级：MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio；支持通过 mio --import-antigravity ~/.pi/agent 导入已有凭据。已有 profile 可提供默认 model。实际可用模型与档位取决于账号权限；一般 thinking 仅在 Antigravity 适配器中消费生效，不声称完整支持。",
+      "notesEn": "Credential search priority: MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio; supports importing existing profiles via mio --import-antigravity ~/.pi/agent. An existing profile can provide a default model. Available models and levels depend on account entitlements; generic thinking is consumed only by the Antigravity adapter without claiming universal support.",
+      "models": [
+        {
+          "id": "claude-sonnet-4-5",
+          "reasoning": true
+        },
+        {
+          "id": "claude-opus-4-6-thinking",
+          "reasoning": true
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "reasoning": true
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "displayName": "OpenAI",
+      "protocol": "OpenAI Chat Completions",
+      "baseUrl": "https://api.openai.com/v1",
+      "envVars": [
+        "OPENAI_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "OpenAI 官方 Chat Completions 接口，原生支持函数调用与流式事件；思考档位由 Antigravity 专享，OpenAI 驱动忽略通用 thinking 预算。",
+      "notesEn": "Official OpenAI Chat Completions API with native tool-calling; thinking levels are Antigravity-only and ignored by standard OpenAI driver.",
+      "models": [
+        {
+          "id": "gpt-4.1",
+          "reasoning": false
+        },
+        {
+          "id": "gpt-4o",
+          "reasoning": false
+        },
+        {
+          "id": "o3",
+          "reasoning": true
+        },
+        {
+          "id": "o4-mini",
+          "reasoning": true
+        },
+        {
+          "id": "codex-mini-latest",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "anthropic",
+      "displayName": "Anthropic (Compatible Gateway Required)",
+      "protocol": "OpenAI Chat Completions (Via Gateway)",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "envVars": [
+        "ANTHROPIC_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": true,
+      "notesZh": "⚠️ Mio 采用通用 OpenAI Chat 驱动。原生 api.anthropic.com 端点格式不兼容，必须搭配 OpenAI 兼容网关并显式指定 --base-url https://your-gateway.example/v1。",
+      "notesEn": "⚠️ Mio uses a standard OpenAI Chat driver. Native api.anthropic.com endpoint is incompatible; you must provide an OpenAI-compatible gateway via explicit --base-url.",
+      "models": [
+        {
+          "id": "claude-sonnet-4-5",
+          "reasoning": true
+        },
+        {
+          "id": "claude-opus-4-6",
+          "reasoning": true
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "google",
+      "displayName": "Google Gemini (OpenAI Endpoint)",
+      "protocol": "Gemini OpenAI-Compatible Endpoint",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "envVars": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "使用 Google Generative Language 提供的 OpenAI 兼容接口 (/v1beta/openai)。支持通过 GEMINI_API_KEY 或 GOOGLE_API_KEY 接入。",
+      "notesEn": "Uses Google Generative Language OpenAI-compatible endpoint (/v1beta/openai). Configured via GEMINI_API_KEY or GOOGLE_API_KEY.",
+      "models": [
+        {
+          "id": "gemini-2.5-pro",
+          "reasoning": true
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "deepseek",
+      "displayName": "DeepSeek",
+      "protocol": "DeepSeek API (OpenAI Compatible)",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "envVars": [
+        "DEEPSEEK_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "DeepSeek 官方 API 兼容 OpenAI 格式。支持 deepseek-chat 及内置推理模型 deepseek-reasoner。",
+      "notesEn": "Official DeepSeek API (OpenAI-compatible). Supports deepseek-chat and deepseek-reasoner.",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "reasoning": false
+        },
+        {
+          "id": "deepseek-reasoner",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "openrouter",
+      "displayName": "OpenRouter",
+      "protocol": "OpenRouter API (OpenAI Compatible)",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "envVars": [
+        "OPENROUTER_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "多模型聚合网关，统一使用 openrouter.ai/api/v1 端点接入各类上游模型。",
+      "notesEn": "Multi-provider aggregation gateway routed through openrouter.ai/api/v1.",
+      "models": [
+        {
+          "id": "anthropic/claude-sonnet-4.5",
+          "reasoning": true
+        },
+        {
+          "id": "openai/gpt-4.1",
+          "reasoning": false
+        },
+        {
+          "id": "google/gemini-2.5-pro",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "groq",
+      "displayName": "Groq",
+      "protocol": "Groq OpenAI-Compatible API",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "envVars": [
+        "GROQ_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "Groq 超高速 LPU 推理端点，兼容 OpenAI 格式协议。",
+      "notesEn": "Groq ultra-fast LPU inference endpoint, OpenAI-compatible.",
+      "models": [
+        {
+          "id": "llama-3.3-70b-versatile",
+          "reasoning": false
+        },
+        {
+          "id": "qwen-qwq-32b",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "xai",
+      "displayName": "xAI (Grok)",
+      "protocol": "xAI API (OpenAI Compatible)",
+      "baseUrl": "https://api.x.ai/v1",
+      "envVars": [
+        "XAI_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "xAI 官方 Grok API 接口，完全兼容 OpenAI 协议。",
+      "notesEn": "xAI official Grok API endpoint, fully OpenAI-compatible.",
+      "models": [
+        {
+          "id": "grok-3",
+          "reasoning": false
+        },
+        {
+          "id": "grok-3-mini",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "name": "mistral",
+      "displayName": "Mistral AI",
+      "protocol": "Mistral API (OpenAI Compatible)",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "envVars": [
+        "MISTRAL_API_KEY",
+        "MIO_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "Mistral AI 官方端点，支持 Codestral 与 Mistral Large。",
+      "notesEn": "Mistral AI official endpoint, supports Codestral and Mistral Large.",
+      "models": [
+        {
+          "id": "codestral-latest",
+          "reasoning": false
+        },
+        {
+          "id": "mistral-large-latest",
+          "reasoning": false
+        }
+      ]
+    },
+    {
+      "name": "ollama",
+      "displayName": "Ollama (Local)",
+      "protocol": "Local Ollama (OpenAI Compatible)",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "envVars": [
+        "OLLAMA_API_KEY"
+      ],
+      "requiresGateway": false,
+      "notesZh": "本地运行的 Ollama 实例（默认 http://127.0.0.1:11434/v1），无需外部密钥即可离线使用。",
+      "notesEn": "Locally running Ollama instance (default http://127.0.0.1:11434/v1), completely offline without remote keys.",
+      "models": [
+        {
+          "id": "qwen2.5-coder:32b",
+          "reasoning": false
+        },
+        {
+          "id": "deepseek-r1:32b",
+          "reasoning": true
+        }
+      ]
+    }
+  ]
+}
