@@ -1607,6 +1607,7 @@ impl Runner {
         if let Some(level) = thinking.or(inline_thinking) {
             options.thinking = Some(level);
         }
+        mio_coding_agent::validate_thinking(config.provider, options.thinking)?;
         if let Some(manager) = self.subagents.as_mut() {
             Arc::get_mut(manager)
                 .ok_or("Cannot switch a shared or active subagent manager")?
@@ -2722,9 +2723,14 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                             .unwrap_or("default")
                     );
                 } else {
-                    let level = ThinkingLevel::from_str(arg)?;
-                    runner.options.thinking = Some(level);
-                    eprintln!("Thinking level set to {}", level.as_str());
+                    let model = runner.config.model.clone();
+                    match ThinkingLevel::from_str(arg).and_then(|level| {
+                        runner.set_model(&model, Some(level))?;
+                        Ok(level)
+                    }) {
+                        Ok(level) => eprintln!("Thinking level set to {}", level.as_str()),
+                        Err(error) => eprintln!("Cannot set thinking level: {error}"),
+                    }
                 }
                 continue;
             }

@@ -89,4 +89,4 @@ Mio 回复该指令的标准 response：
 
 命名供应商优先使用其专用密钥环境变量，再使用 `MIO_API_KEY`；不会使用其他供应商的专用密钥兜底。`custom` 使用 `MIO_API_KEY` 或 `OPENAI_API_KEY`。缺少 Antigravity 账户或不支持的原生协议会返回失败并保留原配置；不会静默换供应商。`get_state.provider` 返回当前供应商名称。
 
-后续子任务同步采用新模型配置，已完成子会话的历史保留。有活动子任务时拒绝切换。`--thinking` 当前仅向 Antigravity 传递，不代表所有供应商都支持同一推理参数。
+后续子任务同步采用新模型配置，已完成子会话的历史保留。有活动子任务时拒绝切换。思考等级通过原生参数传给通用 OpenAI 兼容接口和 Codex；实际支持取决于模型。DeepSeek API 支持 off/low/high/max，其他等级明确拒绝；DeepSeek 网页适配器暂不支持开启思考。Antigravity 保留专用映射。交互调整同步到后续子任务。

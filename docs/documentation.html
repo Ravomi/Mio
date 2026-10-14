@@ -142,8 +142,8 @@ mio --version</code></pre>
 <ul class="ref-ul" style="margin-bottom: 0;">
 <li class="ref-li" data-en="Model selection: use --model, MIO_MODEL, or a default model from an imported Antigravity profile." data-zh="模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。">模型选择：使用 --model、MIO_MODEL，或导入 Antigravity 配置中的默认模型。</li>
 <li class="ref-li" data-en="API keys: MIO_API_KEY takes precedence over provider-specific variables. Antigravity uses a separate OAuth profile." data-zh="API 密钥：MIO_API_KEY 优先于提供商专属变量；Antigravity 使用独立 OAuth 配置。">API 密钥：MIO_API_KEY 优先于提供商专属变量；Antigravity 使用独立 OAuth 配置。</li>
-<li class="ref-li" data-en-html="&lt;strong&gt;Thinking Budget Scope&lt;/strong&gt;: Thinking budget levels are currently consumed exclusively in the Antigravity adapter; standard OpenAI drivers ignore them." data-zh-html="&lt;strong&gt;思考预算生效范围&lt;/strong&gt;：思考等级（--thinking 或 model:level 缩写）目前仅在 Antigravity 适配器中消费生效，通用 OpenAI 驱动驱动暂不承诺生效。">
-<strong>思考预算生效范围</strong>：思考等级（<code>--thinking</code> 或 <code>model:level</code> 缩写）目前仅在 Antigravity 适配器中消费生效，通用 OpenAI 驱动驱动暂不承诺生效。
+<li class="ref-li" data-en-html="&lt;strong&gt;Thinking Budget Scope&lt;/strong&gt;: Thinking levels use native parameters for OpenAI-compatible endpoints and Codex, subject to model support. DeepSeek API accepts off/low/high/max and rejects other levels; its web adapter cannot enable thinking. Antigravity keeps its dedicated mapping. Interactive changes also apply to subsequent children." data-zh-html="&lt;strong&gt;思考预算生效范围&lt;/strong&gt;：思考等级通过原生参数传给通用 OpenAI 兼容接口和 Codex；实际支持取决于模型。DeepSeek API 支持 off/low/high/max，其他等级明确拒绝；DeepSeek 网页适配器暂不支持开启思考。Antigravity 保留专用映射。交互调整同步到后续子任务。">
+<strong>思考预算生效范围</strong>：思考等级通过原生参数传给通用 OpenAI 兼容接口和 Codex；实际支持取决于模型。DeepSeek API 支持 off/low/high/max，其他等级明确拒绝；DeepSeek 网页适配器暂不支持开启思考。Antigravity 保留专用映射。交互调整同步到后续子任务。
                 </li>
 </ul>
 </div>
@@ -977,7 +977,7 @@ fn main() {}
 <tr>
 <td><code>/thinking [LEVEL]</code></td>
 <td>off..max</td>
-<td data-en="Set or display the thinking level." data-zh="调整思考预算等级（当前由 Antigravity 适配器消费）。">调整思考预算等级（当前由 Antigravity 适配器消费）。</td>
+<td data-en="Set or display the thinking level." data-zh="调整思考等级并同步后续子任务；支持范围取决于供应商与模型。">调整思考等级并同步后续子任务；支持范围取决于供应商与模型。</td>
 </tr>
 <tr>
 <td><code>/plugins, /plugin list</code></td>

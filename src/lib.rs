@@ -149,6 +149,33 @@ impl FromStr for ThinkingLevel {
     }
 }
 
+/// 校验指定 provider 是否支持给定的思考预算等级。
+pub fn validate_thinking(
+    provider: Provider,
+    thinking: Option<ThinkingLevel>,
+) -> Result<(), String> {
+    match provider {
+        Provider::Deepseek => match thinking {
+            None
+            | Some(
+                ThinkingLevel::Off | ThinkingLevel::Low | ThinkingLevel::High | ThinkingLevel::Max,
+            ) => Ok(()),
+            Some(other) => Err(format!(
+                "DeepSeek API 仅支持 off、low、high、max 思考等级，不支持 {}",
+                other.as_str()
+            )),
+        },
+        Provider::DeepseekWeb => match thinking {
+            None | Some(ThinkingLevel::Off) => Ok(()),
+            Some(other) => Err(format!(
+                "DeepSeek 网页端仅支持 off（关闭思考），不支持 {}",
+                other.as_str()
+            )),
+        },
+        _ => Ok(()),
+    }
+}
+
 /// Parse `[provider/]model[:thinking]` shorthand into `(provider, model, thinking)`.
 pub fn parse_model_spec(raw: &str) -> (Option<String>, String, Option<ThinkingLevel>) {
     let trimmed = raw.trim();
@@ -319,6 +346,7 @@ pub async fn run_with_tools(
         return Err("请先在模型设置中填写模型名和服务地址".into());
     }
     let effective_thinking = options.thinking.or(inline_thinking);
+    validate_thinking(config.provider, effective_thinking)?;
     let canonical_cwd = cwd
         .canonicalize()
         .map_err(|e| format!("工作目录不可用：{e}"))?;
@@ -349,7 +377,12 @@ pub async fn run_with_tools(
             .completion(clean_model)
             .into(),
         Provider::Custom | Provider::Deepseek => {
-            let client = OpenAIConfig::new(config.api_key)
+            let client_config = if config.provider == Provider::Deepseek {
+                OpenAIConfig::with_key(&mio_core::providers::openai::wire::DEEPSEEK, config.api_key)
+            } else {
+                OpenAIConfig::new(config.api_key)
+            };
+            let client = client_config
                 .with_route(Route::Chat)
                 .with_base_url(config.base_url)
                 .client();
@@ -377,6 +410,34 @@ pub async fn run_with_tools(
     let mut builder = AgentBuilder::new(model)
         .preamble(preamble)
         .dynamic_tools(Vec::new());
+    if !matches!(
+        config.provider,
+        Provider::Antigravity | Provider::DeepseekWeb
+    ) && let Some(thinking) = effective_thinking
+    {
+        let reasoning = match thinking {
+            ThinkingLevel::Off => mio_core::completion::Reasoning::Off,
+            ThinkingLevel::Minimal => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Minimal)
+            }
+            ThinkingLevel::Low => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Low)
+            }
+            ThinkingLevel::Medium => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Medium)
+            }
+            ThinkingLevel::High => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::High)
+            }
+            ThinkingLevel::Xhigh => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::XHigh)
+            }
+            ThinkingLevel::Max => {
+                mio_core::completion::Reasoning::Effort(mio_core::completion::Effort::Max)
+            }
+        };
+        builder = builder.reasoning(reasoning);
+    }
     if !tools.tool_filter.is_disabled() {
         if tools.tool_filter.allows("workspace") {
             builder = builder.tool(workspace_tool.clone());
@@ -437,8 +498,12 @@ pub async fn run_with_tools(
     let mut final_history = None;
 
     while let Some(item) = stream.next().await {
-        match item.map_err(|_| "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string())?
-        {
+        match item.map_err(|err| match err {
+            mio_agent::run::PromptError::Provider(
+                mio_core::error::ProviderError::UnsupportedOption(option),
+            ) => option.to_string(),
+            _ => "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string(),
+        })? {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
                 text,
                 ..

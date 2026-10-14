@@ -46,7 +46,7 @@ mio --cwd /path/to/project --json -p '统计代码行数'
 
 - **RPC 运行控制**：`--mode rpc` 提供常驻双向 Stdio RPC。空闲时 `steer` 与 `follow_up` 立即启动回合；运行中 `steer` 安全点注入（未消费 steer 先于 FIFO `follow_up` 继续），`follow_up` 队列在完成后顺延执行；`abort` 取消当前任务与子代理并清空两类排队，保留已完成历史且不回滚文件；EOF/错误清理队列，繁忙时状态变更被拒绝，`get_state` 反映本轮开始快照。详见 [RPC 协议](docs/rpc.md)。
 - **上下文压缩为本地启发式**：`compact` 模块通过确定性规则与文本启发式提炼会话摘要并保留最近轮次，不经过模型重新归纳生成。
-- **模型与供应商参数**：内置 Provider 目录不代表原生专有协议均已适配，空闲时跨供应商切换会同步端点、凭据和后续子任务配置，失败则保留原配置；`--thinking` 当前调用链仅向 Antigravity 传递该设置。
+- **模型与供应商参数**：内置 Provider 目录不代表原生专有协议均已适配，空闲时跨供应商切换会同步端点、凭据和后续子任务配置，失败则保留原配置；思考等级通过原生参数传给通用 OpenAI 兼容接口和 Codex；实际支持取决于模型。DeepSeek API 支持 off/low/high/max，其他等级明确拒绝；DeepSeek 网页适配器暂不支持开启思考。Antigravity 保留专用映射。交互调整同步到后续子任务。
 - **审批与安全边界**：CLI 默认允许写文件和 Shell，`--no-shell` 不禁用文件修改；Shell 使用当前用户权限，不是沙箱。`--approve` 在普通 CLI/JSON 模式下无 TTY 时直接拒绝，在 RPC 模式下支持非阻塞异步审批流（`approval_request` / `approve_response`），其审批覆盖可写子代理，`--exclude-tools` 同时约束独立与聚合工具入口；这些控制不是操作系统隔离。
 - **生态与兼容性**：Mio 插件采用原生的 `mio-plugin.json` 规范，不是 Pi 的 TypeScript 扩展运行时；尚未对齐 Pi 的完整 TUI、交互会话树与扩展生态。
 - **验证范围**：当前仅在 Linux 原生环境和本地测试中验收；未声明跨平台、预编译分发包或其他真实账号服务的全面可用性。

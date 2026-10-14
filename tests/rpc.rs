@@ -939,3 +939,40 @@ fn subagent_approval_flow_and_parent_abort() {
     reply(s_after, None);
     client.settled("completed");
 }
+
+#[test]
+fn thinking_switch_reaches_parent_and_child_requests() {
+    let mut client = RpcClient::with_subagents(true);
+    client.send(json!({"type":"set_model","id":"thinking","model":"test:high"}));
+    assert_eq!(client.response("thinking")["success"], true);
+    let (stream, request) = prompt(&mut client, "delegate");
+    assert_eq!(request["reasoning_effort"], "high");
+    reply(
+        stream,
+        Some(
+            json!({"name":"subagent","arguments":json!({"operation":"delegate","task":{"session":"thinking-child","goal":"review","prompt":"child-prompt","read_only":true}}).to_string()}),
+        ),
+    );
+    let mut outstanding = Vec::new();
+    for _ in 0..2 {
+        let (stream, request) = client.request();
+        assert_eq!(request["reasoning_effort"], "high");
+        // Keep both requests outstanding until cancellation so parent cleanup cannot race child capture.
+        outstanding.push(stream);
+    }
+    client.send(json!({"type":"abort","id":"stop"}));
+    client.response("stop");
+}
+
+#[test]
+fn unsupported_thinking_switch_preserves_old_state() {
+    let mut client = RpcClient::configured(false, "deepseek", &[]);
+    client.send(json!({"type":"set_model","id":"valid","model":"test:high"}));
+    assert_eq!(client.response("valid")["success"], true);
+    client.send(json!({"type":"set_model","id":"invalid","model":"test:medium"}));
+    let refused = client.response("invalid");
+    assert_eq!(refused["success"], false);
+    assert!(refused.to_string().contains("不支持 medium"));
+    client.send(json!({"type":"get_state","id":"state"}));
+    assert_eq!(client.response("state")["data"]["thinkingLevel"], "high");
+}
