@@ -1,10 +1,22 @@
-# Rig source integration
+# Mio layers and Rig provenance
 
-Mio builds against local Rig crates in `third_party/rig/`. This preserves upstream module boundaries while allowing source-level changes. The imported Rust source is unchanged.
+Mio maintains three layers in one Cargo workspace:
+
+| Package | Source | Responsibility |
+| --- | --- | --- |
+| `mio-core` | `crates/mio-core` | Model/provider contracts, messages, streaming and request preparation |
+| `mio-agent` | `crates/mio-agent` | General agent loop, tools, hooks and run state |
+| `mio-coding-agent` | root `src` | Coding tools, sessions, context, host integration and the `mio` CLI |
+
+The bottom two layers are source forks of Rig, not wrapper crates. Rust imports are
+`mio_core`, `mio_agent` and `mio_coding_agent`. Existing product integrations must
+rename their dependency/import from `mio-agent` / `mio_agent` to
+`mio-coding-agent` / `mio_coding_agent`; the `mio` command, npm package and session
+format remain unchanged. This is a Rust package/API naming break.
 
 ## Provenance
 
-Upstream: https://github.com/0xPlaygrounds/rig, version **0.44.0**, commit `2d1071e0e0c602f994e9d6cfd8cf5faea6f53650`. Each crate retains its upstream MIT license, README, `Cargo.toml.orig`, and `.cargo_vcs_info.json`. Copyright and the acknowledgment in `CREDITS.md` remain intact.
+Upstream: https://github.com/0xPlaygrounds/rig, version **0.44.0**, commit `2d1071e0e0c602f994e9d6cfd8cf5faea6f53650`. The imported crates retain their MIT notices, original manifests and revision metadata. The two Mio layer READMEs describe the maintained forks. Copyright and the acknowledgment in `CREDITS.md` remain intact.
 
 The source was copied from the published crate archives resolved by Mio's existing lockfile. Archive SHA-256 values:
 
@@ -16,18 +28,49 @@ The source was copied from the published crate archives resolved by Mio's existi
 | rig-reqwest | `d478ca821bdf7030b4cabfdc7acc07ab5f0449886f9a7e472de205a6ec4b2b1d` |
 | rig-tungstenite | `d145d2d41722fd040dbb47f05b797c8119884697bb4ee7e53fc5c1c1ec9610df` |
 
-Registry cache markers and nested `Cargo.lock` files were omitted. Relative to the normalized published manifests, only Rig-to-Rig runtime dependencies were changed to sibling paths. Root dependencies on `rig-core`, `rig-agent`, and `rig-reqwest` now use paths. The root lockfile removes their registry identities, without upgrading unrelated dependencies.
+| rig-derive | `1146bdcb55a3b2dbdd9d2df7a8846714499c9985e9042926c06ffe98b3a821bc` |
 
-The optional `rig-derive` dependency remains declared upstream and is disabled in Mio. The upstream agent crate's own development dependency on `rig-reqwest` remains upstream; it is not part of Mio's build. `rig-tungstenite` is included for the existing optional WebSocket dependency but is not enabled by the default Mio feature set. Enabling new Rig features requires reviewing and internalizing any additional Rig crates first.
+## Local integration
 
-## Maintenance
+Transport helpers remain under `third_party/rig` (`rig-http`, `rig-reqwest`,
+`rig-tungstenite`). Runtime and development dependencies resolve to these local
+sources. `rig-derive` is also local: its resolver recognizes `mio-core` and
+`mio-agent`, including renamed Cargo dependencies. The public `rig_tool` macro
+name and internal `rig` self-aliases remain for source compatibility; they do
+not link a second upstream runtime. The published upstream `rig-cassette`
+adapters are not type-compatible with these forks. Implement the local
+`mio_core::serve::Recorder` contract when recording is needed.
 
-Keep local source changes small and separate from upstream imports. Before updating, obtain the exact new crate archives, verify their checksums and license notices, compare against the retained originals, and reapply documented local changes. Preserve source revision metadata and update this file. Do not blanket-format or rename upstream code.
+The upstream builder rejection test uses a local recorder that panics if called,
+instead of importing the otherwise absent cassette crate. The switched-model warning test warms and rebuilds tracing callsite interest
+before asserting, following the upstream tracing-isolation guidance. All three layers are
+default workspace members, so the root quality commands cover their tests as
+well as the product. Auxiliary transport and macro crates retain their own
+manifests outside the workspace.
 
-Validate with `cargo fmt --check`, `cargo check --all-targets --locked`, `cargo test --locked`, and `cargo clippy --all-targets --locked -- -D warnings`. Inspect `cargo tree --locked` to ensure enabled Rig crates resolve to `third_party/rig` and no second registry copy is linked.
+Source-walk assertions target the maintained Mio layers, rather than absent
+upstream Bedrock, Gemini gRPC and ECS packages.
+
+The provider tests also retain the referenced cassette fixtures under
+`crates/mio-core/tests/fixtures/cassettes`, extracted from the exact upstream
+commit above (not present in the published crate archives). This is the subset
+referenced by the local tests, not the entire upstream cassette corpus.
+
+## Maintenance and validation
+
+Preserve upstream MIT notices and archive/revision provenance when updating.
+Compare new upstream sources against the original archives, then reapply the
+local naming and behavior changes. `Cargo.toml.orig` files are archival only.
+
+Run `cargo fmt --check`, `cargo check --all-targets --locked`,
+`cargo test --locked`, and `cargo clippy --all-targets --locked -- -D warnings`.
+Inspect `cargo tree --locked` to ensure no registry `rig-core` or `rig-agent`
+is linked. Optional feature combinations need their own validation.
 
 ## Publishing
 
-This source-integrated version deliberately uses path-only dependencies. It can build from a checkout, including when embedded in Alacritty, but cannot currently publish directly to crates.io. Cargo requires registry-resolvable dependencies for publication: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#multiple-locations.
-
-Before publishing this version, publish appropriately named Mio-maintained fork crates and update the package mappings, or adopt another explicit source-packaging design. Do not add upstream version fallbacks merely to make packaging pass: published users would then lose Mio's local Rig changes. The project's MIT license does not solve this packaging constraint.
+This checkout uses local path dependencies. Renaming alone does not make these
+packages publishable: supporting transport/macro forks also need a deliberate
+registry packaging strategy before crates.io publication. Do not substitute
+upstream registry versions for the local forks to bypass packaging checks.
+Binary release builds still select the `mio` executable from the product crate.

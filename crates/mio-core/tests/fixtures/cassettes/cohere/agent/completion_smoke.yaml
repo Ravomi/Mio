@@ -1,0 +1,16 @@
+when:
+  path: /compatibility/v1/chat/completions
+  method: POST
+  query_param: []
+  header:
+  - name: accept
+    value: '*/*'
+  - name: content-type
+    value: application/json
+  body: '{"messages":[{"content":[{"text":"You are a concise assistant. Answer directly.","type":"text"}],"role":"system"},{"content":"In one or two sentences, explain what Rust programming language is and why memory safety matters.","role":"user"}],"model":"command-a-03-2025","temperature":0.2}'
+then:
+  status: 200
+  header:
+  - name: content-type
+    value: application/json
+  body: '{"choices":[{"finish_reason":"stop","index":0,"logprobs":null,"message":{"content":"Rust is a systems programming language that focuses on safety, speed, and concurrency, achieving memory safety without a garbage collector by using a strict ownership model. Memory safety matters because it prevents common bugs like null pointer dereferencing, buffer overflows, and data races, which can lead to crashes, security vulnerabilities, and unpredictable behavior in software.","role":"assistant"}}],"created":0,"id":"595c79ba-519c-4b8c-9486-d101dcfad3b5","model":"command-a-03-2025","object":"chat.completion","usage":{"completion_tokens":68,"completion_tokens_details":{"accepted_prediction_tokens":0,"audio_tokens":0,"reasoning_tokens":0,"rejected_prediction_tokens":0},"prompt_tokens":27,"prompt_tokens_details":{"audio_tokens":0,"cached_tokens":0},"total_tokens":95}}'

@@ -516,15 +516,15 @@ mio --plugin-list</code></pre>
 <span data-en="10. Rust Host In-Process Embedding" data-zh="10. Rust Host 宿主进程内嵌入">10. Rust Host 宿主进程内嵌入</span>
 <a aria-label="Permalink" class="header-anchor" href="#host-embedding">#</a>
 </h2>
-<p class="ref-p" data-en="Mio core engine is decoupled via the Host trait, allowing desktop applications like Tauri or Ravomi to embed it in-process:" data-zh="Mio 的核心 Agent 循环完全通过 Host trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 mio-agent 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：">
-              Mio 的核心 Agent 循环完全通过 <code>Host</code> trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 <code>mio-agent</code> 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：
+<p class="ref-p" data-en="Mio core engine is decoupled via the Host trait, allowing desktop applications like Tauri or Ravomi to embed it in-process:" data-zh="Mio 的核心 Agent 循环完全通过 Host trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 mio-coding-agent 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：">
+              Mio 的核心 Agent 循环完全通过 <code>Host</code> trait 解耦，GUI 应用（如 Tauri、Ravomi Desktop）可直接在进程内加载 <code>mio-coding-agent</code> 核心库，无需启动子进程即可实现完全的事件监听与安全拦截：
             </p>
 <div class="code-block">
 <div class="code-header">
 <span class="code-lang">rust</span>
 <button class="copy-code-btn" data-en="Copy" data-zh="复制" type="button">复制</button>
 </div>
-<pre><code>use mio_agent::{AgentEvent, Host, HostFuture};
+<pre><code>use mio_coding_agent::{AgentEvent, Host, HostFuture};
 use std::path::Path;
 
 struct ExampleHost;
@@ -1017,7 +1017,7 @@ fn main() {}
 <footer class="ref-footer" role="contentinfo">
 <div class="ref-footer-content">
 <div class="ref-footer-top">
-<div data-en-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · Built on &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT License" data-zh-html="&lt;strong&gt;Mio (mio-agent)&lt;/strong&gt; · 基于 &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT 许可"><strong>Mio (mio-agent)</strong> · 基于 <a href="https://github.com/0xPlaygrounds/rig">Rig</a> · MIT 许可</div>
+<div data-en-html="&lt;strong&gt;Mio (mio-coding-agent)&lt;/strong&gt; · Built on &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT License" data-zh-html="&lt;strong&gt;Mio (mio-coding-agent)&lt;/strong&gt; · 基于 &lt;a href=https://github.com/0xPlaygrounds/rig&gt;Rig&lt;/a&gt; · MIT 许可"><strong>Mio (mio-coding-agent)</strong> · 基于 <a href="https://github.com/0xPlaygrounds/rig">Rig</a> · MIT 许可</div>
 <div class="ref-footer-links">
 <a data-en="Demo" data-zh="交互演示" href="index.html#showcase">交互演示</a>
 <a data-en="Docs" data-zh="完整文档" href="documentation.html">完整文档</a>

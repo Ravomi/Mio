@@ -12,7 +12,7 @@ Mio 将模型调用、代码工具和对话历史组织成完整工作流程：�
 
 ## 为什么使用 Mio
 
-- **终端与应用共用一个核心。** `mio` 命令行与 `mio-agent` Rust 库使用相同的工具循环；桌面宿主可以进程内调用，无需额外维护另一套 Agent 后台。
+- **终端与应用共用一个核心。** `mio` 命令行与 `mio-coding-agent` Rust 库使用相同的工具循环；桌面宿主可以进程内调用，无需额外维护另一套 Agent 后台。
 - **修改有依据。** 内置分页读取、文本检索、文件查找和精确替换。替换内容必须唯一匹配，歧义时不修改文件；输出和扫描规模有明确上限。
 - **项目规则随仓库走。** 加载 `AGENTS.md`、项目 Skills 和提示词模板，同一项目的编码约定可重复使用。
 - **任务可以接着做。** 保存完整消息与工具结果，支持恢复和创建会话分支，继续探索时保留原会话。
@@ -155,3 +155,13 @@ cargo clippy --all-targets --locked -- -D warnings
 Mio 从 [Ravomi](https://github.com/Ravomi/ravomi-app) 的 Agent 代码中抽离，独立发展为通用编程 Agent。来源记录见 [CREDITS.md](CREDITS.md)。
 
 感谢 **[Rig](https://github.com/0xPlaygrounds/rig)** 提供 Rust LLM 框架基础。Mio 保留 Rig 依赖及第三方许可，以 **MIT** 发布；相关声明见 [LICENSE](LICENSE)、[licenses/](licenses/) 和 [CREDITS.md](CREDITS.md)。
+
+## Rust 分层
+
+- `mio-core`：模型接入、消息、流式协议（`crates/mio-core`）。
+- `mio-agent`：通用 Agent 循环、工具调用、运行状态（`crates/mio-agent`）。
+- `mio-coding-agent`：编程工具、会话、宿主集成及 `mio` CLI（根包）。
+
+原来的产品库 `mio-agent` 已改名为 `mio-coding-agent`，Rust 导入相应改为
+`mio_coding_agent`；命令仍为 `mio`。底层源码基于 Rig 0.44.0，保留 MIT
+许可与上游署名。参见 [源码来源与维护说明](docs/rig-source.md)。

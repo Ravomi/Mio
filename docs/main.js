@@ -193,7 +193,7 @@
       approveBtn.classList.remove('is-active');
       gateBadge.textContent = '2 matches · 歧义拦截';
       thirdWord.textContent = currentLang === 'en' ? 'Rejected' : '歧义拦截';
-      resTitle.textContent = 'mio-agent::WorkspaceError · 拒绝歧义替换，原文件零改动';
+      resTitle.textContent = 'mio-coding-agent::WorkspaceError · 拒绝歧义替换，原文件零改动';
       resBadge.textContent = 'rejected · 0 bytes written';
       resPre.innerHTML =
         '<code>[error] edit rejected on path="src/workspace.rs":\n' +
@@ -317,7 +317,7 @@
             : '{"type":"session_saved","path":".mio/sessions/latest.json","mode":"0600"}') + '</code>';
       } else {
         stagePre.innerHTML =
-          '<code>use mio_agent::{Agent, Config, Host, ThinkingLevel};\n\n' +
+          '<code>use mio_coding_agent::{Agent, Config, Host, ThinkingLevel};\n\n' +
           'let mut cfg = Config::from_env("/repo")?;\n' +
           'cfg.thinking = ThinkingLevel::' + state.thinking.charAt(0).toUpperCase() + state.thinking.slice(1) + ';\n' +
           'cfg.enable_subagents = ' + (state.subagents > 0 ? 'true' : 'false') + ';\n' +

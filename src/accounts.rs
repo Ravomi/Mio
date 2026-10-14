@@ -1,6 +1,6 @@
 //! Account credentials never cross IPC. Rig's cache is staged in a private
 //! directory, then atomically persisted: interrupted refreshes retain the old file.
-use rig_core::providers::{
+use mio_core::providers::{
     chatgpt::{
         self,
         auth::{AuthSource, Authenticator, DeviceCodeHandler},

@@ -1,4 +1,4 @@
-use mio_agent::{
+use mio_coding_agent::{
     AgentEvent, Config, Host, HostFuture, Provider, RunOptions, RunTools, Services, ThinkingLevel,
     ToolFilter,
     compact::{DEFAULT_AUTO_COMPACT_BYTES, DEFAULT_KEEP_RECENT_MESSAGES, compact_history},
@@ -294,7 +294,7 @@ impl Host for CliHost {
             if disabled {
                 return Err("Shell disabled by --no-shell".into());
             }
-            mio_agent::shell::execute(&command, &cwd).await
+            mio_coding_agent::shell::execute(&command, &cwd).await
         })
     }
 
@@ -359,7 +359,9 @@ impl Host for CliHost {
     }
 }
 
-fn session_list(directory: &Path) -> Result<Vec<mio_agent::session::SessionMetadata>, String> {
+fn session_list(
+    directory: &Path,
+) -> Result<Vec<mio_coding_agent::session::SessionMetadata>, String> {
     if !directory.try_exists().map_err(|e| e.to_string())? {
         return Ok(Vec::new());
     }
@@ -438,7 +440,7 @@ struct Runner {
     session: Session,
     path: PathBuf,
     subagents: Option<Arc<SubagentManager>>,
-    antigravity: Option<mio_agent::antigravity::Antigravity>,
+    antigravity: Option<mio_coding_agent::antigravity::Antigravity>,
 }
 
 impl Runner {
@@ -484,7 +486,7 @@ impl Runner {
             let active: Vec<_> = manager
                 .list()
                 .into_iter()
-                .filter(|run| run.status == mio_agent::subagent::Status::Running)
+                .filter(|run| run.status == mio_coding_agent::subagent::Status::Running)
                 .collect();
             if !active.is_empty() {
                 for run in active {
@@ -726,7 +728,7 @@ async fn execute(args: Args) -> Result<(), String> {
     }
     if args.plugin_search {
         let entries =
-            mio_agent::plugin::search_community_plugins(args.plugin_search_query.as_deref());
+            mio_coding_agent::plugin::search_community_plugins(args.plugin_search_query.as_deref());
         if args.json {
             for e in entries {
                 println!("{}", json!({"type": "community_plugin", "data": e}));
@@ -749,7 +751,7 @@ async fn execute(args: Args) -> Result<(), String> {
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or("Invalid --plugin-init directory name")?;
-        let created = mio_agent::plugin::scaffold_plugin(init_dir, name)?;
+        let created = mio_coding_agent::plugin::scaffold_plugin(init_dir, name)?;
         if args.json {
             println!(
                 "{}",
@@ -765,7 +767,7 @@ async fn execute(args: Args) -> Result<(), String> {
     }
     if let Some(ref val_path) = args.plugin_validate {
         if val_path.is_file() {
-            let reg = mio_agent::plugin::validate_registry_file(val_path)?;
+            let reg = mio_coding_agent::plugin::validate_registry_file(val_path)?;
             if args.json {
                 println!(
                     "{}",
@@ -779,7 +781,7 @@ async fn execute(args: Args) -> Result<(), String> {
                 );
             }
         } else {
-            let manifest = mio_agent::plugin::validate_plugin_dir(val_path)?;
+            let manifest = mio_coding_agent::plugin::validate_plugin_dir(val_path)?;
             if args.json {
                 println!(
                     "{}",
@@ -800,9 +802,9 @@ async fn execute(args: Args) -> Result<(), String> {
         if args.prompt.is_some() || args.resume || args.session.is_some() {
             return Err("Import authorization separately from running a task".into());
         }
-        let result = mio_agent::profile::import_antigravity(
+        let result = mio_coding_agent::profile::import_antigravity(
             source,
-            &mio_agent::profile::config_directory()?,
+            &mio_coding_agent::profile::config_directory()?,
         )?;
         if args.json {
             println!(
@@ -826,7 +828,7 @@ async fn execute(args: Args) -> Result<(), String> {
         return Err("Workspace must be a directory".into());
     }
     if let Some(ref spec) = args.plugin_install {
-        let installed = mio_agent::plugin::install_plugin(&cwd, spec)?;
+        let installed = mio_coding_agent::plugin::install_plugin(&cwd, spec)?;
         if args.json {
             println!(
                 "{}",
@@ -843,7 +845,7 @@ async fn execute(args: Args) -> Result<(), String> {
         return Ok(());
     }
     if let Some(ref name) = args.plugin_remove {
-        mio_agent::plugin::remove_plugin(&cwd, name)?;
+        mio_coding_agent::plugin::remove_plugin(&cwd, name)?;
         if args.json {
             println!("{}", json!({"type": "plugin_removed", "name": name}));
         } else {
@@ -852,7 +854,7 @@ async fn execute(args: Args) -> Result<(), String> {
         return Ok(());
     }
     if args.plugin_list {
-        let installed = mio_agent::plugin::discover_plugins(&cwd)?;
+        let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
         if args.json {
             for p in installed {
                 println!(
@@ -979,7 +981,7 @@ async fn execute(args: Args) -> Result<(), String> {
         }
         None => (None, None, None),
     };
-    let profile_directory = mio_agent::profile::config_directory()?;
+    let profile_directory = mio_coding_agent::profile::config_directory()?;
     let explicit_base = args.base_url.or_else(|| std::env::var("MIO_BASE_URL").ok());
     let selected_provider = args
         .provider
@@ -992,7 +994,7 @@ async fn execute(args: Args) -> Result<(), String> {
     {
         None
     } else {
-        mio_agent::profile::summary(&profile_directory)?
+        mio_coding_agent::profile::summary(&profile_directory)?
     };
     let provider_str = selected_provider
         .as_deref()
@@ -1004,7 +1006,7 @@ async fn execute(args: Args) -> Result<(), String> {
     let (provider, resolved_base, resolved_key) =
         resolve_provider_endpoint(provider_str, explicit_base)?;
     let antigravity = if provider == Provider::Antigravity {
-        Some(mio_agent::antigravity::Antigravity::from_profile(
+        Some(mio_coding_agent::antigravity::Antigravity::from_profile(
             profile_directory,
         )?)
     } else {
@@ -1155,7 +1157,7 @@ async fn execute(args: Args) -> Result<(), String> {
                         .map(|t| t.as_str())
                         .unwrap_or("default"),
                     runner.session.history.len(),
-                    mio_agent::compact::history_bytes(&runner.session.history)
+                    mio_coding_agent::compact::history_bytes(&runner.session.history)
                 );
                 continue;
             }
@@ -1267,7 +1269,7 @@ async fn execute(args: Args) -> Result<(), String> {
                 continue;
             }
             "/plugins" => {
-                let installed = mio_agent::plugin::discover_plugins(&cwd)?;
+                let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
                 if installed.is_empty() {
                     eprintln!("No plugins installed in this workspace.");
                 } else {
@@ -1289,7 +1291,7 @@ async fn execute(args: Args) -> Result<(), String> {
                 let arg = arg.trim();
                 match sub {
                     "" | "list" => {
-                        let installed = mio_agent::plugin::discover_plugins(&cwd)?;
+                        let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
                         if installed.is_empty() {
                             eprintln!("No plugins installed in this workspace.");
                         } else {
@@ -1306,7 +1308,7 @@ async fn execute(args: Args) -> Result<(), String> {
                     }
                     "search" => {
                         let q = if arg.is_empty() { None } else { Some(arg) };
-                        for e in mio_agent::plugin::search_community_plugins(q) {
+                        for e in mio_coding_agent::plugin::search_community_plugins(q) {
                             eprintln!(
                                 "{} v{}  {}  [{}]",
                                 e.name,
@@ -1317,7 +1319,7 @@ async fn execute(args: Args) -> Result<(), String> {
                         }
                     }
                     "install" => {
-                        let installed = mio_agent::plugin::install_plugin(&cwd, arg)?;
+                        let installed = mio_coding_agent::plugin::install_plugin(&cwd, arg)?;
                         eprintln!(
                             "Installed plugin '{} v{}' into {}",
                             installed.manifest.name,
@@ -1326,7 +1328,7 @@ async fn execute(args: Args) -> Result<(), String> {
                         );
                     }
                     "remove" => {
-                        mio_agent::plugin::remove_plugin(&cwd, arg)?;
+                        mio_coding_agent::plugin::remove_plugin(&cwd, arg)?;
                         eprintln!("Removed plugin '{arg}'");
                     }
                     "init" => {
@@ -1335,7 +1337,7 @@ async fn execute(args: Args) -> Result<(), String> {
                             .file_name()
                             .and_then(|s| s.to_str())
                             .ok_or("Invalid plugin directory")?;
-                        let created = mio_agent::plugin::scaffold_plugin(&dir, name)?;
+                        let created = mio_coding_agent::plugin::scaffold_plugin(&dir, name)?;
                         eprintln!("Initialized plugin '{name}' at {}", created.display());
                     }
                     "validate" => {
@@ -1344,7 +1346,7 @@ async fn execute(args: Args) -> Result<(), String> {
                         } else {
                             cwd.join(arg)
                         };
-                        let m = mio_agent::plugin::validate_plugin_dir(&target)?;
+                        let m = mio_coding_agent::plugin::validate_plugin_dir(&target)?;
                         eprintln!("Valid plugin '{} v{}'", m.name, m.version);
                     }
                     _ => {

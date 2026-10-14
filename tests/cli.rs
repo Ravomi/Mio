@@ -161,7 +161,7 @@ fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     let original_path = dir.path().join(".mio/sessions/original.json");
     let original = std::fs::read(&original_path).unwrap();
     assert!(!String::from_utf8_lossy(&original).contains("local-test-credential"));
-    let original_session = mio_agent::session::Session::load(&original_path).unwrap();
+    let original_session = mio_coding_agent::session::Session::load(&original_path).unwrap();
     let events = run(&["--resume", "--fork", "-p", "continue task"]);
     assert!(events.iter().any(|e| {
         e["type"] == "tool_finished"
@@ -172,7 +172,7 @@ fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     assert!(!dir.path().join("should-not-exist").exists());
     assert_eq!(std::fs::read(&original_path).unwrap(), original);
     let fork_path = events.last().unwrap()["session"].as_str().unwrap();
-    let fork = mio_agent::session::Session::load(std::path::Path::new(fork_path)).unwrap();
+    let fork = mio_coding_agent::session::Session::load(std::path::Path::new(fork_path)).unwrap();
     assert_eq!(fork.parent_id, Some(original_session.id));
     assert!(fork.history.len() > original_session.history.len());
     let requests = server.join().unwrap();
