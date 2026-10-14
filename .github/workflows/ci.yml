@@ -38,7 +38,9 @@ jobs:
       - name: Build CLI for terminal integration tests
         run: cargo build --locked -p mio-coding-agent --bin mio
       - name: Terminal status protocol
-        run: python3 tests/osc7501.py
+        run: |
+          python3 tests/osc7501.py
+          python3 tests/cli_cancellation.py
       - name: Website and installation fixtures
         run: |
           python3 scripts/check-site.py
