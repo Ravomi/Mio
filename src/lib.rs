@@ -14,6 +14,8 @@ pub mod mcp;
 pub mod pattern;
 pub mod plugin;
 pub mod profile;
+pub mod program_status;
+pub use program_status::{BlockedKind, ProgramState, format_osc7501};
 pub mod rpc;
 pub mod session;
 pub mod shell;
