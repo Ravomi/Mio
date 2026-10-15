@@ -1,10 +1,11 @@
 # mio-reqwest
 
-Mio source fork of Rig 0.44.0 (MIT, Copyright 2024 Playgrounds Analytics Inc.).
-See [provenance and local changes](../../docs/rig-source.md).
-
-The bundled [`reqwest`](https://docs.rs/reqwest) HTTP transport for [Rig](https://crates.io/crates/rig): `ReqwestClient` and `ReqwestMiddlewareClient` implement `HttpClientExt`. It depends only on `mio-http`, which holds that contract. `ReqwestClient::default()` is the process-wide client, built once on first use and shared by every clone; `ReqwestClient::from(client)` wraps a host-built `reqwest::Client`. With mio-core's `reqwest` feature (on in the `rig` facade), a provider client built with no transport named, such as `OpenAI::from_env()?`, sends through `ReqwestClient::default()`; any other client goes in with `.with_http(client)`. Construction never fails: when the reqwest client cannot be built, every send reports the build failure in-band.
+The bundled [`reqwest`](https://docs.rs/reqwest) HTTP transport for Mio: `ReqwestClient` and `ReqwestMiddlewareClient` implement `HttpClientExt`. It depends only on `mio-http`, which holds that contract. `ReqwestClient::default()` is the process-wide client, built once on first use and shared by every clone; `ReqwestClient::from(client)` wraps a host-built `reqwest::Client`. With mio-core's `reqwest` feature (enabled by `mio-coding-agent`), a provider client built with no transport named, such as `OpenAI::from_env()?`, sends through `ReqwestClient::default()`; any other client goes in with `.with_http(client)`. Construction never fails: when the reqwest client cannot be built, every send reports the build failure in-band.
 
 `mio-core` without its `reqwest` feature has no reqwest/Tokio dependency; this crate is where both live. On native targets, requests and lazy response bodies capture the caller's Tokio context or, outside Tokio (Bevy task pools, smol, `futures::executor`), a lazily started fallback reactor. Each poll enters that context; no detached per-request or stream-forwarding worker owns the operation. Dropping a request, response body or stream releases its local operation without waiting for another upstream chunk. It cannot undo a remotely accepted request.
 
 A host runtime must enable I/O and timers and remain driven. Context detection does not prove this; a runtime without its reactor can panic during I/O. A handle alone does not keep a runtime alive. Stop admitting work, cancel/drain owned operations, release shared clients, then shut down the runtime. Supplied endpoint, proxy, redirect, TLS and timeout policy remains with the host-built client. WASM uses its native browser transport path, not the native Tokio fallback.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [source records](../../CREDITS.md).

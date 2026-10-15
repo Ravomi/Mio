@@ -4,7 +4,7 @@
 
 # Mio
 
-Mio 是从 [Ravomi](https://github.com/Ravomi/ravomi-app) 抽离出的无头 Rust 编程 Agent 引擎，可在终端独立运行，也可通过 Rust 库直接嵌入宿主应用。
+Mio 是一个无头 Rust 编程 Agent 引擎，可在终端独立运行，也可通过 Rust 库直接嵌入宿主应用。
 
 [官方网站](https://ravomi.github.io/Mio/) · [技术文档](https://ravomi.github.io/Mio/documentation.html) · [安装指南](docs/installation.md) · [程序状态规范](docs/program-status.md) · [源码来源](docs/rig-source.md) · [示例](examples/host.rs) · [许可证](LICENSE)
 
@@ -245,4 +245,4 @@ cargo +1.95.0 clippy --all-targets --locked -- -D warnings
 
 项目采用三层分层架构：`mio-core`（模型与流式协议）、`mio-agent`（Agent 循环与工具调用）与 `mio-coding-agent`（原 `mio-agent` 重命名，提供编程工具、会话与 CLI）。
 
-Mio 基于 [Rig](https://github.com/0xPlaygrounds/rig) 0.44.0 框架构建底层循环，项目采用 [MIT 许可证](LICENSE) 发布，并保留第三方依赖各自的许可证。完整来源记录见 [CREDITS.md](CREDITS.md)、[licenses/](licenses/) 与 [源码来源说明](docs/rig-source.md)。
+项目采用 [MIT 许可证](LICENSE) 发布。依赖许可证与源码来源记录见 [CREDITS.md](CREDITS.md) 和 [licenses/](licenses/)。

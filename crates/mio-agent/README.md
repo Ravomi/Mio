@@ -1,12 +1,11 @@
 # mio-agent
 
-`mio-agent` contains Rig's classic agent runtime: builders, the serializable
+`mio-agent` contains Mio’s reusable agent runtime: builders, the serializable
 sans-I/O run state, blocking and streaming drivers, typed hooks, contextual
 tools, extraction, and runtime integrations.
 
 Coding applications use `mio-coding-agent`; reusable agent runtimes use this
-crate directly. Model/provider contracts live in `mio-core`. Based on Rig 0.44.0
-(MIT, Copyright 2024 Playgrounds Analytics Inc.); see [provenance](../../docs/rig-source.md).
+crate directly. Model/provider contracts live in `mio-core`.
 
 Direct users import construction and prompting explicitly:
 
@@ -76,7 +75,7 @@ returned `AgentRunStep` (`CallModel`, `CallTools`, `Done`), feeding results
 back with `model_response` / `tool_results`. This crate's futures loop is the
 driver; the machine itself never awaits (a source-level guard keeps it so) and
 is `Serialize + Deserialize`, so a run can be suspended between steps and
-resumed in another process. Resume with the same Rig version; the envelope format
+resumed in another process. Resume with the same Mio version; the envelope format
 is checked but cross-version state compatibility is not guaranteed. Serialized
 state includes conversation content and every recorded provider response body,
 so its sensitivity and size grow with the run. Hosts must apply their persistence
@@ -243,3 +242,7 @@ the future bounds but not the handler itself — while this crate's handler owns
 tool registry whose `Arc<dyn ErasedTool>` is deliberately neither `Send` nor
 `Sync` on wasm. Enabling `rmcp` on a wasm target fails with a single explanatory
 `compile_error!` rather than a wall of trait errors.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [source records](../../CREDITS.md).

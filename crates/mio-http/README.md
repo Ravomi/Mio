@@ -1,10 +1,6 @@
 # mio-http
 
-Mio source fork of Rig 0.44.0 (MIT, Copyright 2024 Playgrounds Analytics Inc.).
-See [provenance and local changes](../../docs/rig-source.md).
-
-The transport contracts every [Rig](https://github.com/0xPlaygrounds/rig)
-provider sends through:
+The transport contracts Mio providers send through:
 
 - `http_client`: `HttpClientExt`, the trait an HTTP transport implements,
   `DynHttpClient` (an erased client with middleware), request framing,
@@ -32,3 +28,7 @@ fn erase(client: impl HttpClientExt + Clone + 'static) -> DynHttpClient {
 ```
 
 The `test-utils` feature adds HTTP client doubles for tests.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [source records](../../CREDITS.md).

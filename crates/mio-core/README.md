@@ -1,29 +1,13 @@
 # mio-core
 
-Mio model/provider layer, forked from Rig 0.44.0 (MIT, Copyright 2024 Playgrounds Analytics Inc.).
-See [provenance and local changes](../../docs/rig-source.md).
-
-# Rig
-Rig is a Rust library for building LLM-powered applications that focuses on ergonomics and modularity.
-
-The [upstream Rig API reference](https://docs.rs/rig-core/0.44.0/rig_core/) describes the original crate. Build the local fork reference with `cargo doc -p mio-core --no-deps`.
-## Table of contents
-
-- [Rig](#rig)
-  - [Table of contents](#table-of-contents)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [WASM target support](#wasm-target-support)
-  - [Simple example:](#simple-example)
-  - [Integrations](#integrations)
-  - [Who is using Rig?](#who-is-using-rig)
+Mio model/provider contracts, messages, streaming and request preparation.
+Build the local API reference with `cargo doc -p mio-core --no-deps`.
 
 ## Features
 - Portable contracts for agent runtimes, including completions, messages, tools, and memory
 - Full [GenAI Semantic Convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/) compatibility
 - 20+ model providers, all under one singular unified interface
 - Built-in providers selectable as data: `providers::registry` names a vendor and a protocol family (`deepseek/openai:deepseek-chat`) or carries a whole typed configuration, and both round-trip through serde without a credential. Model references discard embedded credentials and reject empty identifiers; a configuration's `id()` returns a catalog selection only when its dialect name is registered. Providers outside this catalog can use a `Model` and `ModelAdapter` directly.
-- 10+ vector store integrations, all under one singular unified interface
 - Full support for LLM completion and embedding workflows
 - Support for transcription, audio generation and image generation model capabilities
 - Integrate LLMs in your app with minimal boilerplate
@@ -69,78 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Note using `#[tokio::main]` requires you enable tokio's `macros` and `rt-multi-thread` features
 or just `full` to enable all features (`cargo add tokio --features macros,rt-multi-thread`).
 
-You can find more examples in the repository-level `examples/` directory. Many provider-specific examples now also live as ignored live integration tests under the repository-level `tests/providers` directory, organized by provider. When running those provider-backed tests, prefer provider-specific targets such as `cargo test -p rig --test openai -- --ignored --test-threads=1` to avoid rate-limiting. More detailed walkthroughs are regularly published on our Dev.to blog and added to Rig's official documentation at `docs.rig.rs`.
-
-## Integrations
-Rig supports the following LLM providers out of the box:
-
-- Anthropic
-- Azure OpenAI
-- ChatGPT and GitHub Copilot auth-backed clients
-- Cohere
-- DeepSeek
-- Gemini
-- Groq
-- Hugging Face
-- Hyperbolic
-- llama.cpp (`llama-server`, and llamafile)
-- MiniMax
-- Mira
-- Mistral
-- Moonshot
-- Ollama
-- OpenAI
-- OpenRouter
-- Perplexity
-- Together
-- Venice
-- Voyage AI
-- xAI
-- Xiaomi MiMo
-- Z.ai
-
-The built-in `mio_core::vector_store::in_memory_store::InMemoryVectorStore`
-stores serializable documents without requiring `Eq` or `Default`. Its custom
-ID callbacks accept closures that capture and mutate application state.
-
-Vector stores are available as separate companion-crates and as feature-gated modules on the root `rig` facade:
-
-```toml
-rig = { version = "0.36.0", features = ["lancedb", "fastembed"] }
-```
-
-- MongoDB: [`rig-mongodb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-mongodb)
-- LanceDB: [`rig-lancedb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-lancedb)
-- Neo4j: [`rig-neo4j`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-neo4j)
-- Qdrant: [`rig-qdrant`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-qdrant)
-- SQLite: [`rig-sqlite`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-sqlite)
-- SurrealDB: [`rig-surrealdb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-surrealdb)
-- Milvus: [`rig-milvus`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-milvus)
-- ScyllaDB: [`rig-scylladb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-scylladb)
-- AWS S3Vectors: [`rig-s3vectors`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-s3vectors)
-- HelixDB: [`rig-helixdb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-helixdb)
-- Cloudflare Vectorize: [`rig-vectorize`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-vectorize)
-
-The following providers are available as separate companion-crates:
-
-- AWS Bedrock: [`rig-bedrock`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-bedrock)
-- Fastembed: [`rig-fastembed`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-fastembed)
-- Google Gemini gRPC: [`rig-gemini-grpc`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-gemini-grpc)
-- Google Vertex: [`rig-vertexai`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-vertexai)
-
-## Who is using Rig?
-Below is a non-exhaustive list of companies and people who are using Rig:
-- [St Jude](https://www.stjude.org/) - Using Rig for a chatbot utility as part of [`proteinpaint`](https://github.com/stjude/proteinpaint), a genomics visualisation tool.
-- [Coral Protocol](https://www.coralprotocol.org/) - Using Rig extensively, both internally as well as part of the [Coral Rust SDK.](https://github.com/Coral-Protocol/coral-rs)
-- [VT Code](https://github.com/vinhnx/vtcode) - VT Code is a Rust-based terminal coding agent with semantic code intelligence via Tree-sitter and ast-grep. VT Code uses `rig` for simplifying LLM calls and implement model picker.
-- [Dria](https://dria.co/) - a decentralised AI network. Currently using Rig as part of their [compute node.](https://github.com/firstbatchxyz/dkn-compute-node)
-- [Nethermind](https://www.nethermind.io/) - Using Rig as part of their [Neural Interconnected Nodes Engine](https://github.com/NethermindEth/nine) framework.
-- [Neon](https://neon.com) - Using Rig for their [app.build](https://github.com/neondatabase/appdotbuild-agent) V2 reboot in Rust.
-- [Listen](https://github.com/piotrostr/listen) - A framework aiming to become the go-to framework for AI portfolio management agents. Powers [the Listen app.](https://app.listen-rs.com/)
-- [Cairnify](https://cairnify.com/) - helps users find documents, links, and information instantly through an intelligent search bar. Rig provides the agentic foundation behind Cairnify’s AI search experience, enabling tool-calling, reasoning, and retrieval workflows.
-- [Ironclaw](https://github.com/nearai/ironclaw) - A secure personal AI assistant
-
-Are you also using Rig in production? [Open an issue](https://www.github.com/0xPlaygrounds/rig/issues) to have your name added!
+Provider implementations are maintained in `src/providers`; reusable agent
+runtimes live in `mio-agent`, and coding tools and the CLI in `mio-coding-agent`.
 
 ## Provider selection persistence
 
@@ -171,7 +85,7 @@ This keeps normalization, retry classification, and telemetry consistent.
 An operation (`wire::Operation`) names its request, event and response types,
 which event ends a reply, and the fold one reply's events pass through; it is
 written once, and every provider of it is interchangeable behind a `DynModel`.
-A crate outside Rig adds an operation and serves it with its own wire and
+A crate outside Mio adds an operation and serves it with its own wire and
 decoder over HTTP, or with `driver::Local` and a transport of its own for an
 in-process runtime.
 
@@ -233,7 +147,7 @@ charges. Implicit prefix caching is automatic and best-effort; it does not
 provide a handle or guarantee a warm first request.
 
 A request using an explicit cache cannot also send `systemInstruction`, `tools`,
-or `toolConfig`. Rig rejects these conflicts before sending. Agents therefore
+or `toolConfig`. Mio rejects these conflicts before sending. Agents therefore
 need no preamble, advertised tools, or configured tool choice on those turns.
 An empty `RequestPatch::active_tools` allow-list suppresses tool advertisements,
 but does not make cached function declarations executable by the agent. Agent
@@ -287,7 +201,7 @@ normalization rejects a response. Each fact is a cumulative snapshot for its
 attempt: replace earlier snapshots instead of summing them, keep absent counts
 unknown, and do not add overlapping token categories to invent a total.
 Provider verdicts retain reported finish/block reasons and model versions;
-error-envelope fields remain separate from HTTP status and Rig retryability.
+error-envelope fields remain separate from HTTP status and Mio retryability.
 Sparse verdict fields update only when present. Response IDs and allowlisted
 headers are bounded, scrubbed analysis data, excluded from semantic comparison.
 An ID-only payload attaches its latest ID to the next verdict or attempt
@@ -307,7 +221,7 @@ response decoding, typed transport termination, or unknown. An opaque client
 error stays unknown; its message is never used to infer a boundary. This field
 does not change the error returned to the caller or its retryability.
 `ObservationLog::with_clock` optionally stamps individual facts with host elapsed
-time. Rig does not calculate run, handler or transport intervals. These stamps
+time. Mio does not calculate run, handler or transport intervals. These stamps
 describe the executing environment, including replay, and do not establish live
 provider performance.
 Partial-frame facts count raw bytes after the last blank SSE delimiter without
@@ -321,3 +235,7 @@ an incomplete trailing frame retains both its terminal closure and partial
 EOF evidence. The context does not promise cross-execution identity. The ECS completion adapter
 forwards its driver's context when the invocation supplies no explicit context. Response bodies and
 credentials are not copied into these boundary facts.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [source records](../../CREDITS.md).
