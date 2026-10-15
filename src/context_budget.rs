@@ -26,6 +26,9 @@ impl ContextBudget {
         let (_, model, _) = crate::parse_model_spec(&config.model);
         let vendor = match config.provider {
             Provider::Deepseek => "deepseek",
+            Provider::Anthropic => "anthropic",
+            Provider::Google => "gcp.gemini",
+            Provider::Ollama => "ollama",
             Provider::Codex => "openai",
             Provider::Antigravity if model.starts_with("claude") => "anthropic",
             Provider::Antigravity => "gcp.gemini",

@@ -442,13 +442,7 @@ fn model_switch_is_atomic_and_restores_configured_connections() {
     assert_eq!(switched["success"], true);
     assert_eq!(switched["data"]["provider"], "deepseek");
     assert_eq!(switched["data"]["thinkingLevel"], "high");
-    for invalid in [
-        "",
-        "openai/",
-        "anthropic/claude",
-        "antigravity/missing-profile",
-        "codex/test",
-    ] {
+    for invalid in ["", "openai/", "antigravity/missing-profile", "codex/test"] {
         client.send(json!({"type":"set_model","id":"bad","model":invalid}));
         assert_eq!(client.response("bad")["success"], false, "{invalid}");
         client.send(json!({"type":"get_state","id":"state"}));
@@ -456,12 +450,70 @@ fn model_switch_is_atomic_and_restores_configured_connections() {
         assert_eq!(state["data"]["provider"], "deepseek");
         assert_eq!(state["data"]["model"], "deepseek-chat");
     }
+    for (spec, provider) in [
+        ("anthropic/claude", "anthropic"),
+        ("google/test", "google"),
+        ("ollama/test", "ollama"),
+    ] {
+        client.send(json!({"type":"set_model","id":"native","model":spec,"thinking":"off"}));
+        let switched = client.response("native");
+        assert_eq!(switched["success"], true, "{spec}: {switched}");
+        assert_eq!(switched["data"]["provider"], provider);
+    }
     client.send(json!({"type":"set_model","id":"back","model":"custom/restored"}));
     assert_eq!(client.response("back")["success"], true);
     let (stream, request) = prompt(&mut client, "uses original local endpoint");
     assert_eq!(request["model"], "restored");
     reply(stream, None);
     client.settled("completed");
+}
+
+#[test]
+fn rpc_exposes_live_admission_and_enforces_cli_budget_before_network() {
+    let mut client = RpcClient::configured_args(
+        true,
+        "custom",
+        &[],
+        false,
+        false,
+        &[
+            "--no-shared-limits",
+            "--max-subagents",
+            "1",
+            "--max-model-concurrency",
+            "1",
+            "--max-heavy-tasks",
+            "1",
+            "--max-model-calls",
+            "1",
+        ],
+    );
+    let (stream, _) = prompt(&mut client, "first admitted request");
+    client.send(json!({"type":"get_state","id":"live"}));
+    let live = client.response("live");
+    assert_eq!(live["data"]["scheduler"]["model"]["active"], 1);
+    assert_eq!(live["data"]["scheduler"]["model"]["limit"], 1);
+    assert_eq!(live["data"]["scheduler"]["heavy"]["limit"], 1);
+    assert_eq!(live["data"]["childTasks"]["limit"], 1);
+    assert!(
+        live["data"]["scheduler"]["budget"]["tokensReserved"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    reply(stream, None);
+    client.settled("completed");
+    client.send(json!({"type":"prompt","id":"blocked","message":"must not reach model"}));
+    assert_eq!(client.response("blocked")["success"], true);
+    client.settled("error");
+    assert!(
+        client.requests.try_recv().is_err(),
+        "exhausted budget must prevent HTTP dispatch"
+    );
+    client.send(json!({"type":"get_state","id":"settled"}));
+    let settled = client.response("settled");
+    assert_eq!(settled["data"]["scheduler"]["budget"]["calls"], 1);
+    assert_eq!(settled["data"]["scheduler"]["model"]["active"], 0);
 }
 
 #[test]

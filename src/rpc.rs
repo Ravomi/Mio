@@ -6,6 +6,175 @@
 use crate::{Provider, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+
+/// Hard limit for one JSONL input line in `--mode rpc`.
+pub const MAX_RPC_LINE_BYTES: usize = 1024 * 1024;
+
+/// Failure while reading a bounded input line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineReadError {
+    /// I/O failure; the stream state is unknown, so reading must stop.
+    Io(String),
+    /// The line exceeded the limit; the rest of the line was already consumed.
+    TooLong { max_bytes: usize },
+}
+
+impl std::fmt::Display for LineReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "read failed: {error}"),
+            Self::TooLong { max_bytes } => write!(f, "line exceeds {max_bytes} bytes"),
+        }
+    }
+}
+
+/// Read one newline-terminated line without allowing unbounded buffering.
+///
+/// Returns `Ok(None)` on EOF, `Ok(Some(line))` for a line (trailing newline
+/// stripped), and [`LineReadError::TooLong`] when the line would exceed
+/// `max_bytes`. On overflow the rest of the line is consumed before returning so
+/// the caller can keep reading framed input.
+pub(crate) async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> Result<Option<String>, LineReadError> {
+    read_line_with_state(reader, &mut LineBuffer::default(), max_bytes).await
+}
+
+#[derive(Default)]
+struct LineBuffer {
+    bytes: Vec<u8>,
+    overflow: bool,
+}
+
+// The state belongs to the input, not to this Future. `select!` can drop a
+// next_line call at any await without discarding a partially consumed command.
+async fn read_line_with_state<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    state: &mut LineBuffer,
+    max_bytes: usize,
+) -> Result<Option<String>, LineReadError> {
+    loop {
+        let available = reader
+            .fill_buf()
+            .await
+            .map_err(|e| LineReadError::Io(e.to_string()))?;
+        if available.is_empty() {
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |position| position + 1);
+        if !state.overflow {
+            if state.bytes.len().saturating_add(consumed) > max_bytes {
+                state.overflow = true;
+                state.bytes.clear();
+            } else {
+                state.bytes.extend_from_slice(&available[..consumed]);
+            }
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if std::mem::take(&mut state.overflow) {
+        state.bytes.clear();
+        return Err(LineReadError::TooLong { max_bytes });
+    }
+    let mut bytes = std::mem::take(&mut state.bytes);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| LineReadError::Io("input frame is not valid UTF-8".into()))
+}
+
+/// Bounded JSONL reader over process stdin for `--mode rpc`.
+///
+/// Input lines larger than [`MAX_RPC_LINE_BYTES`] are rejected explicitly and
+/// drained, so a hostile or buggy client cannot force unbounded allocation.
+pub struct RpcInput {
+    inner: BufReader<tokio::io::Stdin>,
+    partial: LineBuffer,
+}
+
+#[cfg(test)]
+mod framed_input_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn cancellation_keeps_partial_commands_and_overflow_state() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let mut reader = BufReader::new(reader);
+        let mut state = LineBuffer::default();
+        writer.write_all(b"{\"type\":").await.unwrap();
+        let mut pending = Box::pin(read_line_with_state(&mut reader, &mut state, 32));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        drop(pending);
+        assert_eq!(state.bytes, b"{\"type\":");
+        writer.write_all(b"\"abort\"}\n").await.unwrap();
+        assert_eq!(
+            read_line_with_state(&mut reader, &mut state, 32)
+                .await
+                .unwrap(),
+            Some("{\"type\":\"abort\"}".into())
+        );
+
+        writer.write_all(b"123456789").await.unwrap();
+        let mut pending = Box::pin(read_line_with_state(&mut reader, &mut state, 8));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        drop(pending);
+        assert!(state.overflow);
+        writer.write_all(b"ignored\nnext\n").await.unwrap();
+        assert_eq!(
+            read_line_with_state(&mut reader, &mut state, 8).await,
+            Err(LineReadError::TooLong { max_bytes: 8 })
+        );
+        assert_eq!(
+            read_line_with_state(&mut reader, &mut state, 8)
+                .await
+                .unwrap(),
+            Some("next".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_is_rejected_without_lossy_command_rewriting() {
+        let mut reader = BufReader::new(&b"bad\xff\n"[..]);
+        assert!(matches!(
+            read_bounded_line(&mut reader, 32).await,
+            Err(LineReadError::Io(_))
+        ));
+    }
+}
+
+impl Default for RpcInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RpcInput {
+    pub fn new() -> Self {
+        Self {
+            inner: BufReader::new(tokio::io::stdin()),
+            partial: LineBuffer::default(),
+        }
+    }
+
+    pub async fn next_line(&mut self) -> Result<Option<String>, LineReadError> {
+        read_line_with_state(&mut self.inner, &mut self.partial, MAX_RPC_LINE_BYTES).await
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCatalogEntry {
@@ -50,7 +219,8 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
     },
     ProviderPreset {
         name: "anthropic",
-        base_url: "https://api.anthropic.com/v1",
+        // Native Messages root; `AnthropicConfig` normalizes a pasted `/v1`.
+        base_url: "https://api.anthropic.com",
         env_vars: &["ANTHROPIC_API_KEY", "MIO_API_KEY"],
         models: &[
             ("claude-sonnet-4-5", true),
@@ -60,7 +230,8 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
     },
     ProviderPreset {
         name: "google",
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        // Native GenerateContent root, not the OpenAI-compatible `/v1beta/openai`.
+        base_url: "https://generativelanguage.googleapis.com",
         env_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY", "MIO_API_KEY"],
         models: &[("gemini-2.5-pro", true), ("gemini-2.5-flash", true)],
     },
@@ -100,7 +271,8 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
     },
     ProviderPreset {
         name: "ollama",
-        base_url: "http://127.0.0.1:11434/v1",
+        // Native daemon root, not the OpenAI-compatible `/v1`.
+        base_url: "http://127.0.0.1:11434",
         env_vars: &["OLLAMA_API_KEY"],
         models: &[("qwen2.5-coder:32b", false), ("deepseek-r1:32b", true)],
     },
@@ -184,7 +356,16 @@ pub fn resolve_provider_endpoint(
                 let mut vars = preset.env_vars.to_vec();
                 vars.push("MIO_API_KEY");
                 let key = read_first_env(&vars);
-                Ok((Provider::Custom, base, key))
+                // Anthropic, Google and Ollama presets use their native
+                // protocols. The OpenAI-compatible vendors stay on the
+                // `custom` Chat Completions route.
+                let provider = match other {
+                    "anthropic" => Provider::Anthropic,
+                    "google" => Provider::Google,
+                    "ollama" => Provider::Ollama,
+                    _ => Provider::Custom,
+                };
+                Ok((provider, base, key))
             } else {
                 Err(format!(
                     "CLI provider must be custom, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, or ollama (got '{provider_name}')"

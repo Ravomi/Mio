@@ -25,6 +25,7 @@ def make_clean_env(home_dir: str, extra_env=None):
             continue
         env[k] = v
     env["HOME"] = home_dir
+    env["MIO_CONFIG_DIR"] = str(Path(home_dir) / ".config" / "mio")
     env["MIO_API_KEY"] = "local-test-key"
     if extra_env:
         env.update(extra_env)

@@ -12,3 +12,5 @@ codex.json
 antigravity.json
 deepseek-web.json
 /.mio/sessions/
+/.mio/journal/
+__pycache__/

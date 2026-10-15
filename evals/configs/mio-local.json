@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "label": "mio",
+  "agent_command": "target/debug/mio --cwd {cwd} --no-session --no-context --no-mcp -p {prompt}",
+  "timeout_seconds": 180,
+  "tasks_dir": "../tasks/coding",
+  "output": "../../target/evals/mio.json",
+  "budget": {
+    "version": "mio-eval-budget-v1",
+    "model": null,
+    "thinking": null,
+    "max_model_calls": null,
+    "max_total_tokens": null,
+    "notes": "Declared profile only. Set model/thinking/max_* here and mirror them in agent_command or MIO_* environment variables; the runner records but does not enforce this block."
+  }
+}

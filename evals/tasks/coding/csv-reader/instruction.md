@@ -1,0 +1,1 @@
+Repair records.py parse_records(text) using Python's CSV rules. Return a list of dictionaries of string values. Support quoted commas, escaped quotes, CRLF and multiline fields. Ignore blank records; an empty document or a header-only document returns []. Reject duplicate header names and records with the wrong number of fields with ValueError. Use only the standard library.

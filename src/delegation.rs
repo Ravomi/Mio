@@ -5,7 +5,7 @@
 
 use crate::{
     Host,
-    subagent::{Delegate, Snapshot, Status, SubagentManager},
+    subagent::{Delegate, Snapshot, Status, SubagentManager, ToolEvidence},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -100,6 +100,11 @@ pub struct RunMeta {
     pub last_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Bounded structured evidence from real tool completions, for host review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<ToolEvidence>,
+    #[serde(default)]
+    pub evidence_truncated: bool,
 }
 
 impl From<&Snapshot> for RunMeta {
@@ -113,6 +118,8 @@ impl From<&Snapshot> for RunMeta {
             status: s.status,
             last_tool: s.last_tool.clone(),
             error: s.error.clone(),
+            evidence: s.evidence.clone(),
+            evidence_truncated: s.evidence_truncated,
         }
     }
 }
@@ -133,6 +140,11 @@ pub struct RunSnapshot {
     pub last_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Bounded structured evidence from real tool completions, for host review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<ToolEvidence>,
+    #[serde(default)]
+    pub evidence_truncated: bool,
 }
 
 impl From<Snapshot> for RunSnapshot {
@@ -148,6 +160,8 @@ impl From<Snapshot> for RunSnapshot {
             output_truncated: s.output_truncated,
             last_tool: s.last_tool,
             error: s.error,
+            evidence: s.evidence,
+            evidence_truncated: s.evidence_truncated,
         }
     }
 }
@@ -353,7 +367,7 @@ async fn wait_until_done(
         let remaining = total_wait - elapsed;
         let poll_duration = remaining.min(Duration::from_millis(500));
         let snapshot = manager.status(id, poll_duration).await?;
-        if snapshot.status != Status::Running {
+        if !snapshot.status.is_active() {
             return Ok(snapshot);
         }
     }

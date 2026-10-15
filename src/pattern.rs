@@ -171,6 +171,27 @@ impl ToolFilter {
         })
     }
 
+    /// Check whether a single tool is permitted, given several names that
+    /// identify the same tool (for example the qualified `plugin__…` name and
+    /// the short declared name).
+    ///
+    /// Deny always wins: excluding any alias excludes the tool, even when
+    /// another alias is allowed. The tool is allowed when every alias is
+    /// allowed, or when `allow_all` is set and no alias is excluded.
+    pub fn allows_aliased(&self, names: &[&str]) -> bool {
+        if names.iter().any(|name| self.is_excluded(name)) {
+            return false;
+        }
+        if self.allow_all {
+            return true;
+        }
+        names.iter().any(|name| {
+            self.allowed_patterns
+                .iter()
+                .any(|pat| matches_glob(pat, name))
+        })
+    }
+
     /// Explicit exclusions also apply through the aggregate workspace tool.
     pub fn allows_workspace_operation(&self, operation: &str) -> bool {
         !self.is_excluded(operation) && (self.allows(operation) || self.allows("workspace"))
@@ -210,6 +231,15 @@ fn validate_tool_pattern(pat: &str) -> Result<(), String> {
     }
     if pat.starts_with("mcp__") || has_glob_meta(pat) {
         return Ok(());
+    }
+    if let Some(rest) = pat.strip_prefix("plugin__") {
+        // Exact qualified plugin tool name: `plugin__<plugin>__<tool>`.
+        if rest.split("__").filter(|part| !part.is_empty()).count() >= 2 {
+            return Ok(());
+        }
+        return Err(format!(
+            "Malformed plugin tool name '{pat}': expected plugin__<plugin>__<tool>"
+        ));
     }
     if BUILTIN_TOOL_NAMES.contains(&pat) {
         Ok(())
@@ -512,37 +542,42 @@ impl NfaRegex {
         })
     }
 
+    /// Unanchored search.
+    ///
+    /// This is a single left-to-right pass: `current` is the union of the
+    /// states reachable from the start state for *every* start offset consumed
+    /// so far, so a new match can begin at each character without restarting
+    /// the simulation. Each input character and NFA state is therefore visited
+    /// a bounded number of times, giving linear time in the input length
+    /// instead of the quadratic restart-at-every-offset scan.
     pub fn is_match(&self, line: &str) -> bool {
         let chars: Vec<char> = line.chars().collect();
-        for start_idx in 0..=chars.len() {
-            let mut current = BTreeSet::new();
-            self.add_state(&mut current, self.start, &chars, start_idx);
-            if current
-                .iter()
-                .any(|&s| matches!(self.states[s], State::Match))
-            {
+        let mut current = BTreeSet::new();
+        self.add_state(&mut current, self.start, &chars, 0);
+        if Self::has_match(&self.states, &current) {
+            return true;
+        }
+        for (idx, &ch) in chars.iter().enumerate() {
+            let mut next = BTreeSet::new();
+            for &s in &current {
+                if let State::Consume { ref atom, out } = self.states[s]
+                    && atom.matches_char(ch, self.case_insensitive)
+                {
+                    self.add_state(&mut next, out, &chars, idx + 1);
+                }
+            }
+            // A new match may start at every offset.
+            self.add_state(&mut next, self.start, &chars, idx + 1);
+            if Self::has_match(&self.states, &next) {
                 return true;
             }
-            for idx in start_idx..chars.len() {
-                let ch = chars[idx];
-                let mut next = BTreeSet::new();
-                for &s in &current {
-                    if let State::Consume { ref atom, out } = self.states[s]
-                        && atom.matches_char(ch, self.case_insensitive)
-                    {
-                        self.add_state(&mut next, out, &chars, idx + 1);
-                    }
-                }
-                if next.iter().any(|&s| matches!(self.states[s], State::Match)) {
-                    return true;
-                }
-                if next.is_empty() {
-                    break;
-                }
-                current = next;
-            }
+            current = next;
         }
         false
+    }
+
+    fn has_match(states: &[State], set: &BTreeSet<usize>) -> bool {
+        set.iter().any(|&s| matches!(states[s], State::Match))
     }
 
     fn add_state(&self, set: &mut BTreeSet<usize>, state_idx: usize, chars: &[char], pos: usize) {
@@ -932,5 +967,71 @@ mod tests {
         assert!(!none.allows("read"));
 
         assert!(ToolFilter::from_cli(Some("nonexistent_tool"), None, false).is_err());
+    }
+
+    #[test]
+    fn test_tool_filter_accepts_exact_plugin_names() {
+        let filter = ToolFilter::from_cli(Some("plugin__probe__late"), None, false).unwrap();
+        assert!(filter.allows("plugin__probe__late"));
+        assert!(!filter.allows("plugin__probe__early"));
+
+        assert!(ToolFilter::from_cli(Some("plugin__probe__*"), None, false).is_ok());
+        assert!(ToolFilter::from_cli(Some("plugin__"), None, false).is_err());
+        assert!(ToolFilter::from_cli(Some("plugin__probe"), None, false).is_err());
+    }
+
+    #[test]
+    fn test_tool_filter_deny_wins_over_aliases() {
+        // Allow-list mode: the qualified name is allowed, the short alias is not.
+        let filter = ToolFilter::from_cli(Some("plugin__probe__late"), None, false).unwrap();
+        assert!(filter.allows_aliased(&["plugin__probe__late", "late"]));
+
+        // Excluding any alias excludes the tool even when another alias is allowed.
+        let excluded = ToolFilter::from_cli(None, Some("plugin__probe__late"), false).unwrap();
+        assert!(!excluded.allows_aliased(&["plugin__probe__late", "late"]));
+
+        // A short alias that is itself a valid tool name also denies the tool.
+        let excluded_short = ToolFilter::from_cli(None, Some("read"), false).unwrap();
+        assert!(!excluded_short.allows_aliased(&["plugin__probe__read", "read"]));
+        assert!(excluded_short.allows_aliased(&["plugin__probe__late", "late"]));
+
+        // Wildcard exclusions must not be bypassed by the short alias.
+        let wildcard = ToolFilter::from_cli(None, Some("plugin__probe__late*"), false).unwrap();
+        assert!(!wildcard.allows_aliased(&["plugin__probe__late", "late"]));
+        assert!(wildcard.allows_aliased(&["plugin__probe__early", "early"]));
+    }
+
+    #[test]
+    fn test_regex_matches_without_restarting_per_offset() {
+        // `.*z` has no match in a long run of `a`; the previous restart-per-offset
+        // implementation was quadratic and made this pathological.
+        let re = NfaRegex::compile(".*z", false).unwrap();
+        let long = "a".repeat(20_000);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe = re.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(probe.is_match(&long));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(matched) => assert!(!matched),
+            Err(_) => panic!("regex search did not finish in 10s; quadratic scan regressed"),
+        }
+
+        // Matching semantics are unchanged for anchored, bounded and negated forms.
+        assert!(re.is_match("aaaz"));
+        assert!(NfaRegex::compile("^foo", false).unwrap().is_match("foobar"));
+        assert!(!NfaRegex::compile("^bar", false).unwrap().is_match("foobar"));
+        assert!(NfaRegex::compile("bar$", false).unwrap().is_match("foobar"));
+        assert!(
+            NfaRegex::compile(r"\bcat\b", false)
+                .unwrap()
+                .is_match("a cat!")
+        );
+        assert!(
+            !NfaRegex::compile(r"\bcat\b", false)
+                .unwrap()
+                .is_match("concatenate")
+        );
+        assert!(NfaRegex::compile("[^0-9]+", false).unwrap().is_match("abc"));
     }
 }

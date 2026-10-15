@@ -10,7 +10,40 @@ use tokio::{
 
 const STREAM_LIMIT: usize = 32 * 1024;
 
-struct Process(Option<Child>, Option<u32>);
+/// Captured result of a supervised external command.
+#[derive(Debug)]
+pub struct CommandOutput {
+    pub status: std::process::ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl CommandOutput {
+    /// Concatenate stdout and stderr with a single separating newline.
+    pub fn combined(&self) -> String {
+        let mut combined = String::new();
+        if !self.stdout.is_empty() {
+            combined.push_str(&self.stdout);
+        }
+        if !self.stderr.is_empty() {
+            if !combined.is_empty() && !combined.ends_with('\n') {
+                combined.push('\n');
+            }
+            combined.push_str(&self.stderr);
+        }
+        combined
+    }
+}
+
+pub(crate) struct Process(Option<Child>, Option<u32>);
+
+impl Process {
+    /// The child must have been spawned in its own process group on Unix.
+    pub(crate) fn new(child: Child) -> Self {
+        let pid = child.id();
+        Self(Some(child), pid)
+    }
+}
 
 impl Drop for Process {
     fn drop(&mut self) {
@@ -44,7 +77,7 @@ async fn capture(mut reader: impl AsyncRead + Unpin) -> Result<String, String> {
         if count == 0 {
             break;
         }
-        let keep = count.min(STREAM_LIMIT - output.len());
+        let keep = count.min(STREAM_LIMIT.saturating_sub(output.len()));
         output.extend_from_slice(&buffer[..keep]);
         truncated |= keep < count;
     }
@@ -55,38 +88,35 @@ async fn capture(mut reader: impl AsyncRead + Unpin) -> Result<String, String> {
     Ok(output)
 }
 
-/// Execute with null stdin, bounded captured output and a 120-second timeout.
-pub async fn execute(command: &str, cwd: &Path) -> Result<String, String> {
-    tokio::time::timeout(Duration::from_secs(120), execute_inner(command, cwd))
-        .await
-        .map_err(|_| "Shell timed out after 120 seconds".to_string())?
+/// Run an already-configured [`Command`] with bounded output capture.
+///
+/// The child is placed in its own process group on Unix, killed on drop
+/// (including when the returned future is cancelled), and both streams are
+/// captured up to 32 KiB each. Callers are expected to set `stdin`, `current_dir`
+/// and environment; `stdout`/`stderr` are forced to pipes here. Callers apply
+/// their own timeout around the returned future so cancellation is propagated
+/// while the process guard is still alive.
+#[cfg(unix)]
+pub async fn run_supervised(cmd: &mut Command) -> Result<CommandOutput, String> {
+    use std::os::unix::process::CommandExt;
+    cmd.as_std_mut().process_group(0);
+    run_supervised_inner(cmd).await
 }
 
-async fn execute_inner(command: &str, cwd: &Path) -> Result<String, String> {
-    #[cfg(unix)]
-    let mut cmd = {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(command);
-        cmd.as_std_mut().process_group(0);
-        cmd
-    };
-    #[cfg(not(unix))]
-    let mut cmd = {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/D", "/S", "/C", command]);
-        cmd
-    };
-    let child = cmd
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+/// Non-Unix fallback: only the direct child is terminated on drop.
+#[cfg(not(unix))]
+pub async fn run_supervised(cmd: &mut Command) -> Result<CommandOutput, String> {
+    run_supervised_inner(cmd).await
+}
+
+async fn run_supervised_inner(cmd: &mut Command) -> Result<CommandOutput, String> {
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    let child = cmd
         .spawn()
-        .map_err(|e| format!("Cannot start shell: {e}"))?;
-    let pid = child.id();
-    let mut process = Process(Some(child), pid);
+        .map_err(|e| format!("Cannot start process: {e}"))?;
+    let mut process = Process::new(child);
     let child = process.0.as_mut().expect("owned child");
     let stdout = child.stdout.take().ok_or("Missing stdout pipe")?;
     let stderr = child.stderr.take().ok_or("Missing stderr pipe")?;
@@ -95,12 +125,43 @@ async fn execute_inner(command: &str, cwd: &Path) -> Result<String, String> {
         capture(stdout),
         capture(stderr)
     )?;
-    let result = format!("{status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
-    if status.success() {
+    Ok(CommandOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Execute with null stdin, bounded captured output and a 120-second timeout.
+pub async fn execute(command: &str, cwd: &Path) -> Result<String, String> {
+    let mut cmd = shell_command(command);
+    cmd.current_dir(cwd).stdin(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(120), run_supervised(&mut cmd))
+        .await
+        .map_err(|_| "Shell timed out after 120 seconds".to_string())??;
+    let result = format!(
+        "{}\nstdout:\n{}\nstderr:\n{}",
+        output.status, output.stdout, output.stderr
+    );
+    if output.status.success() {
         Ok(result)
     } else {
         Err(result)
     }
+}
+
+#[cfg(unix)]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
+#[cfg(not(unix))]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/D", "/S", "/C", command]);
+    cmd
 }
 
 #[cfg(all(test, unix))]

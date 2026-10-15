@@ -4,11 +4,33 @@
 
 # Mio
 
-Mio 是一个无头 Rust 编程 Agent 引擎，可在终端独立运行，也可通过 Rust 库直接嵌入宿主应用。
+Mio 是一个以**共享调度与可控多代理协作**为核心的 coding agent 引擎：无头 Rust 实现，可在终端独立运行，也可通过 Rust 库直接嵌入宿主应用，由引擎统一管理模型请求、任务并发与工作区写入的调度和限额。
 
 [官方网站](https://ravomi.github.io/Mio/) · [技术文档](https://ravomi.github.io/Mio/documentation.html) · [安装指南](docs/installation.md) · [程序状态规范](docs/program-status.md) · [源码来源](docs/rig-source.md) · [示例](examples/host.rs) · [许可证](LICENSE)
 
-本文涵盖 [CLI 与工具过滤](#常用-cli-使用示例与工具过滤)、[RPC 运行控制](#rpc-运行控制与协议交互)、[异步审批](#异步审批机制---approve)、[模型与子代理](#模型切换thinking-思考等级与子代理)、[上下文与会话](#上下文预算管理与会话持久化)。
+本文涵盖 [定位与能力状态](#定位与能力状态)、[CLI 与工具过滤](#常用-cli-使用示例与工具过滤)、[RPC 运行控制](#rpc-运行控制与协议交互)、[异步审批](#异步审批机制---approve)、[模型与子代理](#模型切换thinking-思考等级与子代理)、[上下文与会话](#上下文预算管理与会话持久化)。
+
+## 定位与能力状态
+
+Mio 针对的实际痛点是：模型限流/429 触发请求风暴、并行改动互相覆盖、编译/浏览器等重任务争抢资源、重复探索与预算/验收成本失控。近期验收口径围绕这些痛点收敛：
+
+| 指标 | 验收含义 |
+| --- | --- |
+| 429 不成风暴 | 同一 Provider 命中限流后请求共享冷却，等待或快速失败，而不是各自重试放大 |
+| 同 Provider 共享冷却 | endpoint + 凭据摘要键的冷却对父子任务与协作进程一致可见，而非每个任务各自维护 |
+| 冲突任务排队、无关任务并行 | 同一工作区的写入在进程内串行排队或显式拒绝，写不同目标的轻任务仍并行；跨进程路径租约已接入工作区操作，取消后仍由实际执行 worker 持有至结束 |
+| 重任务配额 | 编译、浏览器等重任务有独立并发/时间配额，不被轻任务挤占，也不无限并发 |
+| 预算预留与真实 usage | 请求前预留预算、请求后记录 Provider 返回的真实用量；缺 usage 标记 unknown，不用字节估算冒充账单 |
+| 显式任务 key 去重 | 重复提交同一任务 key 时复用或拒绝，而不是重复执行 |
+| 结构化验收证据 | 成功、失败、取消都留下可查证据，验收以测试与真实运行结果为准 |
+
+能力状态分三类，避免过度承诺：
+
+- **已落地（有实现与工作区离线测试用例）**：工具循环与会话持久化；进程内调度与跨进程协作配额（`src/scheduling.rs`、`src/coordinator.rs`、`src/shared_limits.rs`）；子代理 `Queued`/`Running` FIFO 与 `ToolEvidence`；Anthropic/Google/Ollama 原生协议路由；项目 MCP 启动前授权；编辑前内容/身份校验；执行证据 journal；输出/协议帧大小限额；结构化 `completion_call`/`diagnostic` 事件。
+- **已实现与接口边界**：跨进程 Workspace 路径租约已接入 `src/workspace.rs`，有取消与进程退出回收测试；显式 `dedup_key` 仅在 Coordinator API 层，CLI 未暴露对应参数；本轮四项质量门禁均通过（Rust 1.95.0）。
+- **未验证**：真实 Provider 线上路径与认证；跨平台行为；跨进程 token 预算持久化（预算仅本进程内生效）；真实磁盘/进程崩溃恢复；OS 内存/资源隔离与沙箱；同模型同预算任务对比。集成与统一验收前，Mio **不宣称**具备 OS 内存隔离或精确费用硬限额。
+
+逐项证据与残余风险见 [TODO.md](TODO.md)，需求与验收口径见 [docs/agent-requirements-and-comparison.md](docs/agent-requirements-and-comparison.md)。
 
 ## 源码安装与快速开始
 
@@ -38,7 +60,7 @@ mio --cwd /path/to/project --json -p '统计代码行数'
 
 - **同核两用**：`mio` CLI 与 `mio-coding-agent` Rust 库共享同一 Agent 工具循环；支持 `text`、`json`（JSON Lines 事件流）与 `rpc` 运行模式。
 - **工作区代码工具**：内置 `read`、`write`（原子写入）、`edit`（唯一匹配精确替换）、`bash`（120 秒超时）、`grep`、`find`、`ls`；支持 `--tools`、`--exclude-tools` 与 `--no-tools` 过滤。
-- **原生子代理**：通过 `--subagents` 启用独立会话的子代理，探索任务默认只读，支持后台异步委派、状态查询、取消与续接。
+- **原生子代理**：通过 `--subagents` 启用独立会话的子代理；任务按 `Queued`/`Running` 状态排队与运行，探索任务默认只读，支持后台异步委派、状态查询、取消与续接。
 - **上下文管理与项目规则**：自动发现祖先目录与当前目录的 `AGENTS.md`、`CLAUDE.md`，支持 `@file` 内容展开、项目 Skills（`.mio/skills/`）与提示词模板（`.mio/prompts/`）。
 - **会话持久化与导出**：任务历史原子写入 `.mio/sessions/`，支持恢复（`--resume`）、分叉（`--fork`）与单文件 HTML 导出（`--export`）。
 - **外部扩展**：支持通过 stdio JSON-RPC 2.0 连接 MCP Server（`.mio/mcp.json`），以及通过 `mio-plugin.json` 规范加载插件。
@@ -87,6 +109,39 @@ mio --mode rpc --cwd /path/to/project --approve
 ### CLI 取消与交互恢复
 
 运行任务时按 Ctrl-C，会取消当前请求并清理活动子任务及 Shell 进程；已成功保存的会话保留，已发生的文件修改不回滚。终端交互模式在取消或普通回合错误后继续接受输入；在输入提示符处按 Ctrl-C 则退出。单次 `-p` 任务取消或失败以非零状态退出。终端编辑器支持 Tab 补全和上下键历史，`/status` 查看状态，`/exit` 退出。
+
+## 共享调度、配额与多代理边界
+
+调度在真实 dispatch 边界准入：模型请求、重任务与工作区写入在发出前申请许可。CLI 默认同时启用进程内调度与跨进程配额。
+
+```bash
+# 默认：进程内调度 + 用户配置目录下的跨进程协调
+mio --cwd /path/to/project --subagents -p '并行探索并汇总'
+
+# 跨进程共享配额根（同一 root 的策略固定，不能被本地参数悄悄放大）
+mio --shared-limits-dir /tmp/mio-coordination -p '多进程共享模型/重任务配额'
+
+# 显式只用本进程配额，不读写跨进程 root
+mio --no-shared-limits -p '仅本进程限流'
+
+# 本进程配额（不改变跨进程 policy.json 的全局默认 2）
+mio --max-model-concurrency 1 --max-provider-concurrency 1 \
+    --max-heavy-tasks 1 --max-subagents 2 \
+    --max-model-calls 50 --max-total-tokens 200000 -p '受限运行'
+
+# RPC：实时查看本地调度状态
+mio --mode rpc --cwd /path/to/project --subagents
+# 然后发送：{"type":"get_state","id":"s1"}
+```
+
+- **两层配额**：进程内 `Coordinator` 管理本进程的模型 / provider / 重任务 / 任务队列、显式 dedup 与本地预算；跨进程 `SharedLimits`（`--shared-limits-dir`，默认用户配置目录的 `coordination/`）通过 `flock` 共享模型（全局默认 2、每 provider 默认 2）与重任务（默认 2）配额。同一 root 首次写入版本化 `policy.json`，之后任何进程必须逐项一致，否则 fail-closed。
+- **本地参数与共享默认**：`--max-model-concurrency` / `--max-provider-concurrency` / `--max-heavy-tasks` / `--max-subagents` / `--max-model-calls` / `--max-total-tokens` 只作用于本进程，不修改跨进程策略；本地设得更宽也不会放宽 `policy.json` 的跨进程默认限额。`--no-shared-limits` 关闭跨进程配额但保留本地准入；`--shared-limits-dir` 变更共享根。
+- **429 冷却**：Provider 返回 429 时按 `Retry-After`（delta-seconds 或 IMF-fixdate GMT 日期）发布冷却，键为 endpoint + 凭据摘要；同 provider 的父子任务及协作进程共享，**不会自动重放工具或请求**。
+- **重任务判定**：`bash`/`shell`、`workspace` 的 shell/bash 操作，以及所有 `plugin__…` / `mcp__…` 调用保守计入 heavy 配额。通过 Shell 启动的进程随该调用受限；未被 dispatch hook 接入的工具或其他直接启动的进程不保证受限。
+- **预算语义**：`--max-model-calls` 是硬调用次数上限；`--max-total-tokens` 在调用前按保守预留占用，结算时用 Provider 上报的真实 usage，未上报按预留计。实际超出预留会记录 overage 并阻止后续请求；这是 **token 计数而非精确费用硬限额，无美元换算**。
+- **子代理排队与证据**：`SubagentManager` 状态为 `Queued` / `Running` / 终态；达到并发上限或工作区忙碌时排队而非拒绝，严格 FIFO，整工作区 writer 独占、只读并行。相同 session 且完全相同的活动请求复用同一 `run_id`，终态不会被该路径自动重放。`ToolEvidence` 只来自真实 `ToolFinished`，其中 `ok` 仅表示工具自报结果，不是测试判决或回滚保证。
+- **跨进程可观测边界**：跨进程各持有哪些槽位无法可靠枚举，`get_state.scheduler.shared` 只返回配置与冷却，不伪造全局 active 计数。跨进程 token 预算未持久化，预算只在本进程内生效。
+- **无 OS 隔离**：调度、路径租约与限额都是协作式准入，不是操作系统内存 / CPU / 文件描述符沙箱；未接入模块的第三方工具与进程不受约束。
 
 ## RPC 运行控制与协议交互
 
@@ -183,10 +238,11 @@ stderr 用于诊断，客户端须持续读取 stdout；保持 stdin 打开以�
 
 ### 原生子代理 (Subagents)
 
-- **开启与并发隔离**：使用 `--subagents` 标志显式启用。最大允许 4 个并行子会话，单个运行最长超时 600 秒。子代理在内存中维护独立历史（不污染主干会话）。
+- **开启与并发**：使用 `--subagents` 显式启用；并发由 `--max-subagents` 控制（默认 4，范围 1–16），超出上限或工作区忙碌时进入 `Queued` 队列而不是拒绝。单个运行最长超时 600 秒。子代理在内存中维护独立历史（不污染主干会话）。
+- **排队与写冲突**：严格 FIFO。整工作区一次只允许一个写任务，只读任务可并行，避免旧 writer 被后续只读任务饿死；同一 session 已有不同的活动任务时明确报错。
 - **权限与边界**：委派任务时默认 `read_only: true`（禁用写入、编辑与 Shell 执行）；仅在父任务显式指定且允许时才放开写权限。子代理**永远不会再次获得派生子代理的权限**（无法层叠派生）。
 - **继承与同步**：主代理中发生的模型切换、思考等级调整及交互配置变更，均自动同步应用至后续子任务（包括续接已有子会话）。
-- **安全与控制**：子代理支持主动状态查询、等待与中途取消。主代理取消或失败时清理活动子任务；若父回合结束时还有运行中的子任务，会取消它们并报告错误，不能将未收集结果视为完成。子代理提供 `delegate`、`status`、`snapshot`、`list`、`kill`、`fork` 操作，状态等待最长 30 秒；子会话随进程退出丢失，工具过滤和审批不构成操作系统沙箱。
+- **安全与控制**：子代理支持主动状态查询、等待与中途取消。相同 session 且完全相同的活动请求复用同一 `run_id`，终态不会被该路径自动重放。主代理取消或失败时清理活动子任务；若父回合结束时还有运行中的子任务，会取消它们并报告错误，不能将未收集结果视为完成。子代理提供 `delegate`、`status`、`snapshot`、`list`、`kill`、`fork` 操作，状态等待最长 30 秒；子会话随进程退出丢失。`snapshot.evidence` 的 `ToolEvidence` 只来自真实 `ToolFinished`，其中 `ok` 仅表示工具自报结果，不是测试判决或回滚保证；工具过滤和审批不构成操作系统沙箱。
 
 ## 上下文预算管理与会话持久化
 
@@ -240,6 +296,18 @@ cargo +1.95.0 clippy --all-targets --locked -- -D warnings
 ```
 
 测试集涵盖本地 HTTP 模拟、CLI 读写与恢复、边界安全和会话持久化，无需调用外部真实服务。
+
+### 评测入口
+
+`evals/` 存放自有验收探针（不是公共 benchmark）；任务集版本、固定模型/预算口径与指标限制见 [evals/README.md](evals/README.md)：
+
+```bash
+python3 -B tests/agent_eval_harness.py                                  # 离线自测评测器，不调用真实模型
+python3 scripts/agent_eval.py --help                                    # 查看参数
+python3 scripts/agent_eval.py --config evals/configs/mio-local.json     # 报告写入 target/evals/mio.json
+```
+
+CLI 显式参数覆盖 `--config` 的同名键；报告统一为版本化 JSON，未获取到的 token/成本指标明确标为 `null`/`unknown`，不代表已支持计费或用量统计。
 
 ## 项目架构与许可证
 

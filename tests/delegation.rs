@@ -47,6 +47,13 @@ impl Executor for MockExecutor {
             if task.prompt == "hang" {
                 std::future::pending::<()>().await;
             }
+            if task.prompt == "evidence" {
+                task.host.on_event(AgentEvent::ToolFinished {
+                    operation: "workspace".into(),
+                    target: "src/lib.rs".into(),
+                    result: Ok("compiled".into()),
+                });
+            }
             task.host
                 .on_event(AgentEvent::Text(format!("echo: {}", task.prompt)));
             task.history
@@ -422,4 +429,130 @@ async fn test_explicitly_reject_unknown_constraints() {
         })
         .await;
     assert!(ok_tool.is_ok());
+}
+
+fn create_single_adapter(
+    root: &Path,
+    delay: Duration,
+    timeout: Duration,
+) -> (DelegationAdapter, Arc<MockHost>) {
+    let manager = SubagentManager::with_executor(
+        root,
+        Config {
+            model: "mock-model".into(),
+            api_key: "mock-key".into(),
+            ..Config::default()
+        },
+        RunOptions::default(),
+        1,
+        timeout,
+        Arc::new(MockExecutor {
+            delay,
+            call_count: Arc::new(AtomicUsize::new(0)),
+        }),
+    )
+    .unwrap();
+    let host = Arc::new(MockHost::default());
+    (
+        DelegationAdapter::new(Arc::new(manager), host.clone()),
+        host,
+    )
+}
+
+fn params(session: &str, prompt: &str, mode: DelegationMode) -> DelegateParams {
+    DelegateParams {
+        session: session.into(),
+        goal: "goal".into(),
+        prompt: prompt.into(),
+        cwd: None,
+        mode,
+        run_timeout_ms: None,
+        wait_timeout_ms: None,
+        read_only: Some(true),
+        constraints: None,
+    }
+}
+
+#[tokio::test]
+async fn test_queued_admission_surfaces_through_adapter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (adapter, _host) =
+        create_single_adapter(dir.path(), Duration::from_millis(0), Duration::from_secs(5));
+    let first = adapter
+        .delegate(params("first", "hang", DelegationMode::Async))
+        .await
+        .unwrap();
+    let first_id = match first {
+        mio_coding_agent::delegation::DelegateResponse::Async(meta) => {
+            assert_eq!(meta.status, Status::Running);
+            meta.run_id
+        }
+        _ => panic!("Expected async response"),
+    };
+    let second = adapter
+        .delegate(params("second", "hang", DelegationMode::Async))
+        .await
+        .unwrap();
+    let second_id = match second {
+        mio_coding_agent::delegation::DelegateResponse::Async(meta) => {
+            assert_eq!(meta.status, Status::Queued);
+            assert!(meta.status.is_active());
+            meta.run_id
+        }
+        _ => panic!("Expected async response"),
+    };
+    adapter
+        .kill(KillParams {
+            run_id: first_id,
+            wait_timeout_ms: None,
+        })
+        .await
+        .unwrap();
+    let promoted = adapter
+        .status(StatusParams {
+            run_id: second_id,
+            wait_timeout_ms: Some(2000),
+        })
+        .await
+        .unwrap();
+    assert_eq!(promoted.status, Status::Running);
+    adapter
+        .kill(KillParams {
+            run_id: second_id,
+            wait_timeout_ms: None,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_evidence_surfaces_in_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let (adapter, _host, _) =
+        create_adapter(dir.path(), Duration::from_millis(0), Duration::from_secs(5));
+    let response = adapter
+        .delegate(DelegateParams {
+            session: "evidence".into(),
+            goal: "goal".into(),
+            prompt: "evidence".into(),
+            cwd: None,
+            mode: DelegationMode::Sync,
+            run_timeout_ms: None,
+            wait_timeout_ms: Some(2000),
+            read_only: Some(true),
+            constraints: None,
+        })
+        .await
+        .unwrap();
+    let snapshot = match response {
+        mio_coding_agent::delegation::DelegateResponse::Sync(snapshot) => snapshot,
+        _ => panic!("Expected sync response"),
+    };
+    assert_eq!(snapshot.status, Status::Completed);
+    assert_eq!(snapshot.evidence.len(), 1);
+    assert_eq!(snapshot.evidence[0].tool, "workspace");
+    assert_eq!(snapshot.evidence[0].target, "src/lib.rs");
+    assert!(snapshot.evidence[0].ok);
+    assert_eq!(snapshot.evidence[0].summary.as_deref(), Some("compiled"));
+    assert!(!snapshot.evidence_truncated);
 }

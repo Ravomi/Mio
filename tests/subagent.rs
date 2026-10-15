@@ -41,6 +41,27 @@ impl Executor for Fake {
                 "fail" => return Err("intentional failure".into()),
                 "panic" => panic!("intentional panic"),
                 "large" => task.host.on_event(AgentEvent::Text("汉".repeat(40000))),
+                "evidence" => {
+                    task.host.on_event(AgentEvent::ToolFinished {
+                        operation: "workspace".into(),
+                        target: "src/main.rs".into(),
+                        result: Ok("read 10 lines".into()),
+                    });
+                    task.host.on_event(AgentEvent::ToolFinished {
+                        operation: "shell".into(),
+                        target: "cargo test".into(),
+                        result: Err("exit code 1".into()),
+                    });
+                }
+                "evidence_many" => {
+                    for index in 0..40 {
+                        task.host.on_event(AgentEvent::ToolFinished {
+                            operation: "workspace".into(),
+                            target: format!("file{index}.rs"),
+                            result: Ok("same result text".into()),
+                        });
+                    }
+                }
                 _ => task
                     .host
                     .on_event(AgentEvent::Text(format!("prior={}", task.history.len()))),
@@ -153,11 +174,11 @@ async fn cancellation_releases_once_and_old_run_cannot_cancel_new_run() {
         .delegate(request("worker", "hold"), host.clone())
         .unwrap();
     wait_active(&active, 1).await;
-    assert!(
-        manager
-            .delegate(request("worker", "hold"), host.clone())
-            .is_err()
-    );
+    // An identical request for the same active session reuses the run id.
+    let duplicate = manager
+        .delegate(request("worker", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(duplicate.run_id, old.run_id);
     assert!(manager.fork("worker", "fork").is_err());
     assert_eq!(
         manager.kill(old.run_id).await.unwrap().status,
@@ -167,6 +188,7 @@ async fn cancellation_releases_once_and_old_run_cannot_cancel_new_run() {
     let new = manager
         .delegate(request("worker", "hold"), host.clone())
         .unwrap();
+    assert_ne!(new.run_id, old.run_id);
     manager.kill(old.run_id).await.unwrap();
     assert_eq!(
         manager.snapshot(new.run_id).unwrap().status,
@@ -175,9 +197,22 @@ async fn cancellation_releases_once_and_old_run_cannot_cancel_new_run() {
     let second = manager
         .delegate(request("second", "hold"), host.clone())
         .unwrap();
-    assert!(manager.delegate(request("third", "hold"), host).is_err());
+    assert_eq!(second.status, Status::Running);
+    // Concurrency is full, so the next task queues instead of failing.
+    let third = manager
+        .delegate(request("third", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(third.status, Status::Queued);
+    assert!(third.status.is_active());
     manager.kill(new.run_id).await.unwrap();
     manager.kill(second.run_id).await.unwrap();
+    let admitted = manager
+        .status(third.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(admitted.status, Status::Running);
+    manager.kill(third.run_id).await.unwrap();
+    assert_eq!(active.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -217,6 +252,202 @@ async fn timeout_panic_and_manager_drop_release_futures() {
 }
 
 #[tokio::test]
+async fn read_only_tasks_run_concurrently_and_a_writer_queues_fifo() {
+    let dir = tempfile::tempdir().unwrap();
+    let active = Arc::new(AtomicUsize::new(0));
+    let manager = manager(dir.path(), 2, Duration::from_secs(10), active.clone());
+    let host = Arc::new(TestHost::default());
+    let read_one = manager
+        .delegate(request("r1", "hold"), host.clone())
+        .unwrap();
+    let read_two = manager
+        .delegate(request("r2", "hold"), host.clone())
+        .unwrap();
+    wait_active(&active, 2).await;
+    assert_eq!(read_one.status, Status::Running);
+    assert_eq!(read_two.status, Status::Running);
+    // A writer needs the whole workspace, so it waits behind the readers.
+    let mut writer = request("w1", "hold");
+    writer.read_only = false;
+    let writer = manager.delegate(writer, host.clone()).unwrap();
+    assert_eq!(writer.status, Status::Queued);
+    // A younger reader must not jump ahead of the queued writer.
+    let read_three = manager
+        .delegate(request("r3", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(read_three.status, Status::Queued);
+    manager.kill(read_one.run_id).await.unwrap();
+    manager.kill(read_two.run_id).await.unwrap();
+    let admitted = manager
+        .status(writer.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(admitted.status, Status::Running);
+    assert_eq!(
+        manager.snapshot(read_three.run_id).unwrap().status,
+        Status::Queued
+    );
+    manager.kill(writer.run_id).await.unwrap();
+    let promoted = manager
+        .status(read_three.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(promoted.status, Status::Running);
+    manager.kill(read_three.run_id).await.unwrap();
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn identical_active_request_reuses_run_and_terminal_runs_are_not_replayed() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(
+        dir.path(),
+        1,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = Arc::new(TestHost::default());
+    let running = manager
+        .delegate(request("worker", "hold"), host.clone())
+        .unwrap();
+    let duplicate = manager
+        .delegate(request("worker", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(duplicate.run_id, running.run_id);
+    let mut changed = request("worker", "hold");
+    changed.goal = "Other".into();
+    assert!(manager.delegate(changed, host.clone()).is_err());
+    // Deduplication also covers queued runs.
+    let queued = manager
+        .delegate(request("queued", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(queued.status, Status::Queued);
+    let queued_duplicate = manager
+        .delegate(request("queued", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(queued_duplicate.run_id, queued.run_id);
+    let mut different = request("queued", "hold");
+    different.read_only = false;
+    assert!(manager.delegate(different, host.clone()).is_err());
+    manager.kill(running.run_id).await.unwrap();
+    manager.kill(queued.run_id).await.unwrap();
+    // A terminal run is never replayed: a new run id is issued.
+    let first = manager
+        .delegate(request("once", "one"), host.clone())
+        .unwrap();
+    let first = manager
+        .status(first.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(first.status, Status::Completed);
+    let second = manager
+        .delegate(request("once", "one"), host.clone())
+        .unwrap();
+    assert_ne!(second.run_id, first.run_id);
+    let second = manager
+        .status(second.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(second.status, Status::Completed);
+}
+
+#[tokio::test]
+async fn evidence_is_bounded_and_structured_from_tool_finished_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(
+        dir.path(),
+        2,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = Arc::new(TestHost::default());
+    let run = manager
+        .delegate(request("evidence", "evidence"), host.clone())
+        .unwrap();
+    let done = manager
+        .status(run.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(done.status, Status::Completed);
+    assert_eq!(done.evidence.len(), 2);
+    let ok = &done.evidence[0];
+    assert_eq!(ok.tool, "workspace");
+    assert_eq!(ok.target, "src/main.rs");
+    assert!(ok.ok);
+    assert_eq!(ok.summary.as_deref(), Some("read 10 lines"));
+    assert!(ok.error.is_none());
+    assert_eq!(ok.result_hash.len(), 16);
+    let err = &done.evidence[1];
+    assert_eq!(err.tool, "shell");
+    assert!(!err.ok);
+    assert_eq!(err.error.as_deref(), Some("exit code 1"));
+    assert!(err.summary.is_none());
+    assert!(!done.evidence_truncated);
+    let many = manager
+        .delegate(request("many", "evidence_many"), host.clone())
+        .unwrap();
+    let done = manager
+        .status(many.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(done.evidence.len(), 32);
+    assert!(done.evidence_truncated);
+    // The hash is stable for identical result text.
+    assert_eq!(done.evidence[0].result_hash, done.evidence[1].result_hash);
+}
+
+#[tokio::test]
+async fn with_concurrency_configures_limits_only_when_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut subagents = manager(
+        dir.path(),
+        4,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    assert!(subagents.set_concurrency(1).is_ok());
+    assert!(subagents.set_concurrency(0).is_err());
+    assert!(subagents.set_concurrency(17).is_err());
+    let host = Arc::new(TestHost::default());
+    let first = subagents
+        .delegate(request("first", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(first.status, Status::Running);
+    assert!(
+        subagents.set_concurrency(2).is_err(),
+        "Cannot resize while a task is active"
+    );
+    let second = subagents
+        .delegate(request("second", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(second.status, Status::Queued);
+    subagents.kill(first.run_id).await.unwrap();
+    subagents.kill(second.run_id).await.unwrap();
+    // The consuming builder configures a fresh, idle manager.
+    let other = tempfile::tempdir().unwrap();
+    assert!(
+        manager(
+            other.path(),
+            4,
+            Duration::from_secs(10),
+            Arc::new(AtomicUsize::new(0))
+        )
+        .with_concurrency(3)
+        .is_ok()
+    );
+    assert!(
+        manager(
+            other.path(),
+            4,
+            Duration::from_secs(10),
+            Arc::new(AtomicUsize::new(0))
+        )
+        .with_concurrency(0)
+        .is_err()
+    );
+}
+
+#[tokio::test]
 async fn paths_modes_and_overlapping_workspace_leases_are_enforced() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("child")).unwrap();
@@ -236,15 +467,25 @@ async fn paths_modes_and_overlapping_workspace_leases_are_enforced() {
     let mut write = request("writer", "hold");
     write.read_only = false;
     write.path = Some("child".into());
-    assert!(manager.delegate(write.clone(), host.clone()).is_err());
+    // The writer queues behind the reader instead of being refused.
+    let queued_write = manager.delegate(write.clone(), host.clone()).unwrap();
+    assert_eq!(queued_write.status, Status::Queued);
     manager.kill(read.run_id).await.unwrap();
     let run = manager.delegate(write, host.clone()).unwrap();
-    assert!(
-        manager
-            .delegate(request("reader2", "hold"), host.clone())
-            .is_err()
-    );
+    assert_eq!(run.run_id, queued_write.run_id);
+    assert_eq!(run.status, Status::Running);
+    // A read that arrives while the writer runs must queue, not overlap.
+    let queued_read = manager
+        .delegate(request("reader2", "hold"), host.clone())
+        .unwrap();
+    assert_eq!(queued_read.status, Status::Queued);
     manager.kill(run.run_id).await.unwrap();
+    let admitted = manager
+        .status(queued_read.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(admitted.status, Status::Running);
+    manager.kill(queued_read.run_id).await.unwrap();
     let mut changed = request("writer", "next");
     changed.path = Some("child".into());
     assert!(

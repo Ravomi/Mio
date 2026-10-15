@@ -4,16 +4,19 @@ use mio_coding_agent::{
     compact::{DEFAULT_AUTO_COMPACT_BYTES, DEFAULT_KEEP_RECENT_MESSAGES, compact_history},
     context::{ContextOptions, ProjectContext, expand_at_files},
     format_osc7501,
-    mcp::load_dynamic_tools,
+    mcp::{PROJECT_MCP_APPROVAL_OP, load_dynamic_tools},
     parse_model_spec,
-    rpc::{RpcCommand, list_catalog_models, resolve_provider_endpoint, rpc_response},
+    rpc::{
+        LineReadError, RpcCommand, RpcInput, list_catalog_models, resolve_provider_endpoint,
+        rpc_response,
+    },
     run_with_tools,
     session::Session,
     subagent::SubagentManager,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -23,9 +26,14 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+// 执行证据 journal（AUD-13）。通过 bin 路径引用，避免与并行修改的 `lib.rs` 冲突。
+#[path = "../journal.rs"]
+mod journal;
+use journal::{Journal, RecoveryReport, RunState};
 
 const HELP: &str = "Mio — Rust coding agent
 
@@ -40,6 +48,14 @@ Without a prompt, starts an interactive conversation in a terminal or reads stdi
   --provider NAME       Provider preset: custom, deepseek, antigravity, openai, anthropic,
                         google, openrouter, groq, xai, mistral, ollama (or MIO_PROVIDER)
   --thinking LEVEL      Thinking level: off, minimal, low, medium, high, xhigh, max
+  --max-model-concurrency N  Concurrent model requests in this process (default: 2)
+  --max-provider-concurrency N  Concurrent requests per provider (default: 2)
+  --max-heavy-tasks N    Concurrent shell/external tool calls (default: 2)
+  --max-subagents N      Concurrent admitted child tasks (default: 4)
+  --max-model-calls N    Shared model-call budget for this process
+  --max-total-tokens N   Shared conservative token budget for this process
+  --shared-limits-dir PATH  Shared cross-process quota directory
+  --no-shared-limits    Use only in-process admission limits
   --list-models [QUERY] List available models across provider presets and exit
   --import-antigravity PATH  Import existing local auth.json/settings.json into Mio
   --base-url URL        OpenAI-compatible base URL (or MIO_BASE_URL)
@@ -47,6 +63,8 @@ Without a prompt, starts an interactive conversation in a terminal or reads stdi
   -xt, --exclude-tools LIST  Exclude tools or glob patterns (e.g. bash,mcp__*)
   -nt, --no-tools       Disable all tools
   --no-mcp              Disable MCP server discovery (.mio/mcp.json)
+  --trust-project-mcp   Authorize starting project MCP servers without per-start approval
+  --recovery            Print persisted execution evidence for the selected session and exit
   --approve             Require interactive confirmation before write/edit/bash/MCP tools
   --session SELECTOR    Load/save a session by path, short UUID prefix, or session name
   -c, --continue, -r, --resume  Continue the most recently saved session in this workspace
@@ -1057,6 +1075,8 @@ struct Args {
     exclude_tools: Option<String>,
     no_tools: bool,
     no_mcp: bool,
+    trust_project_mcp: bool,
+    recovery: bool,
     approve: bool,
     session: Option<String>,
     session_name: Option<String>,
@@ -1079,6 +1099,14 @@ struct Args {
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
     max_turns: Option<usize>,
+    max_model_concurrency: Option<usize>,
+    max_provider_concurrency: Option<usize>,
+    max_heavy_tasks: Option<usize>,
+    max_subagents: Option<usize>,
+    max_model_calls: Option<u64>,
+    max_total_tokens: Option<u64>,
+    shared_limits_dir: Option<PathBuf>,
+    no_shared_limits: bool,
     plugin_install: Option<String>,
     plugin_remove: Option<String>,
     plugin_list: bool,
@@ -1140,6 +1168,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "-xt" | "--exclude-tools" => parsed.exclude_tools = Some(value()?),
             "-nt" | "--no-tools" => parsed.no_tools = true,
             "--no-mcp" => parsed.no_mcp = true,
+            "--trust-project-mcp" => parsed.trust_project_mcp = true,
+            "--recovery" => parsed.recovery = true,
             "--approve" => parsed.approve = true,
             "--session" => parsed.session = Some(value()?),
             "-n" | "--name" => parsed.session_name = Some(value()?),
@@ -1152,6 +1182,38 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--max-turns" => {
                 parsed.max_turns = Some(value()?.parse().map_err(|_| "Invalid --max-turns")?)
             }
+            "--max-model-concurrency" => {
+                parsed.max_model_concurrency = Some(
+                    value()?
+                        .parse()
+                        .map_err(|_| "Invalid --max-model-concurrency")?,
+                )
+            }
+            "--max-provider-concurrency" => {
+                parsed.max_provider_concurrency = Some(
+                    value()?
+                        .parse()
+                        .map_err(|_| "Invalid --max-provider-concurrency")?,
+                )
+            }
+            "--max-heavy-tasks" => {
+                parsed.max_heavy_tasks =
+                    Some(value()?.parse().map_err(|_| "Invalid --max-heavy-tasks")?)
+            }
+            "--max-subagents" => {
+                parsed.max_subagents =
+                    Some(value()?.parse().map_err(|_| "Invalid --max-subagents")?)
+            }
+            "--max-model-calls" => {
+                parsed.max_model_calls =
+                    Some(value()?.parse().map_err(|_| "Invalid --max-model-calls")?)
+            }
+            "--max-total-tokens" => {
+                parsed.max_total_tokens =
+                    Some(value()?.parse().map_err(|_| "Invalid --max-total-tokens")?)
+            }
+            "--shared-limits-dir" => parsed.shared_limits_dir = Some(value()?.into()),
+            "--no-shared-limits" => parsed.no_shared_limits = true,
             "--json" => {
                 parsed.json = true;
                 if parsed.mode == OutputMode::Text {
@@ -1237,6 +1299,38 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     if !(1..=256).contains(&parsed.max_turns.unwrap_or(32)) {
         return Err("--max-turns must be 1–256".into());
+    }
+    for (flag, value) in [
+        ("--max-model-concurrency", parsed.max_model_concurrency),
+        (
+            "--max-provider-concurrency",
+            parsed.max_provider_concurrency,
+        ),
+        ("--max-heavy-tasks", parsed.max_heavy_tasks),
+    ] {
+        if value.is_some_and(|value| !(1..=64).contains(&value)) {
+            return Err(format!("{flag} must be 1–64"));
+        }
+    }
+    if parsed
+        .max_subagents
+        .is_some_and(|value| !(1..=16).contains(&value))
+    {
+        return Err("--max-subagents must be 1–16".into());
+    }
+    if parsed.max_model_calls == Some(0) || parsed.max_total_tokens == Some(0) {
+        return Err("Model-call and token budgets must be positive".into());
+    }
+    if parsed.no_shared_limits && parsed.shared_limits_dir.is_some() {
+        return Err("--no-shared-limits conflicts with --shared-limits-dir".into());
+    }
+    if std::env::var("MIO_TRUST_PROJECT_MCP").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    }) {
+        parsed.trust_project_mcp = true;
     }
     Ok(parsed)
 }
@@ -1384,12 +1478,110 @@ struct CliHost {
     json: bool,
     no_shell: bool,
     approve: bool,
+    trust_project_mcp: bool,
+    approved_project_mcp: Arc<Mutex<BTreeSet<String>>>,
     reporter: Arc<StatusReporter>,
     steering_queue: Mutex<VecDeque<String>>,
     rpc_approvals: Option<Arc<RpcApprovals>>,
+    journal: Arc<Journal>,
+}
+
+impl CliHost {
+    /// 始终交互式确认（不受 `--approve` 影响），用于项目 MCP 启动授权。
+    fn interactive_approval(
+        &self,
+        operation: &str,
+        target: &str,
+        prompt: &str,
+    ) -> Result<(), String> {
+        let msg = format!("{operation} {target}");
+        self.reporter.report(
+            ProgramState::Blocked {
+                kind: BlockedKind::Permission,
+            },
+            Some(msg.trim()),
+        );
+        eprint!("{prompt}");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        let res = io::stdin()
+            .read_line(&mut answer)
+            .map_err(|e| format!("Failed to read approval input: {e}"));
+        self.reporter.report(ProgramState::Working, None);
+        res?;
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            Ok(())
+        } else {
+            Err(format!("User rejected tool operation '{operation}'"))
+        }
+    }
+
+    /// 项目 MCP 配置启动授权（AUD-03）：fail-closed，与工具审批分离。
+    ///
+    /// 授权绑定具体服务器指纹（命令、参数、环境变量），配置变化会重新请求；
+    /// 不会只凭 cwd 布尔值长期信任。`--trust-project-mcp` 或 RPC 审批代理可放行，
+    /// 否则必须交互确认；非交互环境直接拒绝。
+    fn approve_project_mcp(&self, target: &str) -> HostFuture<Result<(), String>> {
+        if self.trust_project_mcp {
+            return Box::pin(std::future::ready(Ok(())));
+        }
+        if self.approved_project_mcp.lock().unwrap().contains(target) {
+            return Box::pin(std::future::ready(Ok(())));
+        }
+        if let Some(broker) = self.rpc_approvals.clone() {
+            let cache = self.approved_project_mcp.clone();
+            let target_owned = target.to_owned();
+            return Box::pin(async move {
+                broker
+                    .request(PROJECT_MCP_APPROVAL_OP, &target_owned)
+                    .await
+                    .map(|()| {
+                        cache.lock().unwrap().insert(target_owned);
+                    })
+            });
+        }
+        if self.json || !io::stdin().is_terminal() {
+            return Box::pin(std::future::ready(Err(format!(
+                "Project MCP server start requires authorization; no interactive terminal or RPC approval broker is available. Re-run with --trust-project-mcp to authorize: {target}"
+            ))));
+        }
+        let res = self.interactive_approval(
+            PROJECT_MCP_APPROVAL_OP,
+            target,
+            &format!("\nStart project MCP server? {target} [y/N]: "),
+        );
+        Box::pin(std::future::ready(match res {
+            Ok(()) => {
+                self.approved_project_mcp
+                    .lock()
+                    .unwrap()
+                    .insert(target.to_owned());
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }))
+    }
 }
 
 impl Host for CliHost {
+    fn on_tool_result(&self, operation: &str, target: &str, result: &Result<String, String>) {
+        if let Err(error) = self.journal.record_result(operation, target, result) {
+            eprintln!("Warning: failed to record execution evidence for {operation}: {error}");
+        }
+    }
+
+    fn on_completion_call(&self, call: &mio_coding_agent::CompletionCallObservation) {
+        if self.json {
+            println!("{}", json!({"type": "completion_call", "data": call}));
+        }
+    }
+
+    fn on_diagnostic(&self, diagnostic: &mio_coding_agent::RunDiagnostic) {
+        if self.json {
+            println!("{}", json!({"type": "diagnostic", "data": diagnostic}));
+        }
+    }
+
     fn shell(&self, command: &str, cwd: &Path) -> HostFuture<Result<String, String>> {
         let (command, cwd, disabled) = (command.to_owned(), cwd.to_owned(), self.no_shell);
         Box::pin(async move {
@@ -1401,6 +1593,15 @@ impl Host for CliHost {
     }
 
     fn on_event(&self, event: AgentEvent) {
+        // 证据记录与输出模式无关：json/rpc 模式也必须落盘。
+        if let AgentEvent::ToolFinished {
+            operation,
+            target,
+            result,
+        } = &event
+        {
+            self.on_tool_result(operation, target, result);
+        }
         if self.json {
             println!(
                 "{}",
@@ -1449,29 +1650,23 @@ impl Host for CliHost {
                 "Tool '{operation}' ({target}) requires interactive approval (--approve)"
             ));
         }
-        let msg = format!("{operation} {target}");
-        self.reporter.report(
-            ProgramState::Blocked {
-                kind: BlockedKind::Permission,
-            },
-            Some(msg.trim()),
-        );
-        eprint!("\nApprove [{operation}] {target}? [y/N]: ");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        let res = io::stdin()
-            .read_line(&mut answer)
-            .map_err(|e| format!("Failed to read approval input: {e}"));
-        self.reporter.report(ProgramState::Working, None);
-        res?;
-        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            Ok(())
-        } else {
-            Err(format!("User rejected tool operation '{operation}'"))
-        }
+        self.interactive_approval(
+            operation,
+            target,
+            &format!("\nApprove [{operation}] {target}? [y/N]: "),
+        )
     }
 
     fn approve_tool_async(&self, operation: &str, target: &str) -> HostFuture<Result<(), String>> {
+        if operation == PROJECT_MCP_APPROVAL_OP {
+            return self.approve_project_mcp(target);
+        }
+        // 副作用之前持久化 intent；journal 写入失败必须阻止该操作。
+        if let Err(error) = self.journal.record_intent(operation, target) {
+            return Box::pin(std::future::ready(Err(format!(
+                "Execution journal unavailable; refusing '{operation}' ({target}): {error}"
+            ))));
+        }
         if let Some(broker) = &self.rpc_approvals {
             broker.request(operation, target)
         } else {
@@ -1565,6 +1760,7 @@ struct Runner {
     path: PathBuf,
     subagents: Option<Arc<SubagentManager>>,
     antigravity: Option<mio_coding_agent::antigravity::Antigravity>,
+    journal: Arc<Journal>,
 }
 
 impl Runner {
@@ -1584,9 +1780,6 @@ impl Runner {
         } else if let Some(saved) = self.connections.get(&name) {
             saved.clone()
         } else {
-            if name == "anthropic" {
-                return Err("Native Anthropic protocol is not supported by this CLI route; configure an OpenAI-compatible custom endpoint".into());
-            }
             let explicit_base = if name == "custom" {
                 std::env::var("MIO_BASE_URL").ok()
             } else {
@@ -1639,8 +1832,13 @@ impl Runner {
                 .map_err(|e| format!("Cannot create session directory: {e}"))?;
             candidate.save(&path)?;
         }
+        let session_changed = candidate.id != self.session.id;
         self.session = candidate;
         self.path = path;
+        if session_changed {
+            self.journal
+                .rebind(&self.session.cwd, &self.session.id.to_string());
+        }
         Ok(())
     }
 
@@ -1649,25 +1847,46 @@ impl Runner {
         self.host
             .reporter
             .report(ProgramState::Working, Some("Waiting for model"));
+        if let Err(error) = self.journal.begin_run() {
+            eprintln!(
+                "Warning: execution evidence journal unavailable ({error}); side-effecting tools will be refused."
+            );
+        }
+        let mut cancelled = false;
         let res = tokio::select! {
             res = self.turn_inner(prompt) => res,
             signal = tokio::signal::ctrl_c() => {
+                cancelled = true;
                 if let Err(e) = signal {
                     Err(e.to_string())
+                } else if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
+                    self.host.reporter.report(ProgramState::Error, Some(&cleanup_err));
+                    Err(cleanup_err)
                 } else {
-                    if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
-                        self.host.reporter.report(ProgramState::Error, Some(&cleanup_err));
-                        return Err(cleanup_err);
-                    }
                     self.host.reporter.cancelled.store(true, Ordering::SeqCst);
                     self.host.reporter.report(ProgramState::Idle, None);
-                    return Err(
+                    Err(
                         "Cancelled; previous session retained. File changes are not rolled back."
                             .into(),
-                    );
+                    )
                 }
             }
         };
+        // AUD-13: 回合结束时保留证据。已执行操作保持 Executed，未记录结果的 intent 标记为 Unknown。
+        let run_state = if cancelled {
+            RunState::Cancelled
+        } else if res.is_ok() {
+            RunState::Completed
+        } else {
+            RunState::Failed
+        };
+        if let Err(error) = self.journal.finish_run(run_state) {
+            eprintln!("Warning: failed to finalize execution evidence: {error}");
+        }
+        if cancelled {
+            // 取消分支已处理清理与状态上报。
+            return res;
+        }
         match res {
             Ok(()) => {
                 self.host.reporter.report(ProgramState::Done, None);
@@ -1716,7 +1935,7 @@ impl Runner {
             let active: Vec<_> = manager
                 .list()
                 .into_iter()
-                .filter(|run| run.status == mio_coding_agent::subagent::Status::Running)
+                .filter(|run| run.status.is_active())
                 .collect();
             if !active.is_empty() {
                 for run in active {
@@ -1759,11 +1978,41 @@ fn rpc_state(runner: &Runner, running: bool, queued: usize) -> serde_json::Value
         "provider": runner.provider_name,
         "thinkingLevel": runner.options.thinking,
         "contextBudget": mio_coding_agent::context_budget::ContextBudget::resolve(&runner.config, &runner.options).ok(),
+        "scheduler": runner.options.scheduler.as_ref().map(|scheduler| scheduler.snapshot()),
+        "childTasks": runner.subagents.as_ref().map(|manager| manager.activity()),
         "messageCount": runner.session.history.len(),
         "isStreaming": running,
         "followUpCount": queued,
         "pendingApprovalCount": runner.host.rpc_approvals.as_ref().map_or(0, |a| a.pending_count()),
+        "journalEnabled": runner.journal.is_enabled(),
+        "journalPath": runner.journal.path(),
+        "recovery": runner.journal.recovery_report(),
     })
+}
+
+/// 打开会话 journal，并将上次进程遗留的 Active 运行标记为 Interrupted。
+fn open_journal(no_session: bool, cwd: &Path, session_id: &str) -> Arc<Journal> {
+    if no_session {
+        return Arc::new(Journal::disabled());
+    }
+    let journal = Arc::new(Journal::open(cwd, session_id));
+    journal.mark_interrupted();
+    journal
+}
+
+/// 以人类可读形式打印恢复证据中的操作列表。
+fn print_recovered_ops(label: &str, operations: &[journal::RecoveredOperation]) {
+    for op in operations {
+        let detail = op
+            .detail
+            .as_deref()
+            .map(|detail| format!(", {detail}"))
+            .unwrap_or_default();
+        println!(
+            "  {label}: {} {} (turn {}, run {}{detail})",
+            op.operation, op.target, op.turn, op.run_id
+        );
+    }
 }
 
 fn rpc_message_valid(message: &str) -> bool {
@@ -1791,7 +2040,7 @@ async fn cancel_children(manager: Option<&Arc<SubagentManager>>) -> Result<(), S
         for run in manager
             .list()
             .into_iter()
-            .filter(|run| run.status == mio_coding_agent::subagent::Status::Running)
+            .filter(|run| run.status.is_active())
         {
             manager.kill(run.run_id).await?;
         }
@@ -1811,13 +2060,15 @@ enum RpcTurnEnd {
 // the shell process guard before cancellation is acknowledged.
 async fn run_rpc_tasks(
     runner: &mut Runner,
-    lines: &mut tokio::io::Lines<BufReader<tokio::io::Stdin>>,
+    lines: &mut RpcInput,
     initial: String,
 ) -> Result<bool, String> {
     let mut follow_ups = VecDeque::new();
     let mut message = initial;
     loop {
         let host = runner.host.clone();
+        let scheduler = runner.options.scheduler.clone();
+        let child_manager = runner.subagents.clone();
         let mut state = rpc_state(runner, true, follow_ups.len());
         let end = {
             let turn = runner.turn(&message);
@@ -1828,6 +2079,10 @@ async fn run_rpc_tasks(
                         let line = match line {
                             Ok(Some(line)) => line,
                             Ok(None) => break RpcTurnEnd::Closed,
+                            Err(LineReadError::TooLong { max_bytes }) => {
+                                println!("{}", json!({"type":"error","error":format!("RPC input line exceeds {max_bytes} bytes; line discarded")}));
+                                continue;
+                            }
                             Err(error) => break RpcTurnEnd::InputError(error.to_string()),
                         };
                         let Some(command) = rpc_parse(&line) else { continue };
@@ -1854,6 +2109,8 @@ async fn run_rpc_tasks(
                                 state["followUpCount"] = json!(follow_ups.len());
                                 state["steeringCount"] = json!(host.steering_queue.lock().unwrap().len());
                                 state["pendingApprovalCount"] = json!(host.rpc_approvals.as_ref().map_or(0, |a| a.pending_count()));
+                                state["scheduler"] = scheduler.as_ref().map_or(Value::Null, |scheduler| scheduler.snapshot());
+                                state["childTasks"] = child_manager.as_ref().map_or(Value::Null, |manager| json!(manager.activity()));
                                 println!("{}", rpc_response("get_state", id.as_deref(), true, state.clone()));
                             }
                             RpcCommand::ApproveResponse { request_id, approved } => {
@@ -1891,6 +2148,15 @@ async fn run_rpc_tasks(
                 host.steering_queue.lock().unwrap().clear();
                 follow_ups.clear();
                 cancel_children(runner.subagents.as_ref()).await?;
+                // Abort/EOF drop Runner::turn before its normal finalizer runs.
+                // Persist the terminal state here; pending effects remain unknown.
+                let terminal_state = match &other {
+                    RpcTurnEnd::Abort(_) | RpcTurnEnd::Closed => RunState::Cancelled,
+                    _ => RunState::Failed,
+                };
+                if let Err(error) = runner.journal.finish_run(terminal_state) {
+                    eprintln!("Warning: failed to finalize execution evidence: {error}");
+                }
                 match other {
                     RpcTurnEnd::Abort(id) => {
                         host.reporter.cancelled.store(true, Ordering::SeqCst);
@@ -1917,8 +2183,20 @@ async fn run_rpc_tasks(
 }
 
 async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Result<(), String> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    let mut lines = RpcInput::new();
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(LineReadError::TooLong { max_bytes }) => {
+                println!(
+                    "{}",
+                    json!({"type":"error","error":format!("RPC input line exceeds {max_bytes} bytes; line discarded")})
+                );
+                continue;
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let Some(cmd) = rpc_parse(&line) else {
             continue;
         };
@@ -2330,6 +2608,84 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     } else {
         None
     };
+    if args.recovery {
+        if args.no_session {
+            return Err(
+                "--recovery is unavailable with --no-session because no evidence is persisted"
+                    .into(),
+            );
+        }
+        let mut reports: Vec<(String, Option<RecoveryReport>)> = Vec::new();
+        if let Some(path) = &selected {
+            let session = Session::load(path)?;
+            let id = session.id.to_string();
+            reports.push((
+                id.clone(),
+                Journal::open(&session.cwd, &id).recovery_report(),
+            ));
+        } else {
+            // 默认遍历工作区全部 journal，覆盖会话文件从未保存的中断运行。
+            let journal_dir = cwd.join(journal::JOURNAL_DIR);
+            if journal_dir.is_dir() {
+                for entry in std::fs::read_dir(&journal_dir).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Some(stem) = entry
+                        .path()
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_owned)
+                    else {
+                        continue;
+                    };
+                    let report = Journal::open(&cwd, &stem).recovery_report();
+                    reports.push((stem, report));
+                }
+                reports.sort_by(|a, b| a.0.cmp(&b.0));
+            } else if let Some(latest) = session_list(&directory)?.first() {
+                let session = Session::load(&latest.file_path)?;
+                let id = session.id.to_string();
+                reports.push((
+                    id.clone(),
+                    Journal::open(&session.cwd, &id).recovery_report(),
+                ));
+            }
+            if reports.is_empty() {
+                return Err("No persisted execution evidence in this workspace".into());
+            }
+        }
+        for (session_id, report) in reports {
+            if args.json {
+                println!(
+                    "{}",
+                    json!({"type": "recovery", "session": session_id, "data": report})
+                );
+                continue;
+            }
+            println!("Session: {session_id}");
+            match report {
+                Some(report) => {
+                    if let Some(error) = &report.journal_error {
+                        eprintln!("Journal warning: {error}");
+                    }
+                    println!("Interrupted runs: {}", report.interrupted_runs);
+                    println!("Executed operations: {}", report.executed_operations);
+                    print_recovered_ops("Executed", &report.executed);
+                    print_recovered_ops("Unknown result", &report.unknown_operations);
+                    print_recovered_ops("Failed", &report.failed_operations);
+                    if report.has_unfinished() {
+                        println!(
+                            "Mio will not replay these operations; file changes are not rolled back."
+                        );
+                    }
+                }
+                None => println!("No persisted execution evidence for this session"),
+            }
+        }
+        return Ok(());
+    }
     if let Some(export_path) = &args.export {
         let target_session_path = match selected {
             Some(p) => p,
@@ -2443,7 +2799,7 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         resolve_provider_endpoint(provider_str, explicit_base)?;
     let antigravity = if provider == Provider::Antigravity {
         Some(mio_coding_agent::antigravity::Antigravity::from_profile(
-            profile_directory,
+            profile_directory.clone(),
         )?)
     } else {
         None
@@ -2456,7 +2812,29 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         base_url: resolved_base,
         api_key: resolved_key,
     };
+    let shared_directory = if args.no_shared_limits {
+        None
+    } else {
+        Some(match &args.shared_limits_dir {
+            Some(path) if path.is_absolute() => path.clone(),
+            Some(path) => cwd.join(path),
+            None => profile_directory.join("coordination"),
+        })
+    };
+    let scheduler = Arc::new(mio_coding_agent::scheduling::Scheduler::new(
+        mio_coding_agent::coordinator::Limits {
+            agent: args.max_subagents.unwrap_or(4),
+            model: args.max_model_concurrency.unwrap_or(2),
+            provider_model: args.max_provider_concurrency.unwrap_or(2),
+            heavy: args.max_heavy_tasks.unwrap_or(2),
+            max_model_calls: args.max_model_calls,
+            max_total_tokens: args.max_total_tokens,
+            ..Default::default()
+        },
+        shared_directory.as_deref(),
+    )?);
     let options = RunOptions {
+        scheduler: Some(scheduler),
         instructions,
         context_window: args.context_window,
         max_output_tokens: args.max_output_tokens,
@@ -2472,7 +2850,7 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     mio_coding_agent::validate_model_thinking(&config, options.thinking)?;
     mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
     let subagents = if args.subagents {
-        Some(Arc::new(if let Some(account) = &antigravity {
+        let manager = if let Some(account) = &antigravity {
             SubagentManager::new_with_antigravity(
                 &cwd,
                 config.clone(),
@@ -2481,7 +2859,10 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             )?
         } else {
             SubagentManager::new(&cwd, config.clone(), options.clone())?
-        }))
+        };
+        Some(Arc::new(
+            manager.with_concurrency(args.max_subagents.unwrap_or(4))?,
+        ))
     } else {
         None
     };
@@ -2498,6 +2879,8 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     } else {
         None
     };
+    // AUD-13: no-session 模式下 journal 完全禁用，不产生任何磁盘写入。
+    let journal = open_journal(args.no_session, &session.cwd, &session.id.to_string());
     let mut runner = Runner {
         connections: BTreeMap::from([(provider_name.clone(), config.clone())]),
         provider_name,
@@ -2512,13 +2895,32 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             json: args.json,
             no_shell: args.no_shell,
             approve: args.approve,
+            trust_project_mcp: args.trust_project_mcp,
+            approved_project_mcp: Arc::new(Mutex::new(BTreeSet::new())),
             reporter: reporter.clone(),
             steering_queue: Mutex::new(VecDeque::new()),
             rpc_approvals,
+            journal: journal.clone(),
         }),
         session,
         path,
+        journal,
     };
+    // 恢复时的未完成运行提示 / RPC 事件。不重放操作，也不声称文件已回滚。
+    if let Some(report) = runner.journal.recovery_report()
+        && (report.has_unfinished() || report.journal_error.is_some())
+    {
+        if args.json {
+            println!("{}", json!({"type": "recovery", "data": report}));
+        } else {
+            if let Some(error) = &report.journal_error {
+                eprintln!("Warning: {error}");
+            }
+            if report.has_unfinished() {
+                eprintln!("Warning: {}", report.summary_line());
+            }
+        }
+    }
     let render = |prompt: &str| -> Result<String, String> {
         if let Some(name) = &args.template {
             context
@@ -3084,5 +3486,101 @@ mod tests {
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("rejected"));
         assert!(res1.is_ok());
+    }
+
+    fn test_host(
+        root: &Path,
+        session_id: &str,
+        no_session: bool,
+        trust_project_mcp: bool,
+    ) -> Arc<CliHost> {
+        Arc::new(CliHost {
+            json: true,
+            no_shell: false,
+            approve: false,
+            trust_project_mcp,
+            approved_project_mcp: Arc::new(Mutex::new(BTreeSet::new())),
+            reporter: Arc::new(StatusReporter::new(false)),
+            steering_queue: Mutex::new(VecDeque::new()),
+            rpc_approvals: None,
+            journal: open_journal(no_session, root, session_id),
+        })
+    }
+
+    #[tokio::test]
+    async fn journal_records_executed_and_unknown_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), "s1", false, false);
+        host.journal.begin_run().unwrap();
+        host.approve_tool_async("write", "a.txt").await.unwrap();
+        host.on_event(AgentEvent::ToolFinished {
+            operation: "write".into(),
+            target: "a.txt".into(),
+            result: Ok("ok".into()),
+        });
+        // 取消时尚未返回结果的操作必须保留为 unknown。
+        host.approve_tool_async("bash", "sleep 99").await.unwrap();
+        host.journal.finish_run(RunState::Cancelled).unwrap();
+
+        let reloaded = Journal::open(dir.path(), "s1");
+        let report = reloaded.recovery_report().unwrap();
+        assert_eq!(report.executed_operations, 1);
+        assert_eq!(report.unknown_operations.len(), 1);
+        assert_eq!(report.unknown_operations[0].operation, "bash");
+        assert!(report.has_unfinished());
+    }
+
+    #[tokio::test]
+    async fn journal_write_failure_blocks_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".mio")).unwrap();
+        std::fs::write(dir.path().join(".mio/journal"), "not a directory").unwrap();
+        let host = test_host(dir.path(), "s2", false, false);
+        let _ = host.journal.begin_run();
+        let err = host.approve_tool_async("write", "a.txt").await.unwrap_err();
+        assert!(
+            err.contains("Execution journal unavailable"),
+            "unexpected error: {err}"
+        );
+        // 证据持久化失败必须被报告，而不是静默通过。
+        assert!(
+            host.journal
+                .recovery_report()
+                .unwrap()
+                .journal_error
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn no_session_journal_is_disabled_and_creates_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = open_journal(true, dir.path(), "s3");
+        assert!(!journal.is_enabled());
+        assert!(journal.path().is_none());
+        assert!(journal.begin_run().is_ok());
+        assert!(journal.record_intent("write", "a.txt").is_ok());
+        assert!(journal.finish_run(RunState::Completed).is_ok());
+        assert!(journal.recovery_report().is_none());
+        assert!(!dir.path().join(".mio").exists());
+    }
+
+    #[tokio::test]
+    async fn project_mcp_start_requires_explicit_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), "s4", false, false);
+        let err = host
+            .approve_tool_async(PROJECT_MCP_APPROVAL_OP, "server=proj; command=sh")
+            .await
+            .unwrap_err();
+        assert!(err.contains("requires authorization"), "unexpected: {err}");
+
+        let trusted = test_host(dir.path(), "s5", false, true);
+        assert!(
+            trusted
+                .approve_tool_async(PROJECT_MCP_APPROVAL_OP, "server=proj; command=sh")
+                .await
+                .is_ok()
+        );
     }
 }

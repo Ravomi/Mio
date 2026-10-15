@@ -41,6 +41,7 @@ jobs:
         run: |
           python3 tests/osc7501.py
           python3 tests/cli_cancellation.py
+          python3 -B tests/agent_eval_harness.py
       - name: Website and installation fixtures
         run: |
           python3 scripts/check-site.py

@@ -1,0 +1,12 @@
+{
+  "id": "csv-reader",
+  "task_set": "mio-python-acceptance-v1",
+  "task_set_version": 1,
+  "title": "CSV records with quoting rules",
+  "language": "python",
+  "covers": ["quoted commas", "escaped quotes", "CRLF", "multiline fields", "validation"],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 10
+}

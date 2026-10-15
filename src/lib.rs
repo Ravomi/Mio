@@ -8,6 +8,7 @@ pub mod antigravity;
 pub mod compact;
 pub mod context;
 pub mod context_budget;
+pub mod coordinator;
 pub mod deepseek;
 pub mod deepseek_pow;
 pub mod delegation;
@@ -18,7 +19,9 @@ pub mod profile;
 pub mod program_status;
 pub use program_status::{BlockedKind, ProgramState, format_osc7501};
 pub mod rpc;
+pub mod scheduling;
 pub mod session;
+pub mod shared_limits;
 pub mod shell;
 pub mod subagent;
 #[cfg(test)]
@@ -36,15 +39,353 @@ use mio_agent::{AgentBuilder, agent::MultiTurnStreamItem};
 pub use mio_core::message::Message;
 use mio_core::{
     DynModel,
+    completion::{FinishReason, Usage},
     operation::Completion,
     providers::openai::{OpenAIConfig, wire::Route},
     streaming::{Item, StreamEvent},
 };
 use serde::{Deserialize, Serialize};
 use std::{future::Future, path::Path, pin::Pin, str::FromStr, sync::Arc};
+use uuid::Uuid;
 
 /// 异步 Shell 任务的 Boxed Future。
 pub type HostFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// Sanitized observation of one completed completion request.
+///
+/// It carries what the provider *reported*: an unreported counter stays
+/// `None` (never fabricated as zero). The provider's raw reply, request body,
+/// headers and credentials are never part of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionCallObservation {
+    /// UUID of the agent run that made the call.
+    pub run_id: Uuid,
+    /// Zero-based index of the request within the run.
+    pub call_index: usize,
+    /// Token usage as reported; every unreported counter is `None`.
+    pub usage: Usage,
+    /// Provider-assigned response-scoped id, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    /// Transport request id, when the provider reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    /// Why the call stopped generating, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
+    /// Subagent session that owns the run; `None` for the main run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// Stable, sanitized category of a failed run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticCategory {
+    /// Transport failure with no provider reply, or a timeout status.
+    Network,
+    /// Rejected credentials (HTTP 401/403).
+    Authentication,
+    /// Throttling or quota exhaustion (HTTP 429).
+    RateLimit,
+    /// Provider-side failure (HTTP 5xx).
+    Service,
+    /// Rejected or unsupported request.
+    Request,
+    /// Unparseable or incomplete reply.
+    Response,
+    /// Provider-reported failure without a classifiable status.
+    Provider,
+    /// The model called a tool this run does not expose.
+    ToolCall,
+    /// The context budget cannot hold the request.
+    ContextBudget,
+    /// The run exhausted its model-call budget.
+    MaxTurns,
+    /// Admission, shared quota, or aggregate budget refused the operation.
+    Scheduling,
+    /// The run was cancelled.
+    Cancelled,
+    /// Conversation memory failed.
+    Memory,
+    /// Internal invariant failure.
+    Internal,
+}
+
+/// Sanitized diagnosis of a failed run.
+///
+/// The message is either a fixed human-readable sentence or a local
+/// configuration reason (an unsupported option or a context-budget refusal).
+/// It never carries a provider body, URL, response headers, source chain,
+/// request id or credential.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunDiagnostic {
+    /// UUID of the agent run that failed.
+    pub run_id: Uuid,
+    /// Stable failure category.
+    pub category: DiagnosticCategory,
+    /// Safe human-readable summary.
+    pub message: String,
+    /// Whether the same request may reasonably be retried.
+    pub retryable: bool,
+    /// The HTTP status, when the failure carried a non-2xx one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// Subagent session that owns the run; `None` for the main run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// The safe human-readable summary for `category`.
+fn diagnostic_message(category: DiagnosticCategory) -> &'static str {
+    match category {
+        DiagnosticCategory::Network => "网络连接失败或中断",
+        DiagnosticCategory::Authentication => "身份验证失败，请检查 API 密钥",
+        DiagnosticCategory::RateLimit => "请求过于频繁或超出配额",
+        DiagnosticCategory::Service => "模型服务暂时不可用",
+        DiagnosticCategory::Request => "请求被拒绝或参数不受支持",
+        DiagnosticCategory::Response => "模型响应无法解析或不完整",
+        DiagnosticCategory::Provider => "供应商报告了错误",
+        DiagnosticCategory::ToolCall => "模型调用了当前不可用的工具",
+        DiagnosticCategory::ContextBudget => "上下文预算不足，无法容纳本次请求",
+        DiagnosticCategory::MaxTurns => "已达到最大模型调用轮次",
+        DiagnosticCategory::Scheduling => "调度或共享预算限制阻止本次操作",
+        DiagnosticCategory::Cancelled => "运行已取消",
+        DiagnosticCategory::Memory => "会话记忆读写失败",
+        DiagnosticCategory::Internal => "内部错误",
+    }
+}
+
+/// Classify a non-2xx HTTP status.
+fn status_category(status: u16) -> DiagnosticCategory {
+    match status {
+        401 | 403 => DiagnosticCategory::Authentication,
+        408 | 425 => DiagnosticCategory::Network,
+        429 => DiagnosticCategory::RateLimit,
+        500..=599 => DiagnosticCategory::Service,
+        _ => DiagnosticCategory::Request,
+    }
+}
+
+/// Classify a protocol error with no usable status.
+fn kind_category(kind: mio_core::error::ErrorKind) -> DiagnosticCategory {
+    use mio_core::error::ErrorKind;
+    match kind {
+        ErrorKind::Http | ErrorKind::Timeout => DiagnosticCategory::Network,
+        ErrorKind::Json | ErrorKind::Response => DiagnosticCategory::Response,
+        ErrorKind::Url | ErrorKind::Request => DiagnosticCategory::Request,
+        ErrorKind::Provider | ErrorKind::ProviderResponse => DiagnosticCategory::Provider,
+        ErrorKind::MemoryBackend | ErrorKind::MemoryPolicy => DiagnosticCategory::Memory,
+        ErrorKind::Cancelled => DiagnosticCategory::Cancelled,
+        ErrorKind::Internal => DiagnosticCategory::Internal,
+        _ => DiagnosticCategory::Provider,
+    }
+}
+
+/// Classify a provider failure without reading its body, URL or source chain.
+fn provider_error_diagnostic(
+    run_id: Uuid,
+    error: &mio_core::error::ProviderError,
+) -> RunDiagnostic {
+    let http_status = error
+        .provider_response_status()
+        .map(|status| status.as_u16())
+        .filter(|status| !(200..=299).contains(status));
+    let category = match http_status {
+        Some(status) => status_category(status),
+        None => kind_category(error.kind()),
+    };
+    RunDiagnostic {
+        run_id,
+        category,
+        message: diagnostic_message(category).to_owned(),
+        retryable: error.is_retryable(),
+        http_status,
+        agent: None,
+    }
+}
+
+/// Recover only allowlisted option names and known effort labels from an
+/// erased request error. A Request classification alone does not make its
+/// message safe: invalid headers, for example, can contain credentials.
+fn safe_report_message(report: &mio_core::error::ErrorReport) -> Option<String> {
+    if report.kind != mio_core::error::ErrorKind::Request
+        || report.provider_response.is_some()
+        || report.http_status.is_some()
+    {
+        return None;
+    }
+    for option in [
+        "reasoning",
+        "cache",
+        "service_tier",
+        "verbosity",
+        "parallel_tool_calls",
+        "seed",
+        "stop",
+        "temperature",
+        "max_tokens",
+        "tools",
+    ] {
+        if report
+            .message
+            .starts_with(&format!("RequestError: `{option}` is not supported by "))
+        {
+            if option == "reasoning" {
+                for level in ["xhigh", "minimal", "max", "medium", "high", "low", "off"] {
+                    if report
+                        .message
+                        .contains(&format!("no `{level}` thinking level"))
+                    {
+                        return Some(format!("模型不支持思考等级 {level}"));
+                    }
+                }
+            }
+            return Some(format!("模型不支持参数 `{option}`"));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod request_diagnostic_privacy_tests {
+    use super::*;
+    #[test]
+    fn request_classification_does_not_authorize_copying_messages() {
+        let report = mio_core::error::ErrorReport::new(
+            mio_core::error::ErrorKind::Request,
+            "invalid authorization header: Bearer PRIVATE-CREDENTIAL",
+        );
+        assert!(safe_report_message(&report).is_none());
+        let report = mio_core::error::ErrorReport::new(
+            mio_core::error::ErrorKind::Request,
+            "RequestError: `reasoning` is not supported by private-provider model `private-model`: Ollama has no `xhigh` thinking level; PRIVATE-CREDENTIAL",
+        );
+        assert_eq!(
+            safe_report_message(&report).as_deref(),
+            Some("模型不支持思考等级 xhigh")
+        );
+    }
+}
+
+/// Classify a run failure. Only local reasons (unsupported option, context
+/// budget) are copied into the message; provider internals are not.
+fn classify_run_error(run_id: Uuid, error: &mio_agent::run::PromptError) -> RunDiagnostic {
+    use mio_agent::run::PromptError;
+    match error {
+        PromptError::Provider(mio_core::error::ProviderError::UnsupportedOption(option)) => {
+            RunDiagnostic {
+                run_id,
+                category: DiagnosticCategory::Request,
+                message: option.to_string(),
+                retryable: false,
+                http_status: None,
+                agent: None,
+            }
+        }
+        PromptError::Provider(provider) => provider_error_diagnostic(run_id, provider),
+        PromptError::Report(report) => {
+            let http_status = report
+                .http_status
+                .filter(|status| !(200..=299).contains(status));
+            let category = match http_status {
+                Some(status) => status_category(status),
+                None => kind_category(report.kind),
+            };
+            let message = safe_report_message(report)
+                .unwrap_or_else(|| diagnostic_message(category).to_owned());
+            RunDiagnostic {
+                run_id,
+                category,
+                message,
+                retryable: report.retryable,
+                http_status,
+                agent: None,
+            }
+        }
+        PromptError::Cancelled { reason, .. } if reason.starts_with("Context budget:") => {
+            RunDiagnostic {
+                run_id,
+                category: DiagnosticCategory::ContextBudget,
+                message: reason.clone(),
+                retryable: false,
+                http_status: None,
+                agent: None,
+            }
+        }
+        PromptError::Cancelled { reason, .. } if reason.starts_with("Scheduling:") => {
+            RunDiagnostic {
+                run_id,
+                category: DiagnosticCategory::Scheduling,
+                message: reason.clone(),
+                retryable: false,
+                http_status: None,
+                agent: None,
+            }
+        }
+        PromptError::Cancelled { .. } => RunDiagnostic {
+            run_id,
+            category: DiagnosticCategory::Cancelled,
+            message: diagnostic_message(DiagnosticCategory::Cancelled).to_owned(),
+            retryable: false,
+            http_status: None,
+            agent: None,
+        },
+        PromptError::MaxTurns { .. } => RunDiagnostic {
+            run_id,
+            category: DiagnosticCategory::MaxTurns,
+            message: diagnostic_message(DiagnosticCategory::MaxTurns).to_owned(),
+            retryable: false,
+            http_status: None,
+            agent: None,
+        },
+        PromptError::Memory(_) => RunDiagnostic {
+            run_id,
+            category: DiagnosticCategory::Memory,
+            message: diagnostic_message(DiagnosticCategory::Memory).to_owned(),
+            retryable: false,
+            http_status: None,
+            agent: None,
+        },
+        PromptError::UnknownToolCall { .. } => RunDiagnostic {
+            run_id,
+            category: DiagnosticCategory::ToolCall,
+            message: diagnostic_message(DiagnosticCategory::ToolCall).to_owned(),
+            retryable: false,
+            http_status: None,
+            agent: None,
+        },
+        _ => RunDiagnostic {
+            run_id,
+            category: DiagnosticCategory::Internal,
+            message: diagnostic_message(DiagnosticCategory::Internal).to_owned(),
+            retryable: false,
+            http_status: None,
+            agent: None,
+        },
+    }
+}
+
+/// The public `Result<String>` message, kept unchanged for host compatibility.
+fn public_run_error(error: &mio_agent::run::PromptError) -> String {
+    use mio_agent::run::PromptError;
+    match error {
+        PromptError::Provider(mio_core::error::ProviderError::UnsupportedOption(option)) => {
+            option.to_string()
+        }
+        PromptError::Cancelled { reason, .. } if reason.starts_with("Context budget:") => {
+            reason.clone()
+        }
+        PromptError::Cancelled { reason, .. } if reason.starts_with("Scheduling:") => {
+            reason.clone()
+        }
+        PromptError::Report(report) => safe_report_message(report)
+            .unwrap_or_else(|| "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string()),
+        _ => "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string(),
+    }
+}
 
 /// 宿主环境接口：负责命令执行及事件通知，生命周期由 Arc 持有。
 ///
@@ -74,6 +415,28 @@ pub trait Host: Send + Sync {
         let result = self.approve_tool(operation, target);
         Box::pin(async move { result })
     }
+
+    /// Observe one completed completion request with sanitized metadata.
+    ///
+    /// The observation carries only reported usage, call identity and finish
+    /// reason plus this run's UUID. It never carries the provider's raw reply,
+    /// request body, headers or credentials. The default is a no-op, so an
+    /// existing host keeps compiling and behaving unchanged.
+    fn on_completion_call(&self, _call: &CompletionCallObservation) {}
+
+    /// Observe a classified run failure.
+    ///
+    /// The diagnostic carries a stable category, a bounded human-readable
+    /// message, a retryability hint and an optional HTTP status. It never
+    /// carries the provider body, request URL, response headers, source chain
+    /// or credentials. The default is a no-op, so an existing host keeps
+    /// compiling and behaving unchanged.
+    fn on_diagnostic(&self, _diagnostic: &RunDiagnostic) {}
+
+    /// Observe a tool's actual outcome without forwarding a child's display
+    /// events into the parent conversation. Durable hosts can record execution
+    /// evidence here; this is not a test verdict or a rollback guarantee.
+    fn on_tool_result(&self, _operation: &str, _target: &str, _result: &Result<String, String>) {}
 }
 
 /// Agent 执行过程中发出的结构化事件。
@@ -100,6 +463,12 @@ pub enum Provider {
     Custom,
     Codex,
     Deepseek,
+    /// Anthropic's native Messages protocol (`/v1/messages`).
+    Anthropic,
+    /// Google Gemini's native GenerateContent protocol.
+    Google,
+    /// An Ollama daemon's native chat protocol (`/api/chat`).
+    Ollama,
     Antigravity,
     DeepseekWeb,
 }
@@ -209,9 +578,16 @@ pub fn validate_model_thinking(
     let (_, model, inline) = parse_model_spec(&config.model);
     let thinking = thinking.or(inline);
     validate_thinking(config.provider, thinking)?;
-    if matches!(config.provider, Provider::Custom | Provider::Codex)
+    let vendor = match config.provider {
+        Provider::Custom | Provider::Codex => "openai",
+        Provider::Anthropic => "anthropic",
+        Provider::Google => "gcp.gemini",
+        Provider::Ollama => "ollama",
+        _ => "",
+    };
+    if !vendor.is_empty()
         && let Some(thinking) = thinking
-        && let Some(id) = mio_core::providers::registry::ProviderId::catalog("openai")
+        && let Some(id) = mio_core::providers::registry::ProviderId::catalog(vendor)
         && let Some(spec) = mio_core::catalog::Catalog::builtin().find(id, &model)
     {
         spec.validate(
@@ -220,6 +596,30 @@ pub fn validate_model_thinking(
         .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// A native provider's API root, stripped of the suffixes a pasted
+/// OpenAI-compatible URL carries (Gemini's `/v1beta/openai`, Ollama's `/v1`).
+/// Anthropic's own normalization lives in `AnthropicConfig::with_base_url`.
+fn native_base_url(provider: Provider, base_url: &str) -> String {
+    let mut base = base_url.trim().trim_end_matches('/').to_owned();
+    let suffixes: &[&str] = match provider {
+        Provider::Google => &["/v1beta/openai", "/v1beta", "/openai"],
+        Provider::Ollama => &["/v1"],
+        _ => &[],
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for suffix in suffixes {
+            if let Some(stripped) = base.strip_suffix(suffix) {
+                base = stripped.trim_end_matches('/').to_owned();
+                changed = true;
+                break;
+            }
+        }
+    }
+    base
 }
 
 /// Parse `[provider/]model[:thinking]` shorthand into `(provider, model, thinking)`.
@@ -291,6 +691,9 @@ pub struct Services<'a> {
 /// Loading project files is explicit through `context::ProjectContext`.
 #[derive(Clone, Debug)]
 pub struct RunOptions {
+    /// Optional shared admission and aggregate budgets. CLI runs enable this;
+    /// embedding hosts may reuse one Scheduler across independent sessions.
+    pub scheduler: Option<Arc<scheduling::Scheduler>>,
     pub instructions: String,
     pub max_turns: usize,
     pub thinking: Option<ThinkingLevel>,
@@ -306,6 +709,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
+            scheduler: None,
             instructions: String::new(),
             max_turns: 32,
             thinking: None,
@@ -409,6 +813,11 @@ pub async fn run_with_tools(
     if !canonical_cwd.is_dir() {
         return Err("工作目录不是文件夹".into());
     }
+    let run_id = Uuid::new_v4();
+    let scheduling_hook = options
+        .scheduler
+        .as_ref()
+        .map(|scheduler| scheduling::SchedulingHook::new(scheduler.clone(), &config));
 
     let model: DynModel<Completion> = match config.provider {
         Provider::Antigravity => services
@@ -431,6 +840,25 @@ pub async fn run_with_tools(
             .codex()
             .await?
             .completion(clean_model)
+            .into(),
+        // Native Messages protocol; a compatible gateway uses `custom`.
+        Provider::Anthropic => mio_core::providers::anthropic::AnthropicConfig::new(config.api_key)
+            .with_base_url(config.base_url)
+            .client()
+            .completion(clean_model)
+            .into(),
+        // Native GenerateContent protocol.
+        Provider::Google => mio_core::providers::gemini::GeminiConfig::new(config.api_key)
+            .with_base_url(native_base_url(Provider::Google, &config.base_url))
+            .client()
+            .completion(clean_model)
+            .into(),
+        // Native `/api/chat` protocol; an OpenAI-compatible daemon uses `custom`.
+        Provider::Ollama => mio_core::providers::ollama::OllamaConfig::new()
+            .with_base_url(native_base_url(Provider::Ollama, &config.base_url))
+            .with_api_key(config.api_key)
+            .client()
+            .native_completion(clean_model)
             .into(),
         Provider::Custom | Provider::Deepseek => {
             let client_config = if config.provider == Provider::Deepseek {
@@ -458,6 +886,10 @@ pub async fn run_with_tools(
     }
     .with_tool_filter(tools.tool_filter.clone());
     workspace_tool.subagents = tools.subagents.clone();
+    workspace_tool.shared_limits = options
+        .scheduler
+        .as_ref()
+        .and_then(|scheduler| scheduler.shared.clone());
 
     let preamble = format!(
         "你叫 Mio，是编程助手。使用中文简洁回答。工具在用户选择的工作目录执行。先查看文件再修改，保留用户改动，不声称未执行的测试通过。命令工具不是交互式 shell，避免需要输入的命令。\n{}",
@@ -530,32 +962,47 @@ pub async fn run_with_tools(
 
     // Rig's FinalResponse contains only this run's new messages, not input history.
     let mut complete_history = history.clone();
-    let mut stream = agent
+    let mut request = agent
         .prompt(prompt)
         .history(history)
         .max_turns(options.max_turns)
-        .add_hook(budget_hook)
-        .stream();
+        .add_hook(budget_hook);
+    if let Some(hook) = &scheduling_hook {
+        request = request.add_hook(hook.clone());
+    }
+    let mut stream = request.stream();
 
     let mut final_history = None;
 
     while let Some(item) = stream.next().await {
-        match item.map_err(|err| match err {
-            mio_agent::run::PromptError::Provider(
-                mio_core::error::ProviderError::UnsupportedOption(option),
-            ) => option.to_string(),
-            mio_agent::run::PromptError::Cancelled { reason, .. }
-                if reason.starts_with("Context budget:") =>
-            {
-                reason
+        let item = match item {
+            Ok(item) => item,
+            Err(error) => {
+                let scheduling_error = match &scheduling_hook {
+                    Some(hook) => hook.failed(&error).await.err(),
+                    None => None,
+                };
+                host.on_diagnostic(&classify_run_error(run_id, &error));
+                return Err(scheduling_error.unwrap_or_else(|| public_run_error(&error)));
             }
-            _ => "模型请求失败，请检查地址、模型、密钥和服务端状态。".to_string(),
-        })? {
+        };
+        match item {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
                 text,
                 ..
             })) => {
                 host.on_event(AgentEvent::Text(text));
+            }
+            MultiTurnStreamItem::CompletionCall(call) => {
+                host.on_completion_call(&CompletionCallObservation {
+                    run_id,
+                    call_index: call.call_index,
+                    usage: call.usage,
+                    response_id: call.response_id,
+                    provider_request_id: call.provider_request_id,
+                    finish_reason: call.finish_reason,
+                    agent: None,
+                });
             }
             MultiTurnStreamItem::FinalResponse(response) => {
                 complete_history.extend(response.messages);

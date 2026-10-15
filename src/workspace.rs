@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -41,6 +41,8 @@ pub struct Workspace {
     pub(crate) read_only: bool,
     pub(crate) subagents: Option<Arc<crate::subagent::SubagentManager>>,
     pub(crate) tool_filter: crate::pattern::ToolFilter,
+    pub(crate) shared_limits: Option<crate::shared_limits::SharedLimits>,
+    access: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl Workspace {
@@ -59,6 +61,8 @@ impl Workspace {
             read_only: false,
             subagents: None,
             tool_filter: crate::pattern::ToolFilter::all(),
+            shared_limits: None,
+            access: Arc::new(tokio::sync::RwLock::new(())),
         })
     }
 
@@ -90,29 +94,66 @@ impl Workspace {
     pub async fn execute(&self, args: Arguments) -> Result<String, String> {
         let op = args.operation.as_str();
         let is_write = matches!(op, "write" | "edit" | "shell" | "bash");
-        let _lease = self
-            .subagents
-            .as_ref()
-            .map(|manager| manager.parent_operation(is_write))
-            .transpose()?;
         if !self.tool_filter.allows_workspace_operation(op) {
             return Err(format!("工具过滤策略禁止执行 '{op}' 操作"));
         }
         if self.read_only && is_write {
             return Err(format!("只读工作区禁止执行 '{op}' 操作"));
         }
+        let shared = match &self.shared_limits {
+            Some(shared) => Some(
+                shared
+                    .acquire_workspace(&self.cwd, is_write)
+                    .await
+                    .map_err(|error| format!("Workspace admission: {error}"))?,
+            ),
+            None => None,
+        };
+        // Independent Workspace instances (including a cancelled child whose
+        // blocking worker is still running) must share overlapping path leases.
+        let global = workspace_admission()
+            .acquire_task(crate::coordinator::TaskRequest {
+                dedup_key: None,
+                path: workspace_scope(&self.cwd),
+                write: is_write,
+            })
+            .await
+            .map_err(|error| format!("Workspace admission: {error}"))?;
+        let access = if is_write {
+            WorkspaceAccess::Write {
+                _guard: self.access.clone().write_owned().await,
+            }
+        } else {
+            WorkspaceAccess::Read {
+                _guard: self.access.clone().read_owned().await,
+            }
+        };
+        let parent = self
+            .subagents
+            .as_ref()
+            .map(|manager| manager.parent_operation(is_write))
+            .transpose()?;
+        let lease = WorkspaceLease {
+            _parent: parent,
+            _access: access,
+            _global: Some(global),
+            _shared: shared,
+        };
         if is_write {
             self.host.approve_tool_async(op, &args.target()).await?;
         }
 
         let mut output = match op {
-            "read" => self.execute_read(args).await?,
-            "write" => self.execute_write(args).await?,
-            "edit" => self.execute_edit(args).await?,
-            "grep" => self.execute_grep(args).await?,
-            "find" => self.execute_find(args).await?,
-            "ls" => self.execute_ls(args).await?,
-            "shell" | "bash" => self.execute_shell(args).await?,
+            "read" => self.execute_read(args, lease).await?,
+            "write" => self.execute_write(args, lease).await?,
+            "edit" => self.execute_edit(args, lease).await?,
+            "grep" => self.execute_grep(args, lease).await?,
+            "find" => self.execute_find(args, lease).await?,
+            "ls" => self.execute_ls(args, lease).await?,
+            "shell" | "bash" => {
+                let _lease = lease;
+                self.execute_shell(args).await?
+            }
             _ => return Err("未知工具操作".into()),
         };
 
@@ -127,7 +168,7 @@ impl Workspace {
         Ok(output)
     }
 
-    async fn execute_read(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_read(&self, args: Arguments, lease: WorkspaceLease) -> Result<String, String> {
         let path_str = args.path.ok_or("read 操作缺少 path 参数")?;
         let cwd = self.cwd.clone();
 
@@ -141,7 +182,7 @@ impl Workspace {
         let offset = args.offset.unwrap_or(1);
         let limit = args.limit;
 
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let path = checked_path(&cwd, &path_str, false)?;
             let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.file_type().is_symlink() {
@@ -233,7 +274,11 @@ impl Workspace {
         .map_err(|e| e.to_string())?
     }
 
-    async fn execute_write(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_write(
+        &self,
+        args: Arguments,
+        lease: WorkspaceLease,
+    ) -> Result<String, String> {
         let path_str = args.path.ok_or("write 操作缺少 path 参数")?;
         let value = args
             .value
@@ -244,7 +289,7 @@ impl Workspace {
         }
 
         let cwd = self.cwd.clone();
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let path = checked_path(&cwd, &path_str, true)?;
             if let Ok(meta) = std::fs::symlink_metadata(&path)
                 && meta.file_type().is_symlink()
@@ -275,7 +320,7 @@ impl Workspace {
         .map_err(|e| e.to_string())?
     }
 
-    async fn execute_edit(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_edit(&self, args: Arguments, lease: WorkspaceLease) -> Result<String, String> {
         let path_str = args.path.ok_or("edit 操作缺少 path 参数")?;
         let old_text = args.old_text.ok_or("edit 操作缺少 old_text 参数")?;
         let new_text = args.new_text.ok_or("edit 操作缺少 new_text 参数")?;
@@ -288,7 +333,7 @@ impl Workspace {
         }
 
         let cwd = self.cwd.clone();
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let path = checked_path(&cwd, &path_str, false)?;
             let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.file_type().is_symlink() {
@@ -369,6 +414,10 @@ impl Workspace {
             std::fs::write(temp_file.path(), modified.as_bytes())
                 .map_err(|e| format!("写入临时文件失败: {e}"))?;
 
+            // Catch edits saved by an editor or another process while we prepared
+            // the replacement. This is optimistic conflict detection, not an OS
+            // lock: arbitrary external writers can still race the final rename.
+            ensure_edit_source_unchanged(&cwd, &path_str, &metadata, &original_text)?;
             temp_file
                 .persist(&path)
                 .map_err(|e| format!("原子更新文件失败: {e}"))?;
@@ -380,7 +429,7 @@ impl Workspace {
         .map_err(|e| e.to_string())?
     }
 
-    async fn execute_grep(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_grep(&self, args: Arguments, lease: WorkspaceLease) -> Result<String, String> {
         let pattern = args
             .pattern
             .or(args.value)
@@ -392,7 +441,7 @@ impl Workspace {
         let cwd = self.cwd.clone();
         let subpath = args.path.unwrap_or_default();
 
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let target_path = if subpath.trim().is_empty() {
                 cwd.clone()
             } else {
@@ -562,7 +611,7 @@ impl Workspace {
         .map_err(|e| e.to_string())?
     }
 
-    async fn execute_find(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_find(&self, args: Arguments, lease: WorkspaceLease) -> Result<String, String> {
         let pattern = args
             .pattern
             .or(args.value)
@@ -572,7 +621,7 @@ impl Workspace {
         let subpath = args.path.unwrap_or_default();
         let is_glob = crate::pattern::has_glob_meta(&pattern);
 
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let start_dir = if subpath.trim().is_empty() {
                 cwd.clone()
             } else {
@@ -653,11 +702,11 @@ impl Workspace {
         .map_err(|e| e.to_string())?
     }
 
-    async fn execute_ls(&self, args: Arguments) -> Result<String, String> {
+    async fn execute_ls(&self, args: Arguments, lease: WorkspaceLease) -> Result<String, String> {
         let cwd = self.cwd.clone();
         let subpath = args.path.unwrap_or_default();
 
-        tokio::task::spawn_blocking(move || {
+        spawn_leased(lease, move || {
             let target_dir = if subpath.trim().is_empty() {
                 cwd.clone()
             } else {
@@ -733,6 +782,101 @@ impl Workspace {
             .await
             .map_err(|_| "命令超过 120 秒，已取消命令协程；宿主须自行回收子进程".to_string())?
     }
+}
+
+// All built-in aliases share this lock. Reads may overlap, while an edit,
+// replacement or shell excludes other operations in the same Workspace.
+// Keep the guard with the worker across cancellation, just like the parent lease.
+enum WorkspaceAccess {
+    Read {
+        _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    },
+    Write {
+        _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    },
+}
+struct WorkspaceLease {
+    _parent: Option<crate::subagent::ParentLease>,
+    _access: WorkspaceAccess,
+    _global: Option<crate::coordinator::TaskPermit>,
+    _shared: Option<crate::shared_limits::WorkspacePermit>,
+}
+
+fn workspace_admission() -> &'static crate::coordinator::Coordinator {
+    static ADMISSION: OnceLock<crate::coordinator::Coordinator> = OnceLock::new();
+    ADMISSION.get_or_init(|| {
+        crate::coordinator::Coordinator::new(crate::coordinator::Limits {
+            agent: 1024,
+            queue_capacity: 65_536,
+            ..Default::default()
+        })
+        .expect("workspace admission limits are valid")
+    })
+}
+
+// Encode components separately so ancestors remain ancestors without exposing
+// raw paths or confusing a literal filename with navigation syntax.
+fn workspace_scope(cwd: &Path) -> String {
+    use std::fmt::Write;
+    let mut scope = String::from("filesystem");
+    for component in cwd.components() {
+        scope.push('/');
+        #[cfg(windows)]
+        let folded = component.as_os_str().to_string_lossy().to_lowercase();
+        #[cfg(windows)]
+        let bytes = folded.as_bytes();
+        #[cfg(not(windows))]
+        let bytes = component.as_os_str().as_encoded_bytes();
+        for byte in bytes {
+            write!(scope, "{byte:02x}").expect("writing to a String succeeds");
+        }
+    }
+    scope
+}
+
+// A cancelled async caller cannot cancel an already running blocking operation.
+// Move the lease onto that worker so delegation stays blocked until it really ends.
+fn spawn_leased<T: Send + 'static>(
+    lease: WorkspaceLease,
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    tokio::task::spawn_blocking(move || {
+        let _lease = lease;
+        operation()
+    })
+}
+
+fn ensure_edit_source_unchanged(
+    cwd: &Path,
+    relative_path: &str,
+    original_metadata: &std::fs::Metadata,
+    original: &str,
+) -> Result<(), String> {
+    let conflict = || "编辑冲突：文件在读取后被修改或替换，请重新读取后重试".to_string();
+    let path = checked_path(cwd, relative_path, false).map_err(|_| conflict())?;
+    let file = File::open(path).map_err(|_| conflict())?;
+    let metadata = file.metadata().map_err(|_| conflict())?;
+    if !metadata.is_file()
+        || metadata.len() != original_metadata.len()
+        || metadata.modified().ok() != original_metadata.modified().ok()
+    {
+        return Err(conflict());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != original_metadata.dev() || metadata.ino() != original_metadata.ino() {
+            return Err(conflict());
+        }
+    }
+    let mut current = Vec::new();
+    file.take((MAX_WRITE_BYTES + 1) as u64)
+        .read_to_end(&mut current)
+        .map_err(|_| conflict())?;
+    if current != original.as_bytes() {
+        return Err(conflict());
+    }
+    Ok(())
 }
 
 fn is_ignored_name(name: &str) -> bool {
@@ -1440,4 +1584,173 @@ pub fn checked_path(cwd: &Path, path: &str, write: bool) -> Result<PathBuf, Stri
     }
 
     Ok(resolved)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use crate::{Config, HostFuture, Message, RunOptions, subagent};
+
+    struct Offline;
+    impl Host for Offline {
+        fn shell(&self, _: &str, _: &Path) -> HostFuture<Result<String, String>> {
+            Box::pin(async { Err("not used".into()) })
+        }
+        fn on_event(&self, _: AgentEvent) {}
+    }
+    impl subagent::Executor for Offline {
+        fn execute(&self, task: subagent::Task) -> HostFuture<Result<Vec<Message>, String>> {
+            Box::pin(async move { Ok(task.history) })
+        }
+    }
+
+    #[test]
+    fn edit_conflict_detection_preserves_external_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let path = cwd.join("source.rs");
+        std::fs::write(&path, "original").unwrap();
+        let original_metadata = std::fs::metadata(&path).unwrap();
+        assert!(
+            ensure_edit_source_unchanged(&cwd, "source.rs", &original_metadata, "original").is_ok()
+        );
+        // Same-length changes must not pass a size-only check.
+        std::fs::write(&path, "external").unwrap();
+        assert!(
+            ensure_edit_source_unchanged(&cwd, "source.rs", &original_metadata, "original")
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            ensure_edit_source_unchanged(&cwd, "source.rs", &original_metadata, "original")
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_conflict_detection_rejects_replaced_identity_and_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let path = cwd.join("source.rs");
+        std::fs::write(&path, "original").unwrap();
+        let original_metadata = std::fs::metadata(&path).unwrap();
+        let replacement = tempfile::NamedTempFile::new_in(&cwd).unwrap();
+        std::fs::write(replacement.path(), "original").unwrap();
+        replacement.persist(&path).unwrap();
+        assert!(
+            ensure_edit_source_unchanged(&cwd, "source.rs", &original_metadata, "original")
+                .is_err()
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink("missing", &path).unwrap();
+        assert!(
+            ensure_edit_source_unchanged(&cwd, "source.rs", &original_metadata, "original")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_keeps_workspace_reserved_until_blocking_worker_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            subagent::SubagentManager::with_executor(
+                dir.path(),
+                Config {
+                    model: "offline".into(),
+                    ..Config::default()
+                },
+                RunOptions::default(),
+                4,
+                Duration::from_secs(10),
+                Arc::new(Offline),
+            )
+            .unwrap(),
+        );
+        let access = Arc::new(tokio::sync::RwLock::new(()));
+        let shared_dir = tempfile::tempdir().unwrap();
+        let shared =
+            crate::shared_limits::SharedLimits::new(shared_dir.path(), Default::default()).unwrap();
+        let lease = WorkspaceLease {
+            _parent: Some(manager.parent_operation(true).unwrap()),
+            _shared: Some(shared.acquire_workspace(dir.path(), true).await.unwrap()),
+            _global: Some(
+                workspace_admission()
+                    .acquire_task(crate::coordinator::TaskRequest::write(workspace_scope(
+                        &dir.path().canonicalize().unwrap(),
+                    )))
+                    .await
+                    .unwrap(),
+            ),
+            _access: WorkspaceAccess::Write {
+                _guard: access.clone().write_owned().await,
+            },
+        };
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(async move {
+            spawn_leased(lease, move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+            })
+            .await
+            .unwrap();
+        });
+        started_rx.await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let request = subagent::Delegate {
+            session: "probe".into(),
+            goal: "offline probe".into(),
+            prompt: "check".into(),
+            path: None,
+            read_only: true,
+        };
+        let queued = manager
+            .delegate(request.clone(), Arc::new(Offline))
+            .unwrap();
+        assert_eq!(queued.status, subagent::Status::Queued);
+        let write_still_reserved = access.clone().try_write_owned().is_err();
+        let mut nested_reader = Box::pin(workspace_admission().acquire_task(
+            crate::coordinator::TaskRequest::read(workspace_scope(&dir.path().join("nested"))),
+        ));
+        assert!(
+            futures_util::poll!(&mut nested_reader).is_pending(),
+            "an overlapping Workspace must wait for the cancelled worker"
+        );
+        let other_process_handle =
+            crate::shared_limits::SharedLimits::new(shared_dir.path(), Default::default()).unwrap();
+        let mut shared_reader = Box::pin(other_process_handle.acquire_workspace(dir.path(), false));
+        assert!(
+            futures_util::poll!(&mut shared_reader).is_pending(),
+            "shared liveness lease must outlive cancellation too"
+        );
+        release_tx.send(()).unwrap();
+        assert!(write_still_reserved);
+        let nested_lease = tokio::time::timeout(Duration::from_secs(5), nested_reader)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(nested_lease);
+        let shared_lease = tokio::time::timeout(Duration::from_secs(5), shared_reader)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(shared_lease);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = manager
+                    .status(queued.run_id, Duration::from_secs(1))
+                    .await
+                    .unwrap();
+                if !status.status.is_active() {
+                    assert_eq!(status.status, subagent::Status::Completed);
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
 }

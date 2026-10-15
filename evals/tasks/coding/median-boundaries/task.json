@@ -1,0 +1,12 @@
+{
+  "id": "median-boundaries",
+  "task_set": "mio-python-acceptance-v1",
+  "task_set_version": 1,
+  "title": "Median with correct boundaries",
+  "language": "python",
+  "covers": ["input mutation", "even/odd length", "empty input"],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 10
+}

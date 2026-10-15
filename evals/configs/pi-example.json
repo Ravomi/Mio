@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "label": "pi",
+  "agent_command": "pi --no-session --no-mcp --no-extensions -p {prompt}",
+  "timeout_seconds": 240,
+  "tasks_dir": "../tasks/coding",
+  "output": "../../target/evals/pi.json",
+  "budget": {
+    "version": "mio-eval-budget-v1",
+    "model": null,
+    "thinking": null,
+    "max_model_calls": null,
+    "max_total_tokens": null,
+    "notes": "Example cross-agent config. Keeping the same task set and the same declared budget profile is what makes the two reports comparable; the runner does not enforce or measure either."
+  }
+}

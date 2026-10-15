@@ -15,10 +15,16 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub const CURRENT_PLUGIN_SCHEMA_VERSION: u32 = 1;
 pub const COMMUNITY_REPO_URL: &str = "https://github.com/Ravomi/mio-plugins.git";
 pub const COMMUNITY_WEB_URL: &str = "https://github.com/Ravomi/mio-plugins";
+
+/// Hard limit for `mio-plugin.json` and plugin MCP configuration files.
+const MAX_PLUGIN_CONFIG_BYTES: usize = 1024 * 1024;
+/// Wall-clock budget for one declarative plugin tool invocation.
+pub const PLUGIN_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn default_skills_dirs() -> Vec<String> {
     vec!["skills".to_string()]
@@ -125,7 +131,7 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_relative_subpath(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn validate_relative_subpath(root: &Path, rel: &str) -> Result<PathBuf, String> {
     if rel.trim().is_empty() {
         return Err("Relative path in plugin manifest cannot be empty".into());
     }
@@ -139,13 +145,43 @@ fn validate_relative_subpath(root: &Path, rel: &str) -> Result<PathBuf, String> 
             _ => return Err(format!("Plugin path '{rel}' cannot contain '..'")),
         }
     }
-    let joined = root.join(p);
-    if let Ok(meta) = fs::symlink_metadata(&joined)
-        && meta.file_type().is_symlink()
-    {
-        return Err(format!("Plugin path '{rel}' cannot be a symlink"));
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize plugin root {}: {e}", root.display()))?;
+    // Inspect every component, not only the last one: a symlinked intermediate
+    // directory (for example `linked/context.md` where `linked` points outside
+    // the plugin) must not be followed. Missing components end the walk so a
+    // declared-but-absent path is still reported by the caller's existence check.
+    let mut resolved = canonical_root.clone();
+    for comp in p.components() {
+        if matches!(comp, Component::CurDir) {
+            continue;
+        }
+        resolved.push(comp.as_os_str());
+        match fs::symlink_metadata(&resolved) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "Plugin path '{rel}' must not traverse a symlink ({})",
+                    resolved.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("Cannot inspect plugin path '{rel}': {e}")),
+        }
     }
-    Ok(joined)
+    if resolved.exists() {
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|e| format!("Failed to canonicalize plugin path '{rel}': {e}"))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(format!(
+                "Plugin path '{rel}' escapes the plugin directory {}",
+                canonical_root.display()
+            ));
+        }
+    }
+    Ok(resolved)
 }
 
 /// Validate a plugin directory against the Mio Plugin Standard v1 (`mio-plugin.json`).
@@ -163,8 +199,7 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
             plugin_dir.display()
         ));
     }
-    let raw = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("Failed to read {}: {e}", manifest_path.display()))?;
+    let raw = crate::context::read_bounded_utf8(&manifest_path, MAX_PLUGIN_CONFIG_BYTES)?;
     let manifest: PluginManifest = serde_json::from_str(&raw)
         .map_err(|e| format!("Invalid mio-plugin.json in {}: {e}", plugin_dir.display()))?;
 
@@ -245,7 +280,7 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
                 manifest.name
             ));
         }
-        let mcp_raw = fs::read_to_string(&mcp_path).map_err(|e| e.to_string())?;
+        let mcp_raw = crate::context::read_bounded_utf8(&mcp_path, MAX_PLUGIN_CONFIG_BYTES)?;
         let parsed: Value = serde_json::from_str(&mcp_raw).map_err(|e| {
             format!(
                 "Plugin '{}' invalid MCP JSON '{mcp_rel}': {e}",
@@ -644,11 +679,11 @@ pub fn load_plugin_mcp_specs(cwd: &Path) -> Result<BTreeMap<String, McpServerSpe
         let Some(ref mcp_rel) = plugin.manifest.mcp else {
             continue;
         };
-        let mcp_path = plugin.root_dir.join(mcp_rel);
+        let mcp_path = validate_relative_subpath(&plugin.root_dir, mcp_rel)?;
         if !mcp_path.is_file() {
             continue;
         }
-        let raw = fs::read_to_string(&mcp_path).map_err(|e| e.to_string())?;
+        let raw = crate::context::read_bounded_utf8(&mcp_path, MAX_PLUGIN_CONFIG_BYTES)?;
         #[derive(Deserialize)]
         struct McpConfig {
             #[serde(rename = "mcpServers", alias = "servers", default)]
@@ -667,6 +702,20 @@ async fn execute_plugin_command(
     args_json: &str,
     cwd: &Path,
 ) -> Result<String, String> {
+    execute_plugin_command_with_timeout(command, args_json, cwd, PLUGIN_TOOL_TIMEOUT).await
+}
+
+/// Run a declarative plugin tool under the shared supervised-process helper.
+///
+/// The child runs in its own process group, is killed with its descendants when
+/// the future is dropped (abort/cancellation), on timeout, or when the pipe
+/// closes, and stdout/stderr are captured with a hard 32 KiB per-stream limit.
+async fn execute_plugin_command_with_timeout(
+    command: &[String],
+    args_json: &str,
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<String, String> {
     if command.is_empty() {
         return Err("Empty plugin command".into());
     }
@@ -676,27 +725,13 @@ async fn execute_plugin_command(
     }
     cmd.current_dir(cwd)
         .env("MIO_TOOL_ARGS", args_json)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(std::process::Stdio::null());
 
-    let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+    let output = tokio::time::timeout(timeout, crate::shell::run_supervised(&mut cmd))
         .await
-        .map_err(|_| "Plugin tool timed out after 60s".to_string())?
-        .map_err(|e| format!("Failed to spawn plugin tool '{}': {e}", command[0]))?;
+        .map_err(|_| format!("Plugin tool timed out after {}s", timeout.as_secs()))??;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut combined = String::new();
-    if !stdout.is_empty() {
-        combined.push_str(&stdout);
-    }
-    if !stderr.is_empty() {
-        if !combined.is_empty() && !combined.ends_with('\n') {
-            combined.push('\n');
-        }
-        combined.push_str(&stderr);
-    }
+    let combined = output.combined();
     if output.status.success() {
         Ok(combined)
     } else {
@@ -718,6 +753,9 @@ pub fn load_plugin_tools(
         return Ok(Vec::new());
     }
     let mut tools: Vec<DynamicTool> = Vec::new();
+    // Track declarations independently of the filter so a normalized-name
+    // collision is reported instead of one tool silently shadowing another.
+    let mut owners: BTreeMap<String, String> = BTreeMap::new();
     for plugin in discover_plugins(cwd)? {
         for spec in plugin.manifest.tools {
             let full_name = format!(
@@ -725,12 +763,18 @@ pub fn load_plugin_tools(
                 plugin.manifest.name.replace('-', "_"),
                 spec.name.replace('-', "_")
             );
-            if !filter.allows(&full_name) && !filter.allows(&spec.name) {
+            let declared_by = format!("plugin '{}' tool '{}'", plugin.manifest.name, spec.name);
+            if let Some(previous) = owners.insert(full_name.clone(), declared_by.clone()) {
+                return Err(format!(
+                    "Plugin tool name collision: '{full_name}' is declared by both {previous} and {declared_by}. Rename one of them."
+                ));
+            }
+            // Deny wins across the qualified name and the short declared name.
+            if !filter.allows_aliased(&[full_name.as_str(), spec.name.as_str()]) {
                 continue;
             }
-            let Ok(tool_name) = ToolName::new(full_name.clone()) else {
-                continue;
-            };
+            let tool_name = ToolName::new(full_name.clone())
+                .map_err(|_| format!("Plugin tool name '{full_name}' is empty"))?;
             let command = spec.command.clone();
             let cwd_buf = cwd.to_path_buf();
             let host_clone = host.clone();
@@ -816,5 +860,221 @@ mod tests {
         let rust_matches = search_community_plugins(Some("rust"));
         assert_eq!(rust_matches.len(), 1);
         assert_eq!(rust_matches[0].name, "rust-expert");
+    }
+
+    struct TestHost;
+
+    impl Host for TestHost {
+        fn shell(&self, _: &str, _: &std::path::Path) -> crate::HostFuture<Result<String, String>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+        fn on_event(&self, _: AgentEvent) {}
+    }
+
+    /// Write `.mio/plugins/<name>/mio-plugin.json` declaring the given tools.
+    fn install_plugin_fixture(cwd: &std::path::Path, plugin_name: &str, tools: Value) {
+        let dir = cwd.join(".mio").join("plugins").join(plugin_name);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = json!({
+            "schema_version": 1,
+            "name": plugin_name,
+            "version": "0.1.0",
+            "description": "fixture plugin",
+            "tools": tools,
+        });
+        fs::write(
+            dir.join("mio-plugin.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn tool_spec(name: &str, script: &str) -> Value {
+        json!({
+            "name": name,
+            "description": "fixture tool",
+            "parameters": {"type": "object", "properties": {}},
+            "command": ["sh", "-c", script],
+        })
+    }
+
+    fn load_tools(cwd: &std::path::Path, filter: &ToolFilter) -> Result<Vec<String>, String> {
+        load_plugin_tools(cwd, Arc::new(TestHost), filter)
+            .map(|tools| tools.iter().map(|t| t.name().as_str().to_owned()).collect())
+    }
+
+    #[test]
+    fn test_plugin_tool_filter_exact_and_deny_priority() {
+        let cwd = tempfile::tempdir().unwrap();
+        install_plugin_fixture(
+            cwd.path(),
+            "probe",
+            json!([tool_spec("read", "true"), tool_spec("early", "true"),]),
+        );
+
+        // Exact qualified name resolves (previously rejected as unsupported).
+        let exact = ToolFilter::from_cli(Some("plugin__probe__read"), None, false).unwrap();
+        assert_eq!(
+            load_tools(cwd.path(), &exact).unwrap(),
+            ["plugin__probe__read"]
+        );
+
+        // Wildcard exclusion covers the whole plugin tool set.
+        let wildcard = ToolFilter::from_cli(None, Some("plugin__probe__read*"), false).unwrap();
+        assert_eq!(
+            load_tools(cwd.path(), &wildcard).unwrap(),
+            ["plugin__probe__early"]
+        );
+
+        // Deny on the short alias wins even when the qualified name is allowed.
+        let mixed = ToolFilter::from_cli(Some("plugin__probe__read"), Some("read"), false).unwrap();
+        assert!(load_tools(cwd.path(), &mixed).unwrap().is_empty());
+
+        // Deny on the qualified name wins even though the short alias is present.
+        let deny_qualified =
+            ToolFilter::from_cli(None, Some("plugin__probe__read"), false).unwrap();
+        assert_eq!(
+            load_tools(cwd.path(), &deny_qualified).unwrap(),
+            ["plugin__probe__early"]
+        );
+    }
+
+    #[test]
+    fn test_plugin_normalized_tool_name_collision_is_reported() {
+        let cwd = tempfile::tempdir().unwrap();
+        install_plugin_fixture(cwd.path(), "a-b", json!([tool_spec("c", "true")]));
+        install_plugin_fixture(cwd.path(), "a_b", json!([tool_spec("c", "true")]));
+        let err = load_tools(cwd.path(), &ToolFilter::all()).unwrap_err();
+        assert!(err.contains("collision"), "unexpected error: {err}");
+        assert!(err.contains("plugin__a_b__c"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_plugin_output_is_bounded() {
+        let cwd = tempfile::tempdir().unwrap();
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "head -c 200000 /dev/zero | tr '\\0' 'a'".to_owned(),
+        ];
+        let output = execute_plugin_command(&command, "{}", cwd.path())
+            .await
+            .unwrap();
+        assert!(output.contains("TRUNCATED"));
+        assert!(
+            output.len() < 40 * 1024,
+            "output grew to {} bytes",
+            output.len()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_plugin_timeout_kills_process_group() {
+        let cwd = tempfile::tempdir().unwrap();
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "sleep 30 & echo $! > child.pid; wait".to_owned(),
+        ];
+        let err = execute_plugin_command_with_timeout(
+            &command,
+            "{}",
+            cwd.path(),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+
+        let pid: i32 = fs::read_to_string(cwd.path().join("child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                // SAFETY: signal 0 only probes for existence of a test child.
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    break;
+                }
+                #[cfg(target_os = "linux")]
+                if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat"))
+                    && stat
+                        .split_once(") ")
+                        .is_some_and(|(_, s)| s.starts_with('Z'))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("plugin child survived timeout");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_plugin_cancellation_kills_process_group() {
+        let cwd = tempfile::tempdir().unwrap();
+        install_plugin_fixture(
+            cwd.path(),
+            "probe",
+            json!([tool_spec(
+                "late",
+                "echo started > started.txt; sleep 30; echo late > after-abort.txt"
+            )]),
+        );
+        let tools = load_plugin_tools(
+            cwd.path(),
+            Arc::new(TestHost),
+            &ToolFilter::from_cli(Some("plugin__probe__late"), None, false).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tools.len(), 1);
+        let tool = tools[0].clone();
+        let workdir = cwd.path().to_path_buf();
+        let handle = tokio::spawn(async move { tool.execute(json!({})).await });
+
+        let started = cwd.path().join("started.txt");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("plugin tool did not start");
+
+        handle.abort();
+        assert!(handle.await.unwrap_err().is_cancelled());
+
+        // The process group must already be dead: a late write would land here.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!workdir.join("after-abort.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_plugin_context_linked_directory_is_rejected() {
+        let cwd = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("context.md"), "escaped").unwrap();
+        let plugin_dir = cwd.path().join("linked-plugin");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        std::os::unix::fs::symlink(outside.path(), plugin_dir.join("linked")).unwrap();
+        let manifest = json!({
+            "schema_version": 1,
+            "name": "linked-plugin",
+            "version": "0.1.0",
+            "description": "fixture plugin",
+            "context_files": ["linked/context.md"],
+        });
+        fs::write(
+            plugin_dir.join("mio-plugin.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = validate_plugin_dir(&plugin_dir).unwrap_err();
+        assert!(err.contains("symlink"), "unexpected error: {err}");
     }
 }

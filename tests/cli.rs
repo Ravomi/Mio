@@ -11,6 +11,10 @@ mod test_http;
 fn cli() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mio"));
     cmd.env_remove("MIO_MODEL")
+        .env(
+            "MIO_CONFIG_DIR",
+            std::env::temp_dir().join(format!("mio-cli-config-{}", uuid::Uuid::new_v4())),
+        )
         .env("MIO_PROVIDER", "custom")
         .env_remove("MIO_BASE_URL")
         .env_remove("OPENAI_API_KEY")

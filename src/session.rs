@@ -8,6 +8,11 @@ use uuid::Uuid;
 const CURRENT_SESSION_VERSION: u32 = 1;
 const MAX_SESSION_FILE_SIZE: usize = 16 * 1024 * 1024;
 const MAX_SESSION_LIST: usize = 1000;
+/// Upper bound on directory entries inspected while scanning sessions.
+const MAX_SESSION_SCAN: usize = 20_000;
+
+/// Newest-first scan result: `(candidates, warnings, exceeded_entry_cap)`.
+type SessionScan = (Vec<(SystemTime, PathBuf)>, Vec<String>, bool);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
@@ -175,28 +180,76 @@ impl Session {
     }
 
     pub fn list(directory: &Path) -> Result<(Vec<SessionMetadata>, Vec<String>), String> {
+        Self::list_with_limit(directory, MAX_SESSION_LIST)
+    }
+
+    /// List at most `limit` sessions, newest file first.
+    ///
+    /// Every directory entry is inspected and ordered by modification time
+    /// *before* the limit is applied, so the newest session is always a
+    /// candidate even in directories larger than the limit. This replaces the
+    /// previous behaviour of truncating an unsorted directory enumeration and
+    /// only then sorting, which could hide the most recent session.
+    pub fn list_with_limit(
+        directory: &Path,
+        limit: usize,
+    ) -> Result<(Vec<SessionMetadata>, Vec<String>), String> {
+        let (candidates, mut warnings, _truncated) = Self::scan(directory)?;
+        let total = candidates.len();
+        let mut list = Vec::new();
+        for (_, path) in candidates.iter().take(limit) {
+            match Self::load(path) {
+                Ok(s) => list.push(SessionMetadata {
+                    version: s.version,
+                    id: s.id,
+                    parent_id: s.parent_id,
+                    name: s.name,
+                    cwd: s.cwd,
+                    created: s.created,
+                    updated: s.updated,
+                    message_count: s.history.len(),
+                    file_path: path.clone(),
+                }),
+                Err(err) => warnings.push(format!(
+                    "Failed to parse session at {}: {err}",
+                    path.display()
+                )),
+            }
+        }
+        if total > limit {
+            warnings.push(format!(
+                "Session listing shows the {limit} most recently modified sessions out of {total}"
+            ));
+        }
+        Ok((list, warnings))
+    }
+
+    /// Enumerate candidate session files and order them newest-first.
+    ///
+    /// Returns `(candidates, warnings, truncated)` where `truncated` is true
+    /// when the directory exceeded [`MAX_SESSION_SCAN`] entries.
+    fn scan(directory: &Path) -> Result<SessionScan, String> {
         if !directory.is_dir() {
             return Err(format!("Not a directory: {}", directory.display()));
         }
         let read_dir = fs::read_dir(directory).map_err(|e| format!("Failed read dir: {e}"))?;
-        let mut entries = Vec::new();
+        let mut candidates = Vec::new();
         let mut warnings = Vec::new();
-        for (visited, entry) in read_dir.enumerate() {
-            if visited >= MAX_SESSION_LIST {
-                warnings.push(format!(
-                    "Session listing truncated at {MAX_SESSION_LIST} directory entries"
-                ));
+        let mut visited = 0usize;
+        let mut truncated = false;
+        for entry in read_dir {
+            visited += 1;
+            if visited > MAX_SESSION_SCAN {
+                truncated = true;
                 break;
             }
-            match entry {
-                Ok(entry) => entries.push(entry),
-                Err(e) => warnings.push(format!("Cannot read session directory entry: {e}")),
-            }
-        }
-        entries.sort_by_key(|e| e.file_name());
-
-        let mut list = Vec::new();
-        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    warnings.push(format!("Cannot read session directory entry: {e}"));
+                    continue;
+                }
+            };
             let file_type = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(e) => {
@@ -207,34 +260,34 @@ impl Session {
             if file_type.is_symlink() || !file_type.is_file() {
                 continue;
             }
-
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-
-            match Self::load(&path) {
-                Ok(s) => list.push(SessionMetadata {
-                    version: s.version,
-                    id: s.id,
-                    parent_id: s.parent_id,
-                    name: s.name,
-                    cwd: s.cwd,
-                    created: s.created,
-                    updated: s.updated,
-                    message_count: s.history.len(),
-                    file_path: path,
-                }),
-                Err(err) => warnings.push(format!(
-                    "Failed to parse session at {}: {err}",
+            // Metadata only: parsing every history is deferred until after the
+            // newest-first ordering (and the caller's limit) are known.
+            match fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+                Ok(modified) => candidates.push((modified, path)),
+                Err(e) => warnings.push(format!(
+                    "Cannot read modification time of {}: {e}",
                     path.display()
                 )),
             }
         }
-        Ok((list, warnings))
+        if truncated {
+            warnings.push(format!(
+                "Session scan stopped at {MAX_SESSION_SCAN} directory entries"
+            ));
+        }
+        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        Ok((candidates, warnings, truncated))
     }
 
     /// Resolve a session selector (`path`, UUID/short-UUID prefix, or session name).
+    ///
+    /// Matching is ranked: an exact UUID always wins, then a unique exact name,
+    /// then a unique UUID prefix, then a unique name substring. Ambiguity inside
+    /// a rank is an error rather than an arbitrary first match.
     /// If `query` looks like a file path (contains `/` or ends with `.json`), returns `cwd.join(query)`
     /// even if it does not exist yet so `--session path.json` can create a new session at that path.
     pub fn resolve(directory: &Path, cwd: &Path, query: &str) -> Result<PathBuf, String> {
@@ -247,34 +300,74 @@ impl Session {
             return Ok(direct);
         }
         if directory.is_dir() {
-            let (sessions, _) = Self::list(directory)?;
+            let (candidates, _warnings, truncated) = Self::scan(directory)?;
+            if truncated {
+                return Err(format!(
+                    "Cannot resolve session selector '{trimmed}': session directory exceeds {MAX_SESSION_SCAN} entries"
+                ));
+            }
             let q_lower = trimmed.to_ascii_lowercase();
-            // 1. Exact ID or exact name match
-            for s in &sessions {
-                if s.id.to_string().eq_ignore_ascii_case(trimmed)
-                    || s.name
-                        .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case(trimmed))
+            let mut exact_uuid: Option<PathBuf> = None;
+            let mut exact_names: Vec<PathBuf> = Vec::new();
+            let mut uuid_prefixes: Vec<PathBuf> = Vec::new();
+            let mut name_substrings: Vec<PathBuf> = Vec::new();
+            for (_, path) in &candidates {
+                let Ok(session) = Self::load(path) else {
+                    continue;
+                };
+                let id = session.id.to_string();
+                if id.eq_ignore_ascii_case(trimmed) {
+                    exact_uuid.get_or_insert_with(|| path.clone());
+                    continue;
+                }
+                if session
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(trimmed))
                 {
-                    return Ok(s.file_path.clone());
+                    exact_names.push(path.clone());
+                    continue;
+                }
+                if id.to_ascii_lowercase().starts_with(&q_lower) {
+                    uuid_prefixes.push(path.clone());
+                    continue;
+                }
+                if session
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.to_ascii_lowercase().contains(&q_lower))
+                {
+                    name_substrings.push(path.clone());
                 }
             }
-            // 2. Prefix UUID match or substring name match
-            let matches: Vec<&SessionMetadata> = sessions
-                .iter()
-                .filter(|s| {
-                    s.id.to_string().to_ascii_lowercase().starts_with(&q_lower)
-                        || s.name
-                            .as_deref()
-                            .is_some_and(|n| n.to_ascii_lowercase().contains(&q_lower))
-                })
-                .collect();
-            if matches.len() == 1 {
-                return Ok(matches[0].file_path.clone());
-            } else if matches.len() > 1 {
+            if let Some(path) = exact_uuid {
+                return Ok(path);
+            }
+            if !exact_names.is_empty() {
+                if exact_names.len() == 1 {
+                    return Ok(exact_names.remove(0));
+                }
                 return Err(format!(
-                    "Ambiguous session selector '{trimmed}' matched {} sessions",
-                    matches.len()
+                    "Ambiguous session selector '{trimmed}' matched {} sessions with the same name",
+                    exact_names.len()
+                ));
+            }
+            if !uuid_prefixes.is_empty() {
+                if uuid_prefixes.len() == 1 {
+                    return Ok(uuid_prefixes.remove(0));
+                }
+                return Err(format!(
+                    "Ambiguous session selector '{trimmed}' matched {} session ids",
+                    uuid_prefixes.len()
+                ));
+            }
+            if !name_substrings.is_empty() {
+                if name_substrings.len() == 1 {
+                    return Ok(name_substrings.remove(0));
+                }
+                return Err(format!(
+                    "Ambiguous session selector '{trimmed}' matched {} sessions by name",
+                    name_substrings.len()
                 ));
             }
         }
@@ -427,5 +520,83 @@ mod tests {
         assert_eq!(list[0].id, s1.id);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Failed to parse session"));
+    }
+
+    /// Save a named session and force a distinct file mtime so ordering is
+    /// deterministic even when wall-clock seconds collide.
+    fn save_named(dir: &Path, file: &str, name: &str, mtime_nanos: u64) -> Session {
+        let path = dir.join(file);
+        let mut session = Session::new(dir).unwrap().with_name(name);
+        session.save(&path).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(UNIX_EPOCH + std::time::Duration::from_nanos(mtime_nanos));
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+        session
+    }
+
+    #[test]
+    fn test_list_orders_by_mtime_before_applying_the_limit() {
+        let dir = tempdir().unwrap();
+        // Ten sessions; the newest is written last with the highest mtime.
+        let mut newest = None;
+        for index in 0..10u64 {
+            let session = save_named(
+                dir.path(),
+                &format!("s{index}.json"),
+                &format!("s{index}"),
+                1_000 + index,
+            );
+            if index == 9 {
+                newest = Some(session.id);
+            }
+        }
+        // A small limit must still contain the globally newest session.
+        let (list, warnings) = Session::list_with_limit(dir.path(), 3).unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].id, newest.unwrap());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("most recently modified"))
+        );
+        assert_eq!(list[1].name.as_deref(), Some("s8"));
+        assert_eq!(list[2].name.as_deref(), Some("s7"));
+    }
+
+    #[test]
+    fn test_resolve_prefers_uuid_and_reports_ambiguous_names() {
+        let dir = tempdir().unwrap();
+        let s1 = save_named(dir.path(), "one.json", "duplicate", 10);
+        let s2 = save_named(dir.path(), "two.json", "Duplicate", 20);
+        let s3 = save_named(dir.path(), "three.json", "other", 30);
+
+        // Case-insensitive duplicate names are ambiguous, not "first match".
+        let err = Session::resolve(dir.path(), dir.path(), "duplicate").unwrap_err();
+        assert!(err.contains("Ambiguous"), "unexpected error: {err}");
+
+        // A full UUID always resolves, even when it could also look like a name.
+        let by_id = Session::resolve(dir.path(), dir.path(), &s2.id.to_string()).unwrap();
+        assert_eq!(by_id, dir.path().join("two.json"));
+
+        // A unique short-uuid prefix resolves.
+        let prefix = &s3.id.to_string()[..8];
+        let by_prefix = Session::resolve(dir.path(), dir.path(), prefix).unwrap();
+        assert_eq!(by_prefix, dir.path().join("three.json"));
+
+        // A unique name substring resolves.
+        let by_substring = Session::resolve(dir.path(), dir.path(), "othe").unwrap();
+        assert_eq!(by_substring, dir.path().join("three.json"));
+
+        // An unknown selector falls back to a new path under cwd.
+        let fallback = Session::resolve(dir.path(), dir.path(), "brand-new").unwrap();
+        assert_eq!(fallback, dir.path().join("brand-new"));
+
+        // Keep s1 alive as an explicit reference to the parsed session.
+        assert_ne!(s1.id, s2.id);
     }
 }

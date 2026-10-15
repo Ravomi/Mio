@@ -84,18 +84,17 @@ impl ProjectContext {
                 )?;
             }
 
-            if let Ok(plugins) = crate::plugin::discover_plugins(&canonical_cwd) {
-                for plugin in plugins {
-                    for ctx_rel in &plugin.manifest.context_files {
-                        let ctx_path = plugin.root_dir.join(ctx_rel);
-                        if let Some(content) = read_optional(&ctx_path)? {
-                            append_preamble(
-                                &mut preamble,
-                                &mut total_preamble_bytes,
-                                &format!("--- Plugin {} ({ctx_rel}) ---\n", plugin.manifest.name),
-                                &content,
-                            )?;
-                        }
+            for plugin in crate::plugin::discover_plugins(&canonical_cwd)? {
+                for ctx_rel in &plugin.manifest.context_files {
+                    let ctx_path =
+                        crate::plugin::validate_relative_subpath(&plugin.root_dir, ctx_rel)?;
+                    if let Some(content) = read_optional(&ctx_path)? {
+                        append_preamble(
+                            &mut preamble,
+                            &mut total_preamble_bytes,
+                            &format!("--- Plugin {} ({ctx_rel}) ---\n", plugin.manifest.name),
+                            &content,
+                        )?;
                     }
                 }
             }
@@ -309,7 +308,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String, String> {
+pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String, String> {
     if !std::fs::metadata(path)
         .map_err(|e| e.to_string())?
         .is_file()

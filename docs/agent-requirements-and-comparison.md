@@ -1,14 +1,40 @@
 # Mio 需求与 coding agent 调查
 
-调查日期：2026-10-15。Mio 代码基线：`60cfb8c82f419e6c3e8320db84c880e3bb19fd46`。本文件与 [项目审查](reviews/2026-10-15-audit.md)、[TODO](../TODO.md) 配套。
+调查日期：2026-10-15。Mio 首次审查基线：`60cfb8c82f419e6c3e8320db84c880e3bb19fd46`；其后工作区（未提交）落入批次 2 实现（`AUD-03/04/12/13/19` 等），本文档已据工作区代码与测试用例更新定位与验收口径。本文件与 [项目审查](reviews/2026-10-15-audit.md)、[TODO](../TODO.md) 配套。
 
 ## 结论与定位建议
 
-**建议把 Mio 定位为可由 Rust 宿主直接集成、权限与执行证据可验证的 coding agent 引擎。** 当前已具备分层、工具循环、宿主接口、会话和子代理基础，但执行控制存在实际缺陷，尚不能对外宣称“可靠性/安全性领先”。先补控制与恢复，再用同条件任务证明效果。
+**把 Mio 定位为「共享调度与可控多代理协作的 coding agent 引擎」**：由引擎在真实 dispatch 边界统一管理模型请求（限流/429 冷却）、任务并发（冲突排队、无关并行）、重任务配额、预算预留与真实 usage、显式任务 key 去重和结构化验收证据，并可由 Rust 宿主直接集成。进程内调度、跨进程协作配额、子代理 `Queued` FIFO 与执行证据 journal 已有实现与工作区测试用例；跨进程 Workspace 租约已接入工作区执行路径，四项质量门禁均已通过。**不宣称** OS 内存隔离、自动冲突合并、精确费用硬限额，也不宣称真实线上或跨平台已验证。
 
 “无头”“可嵌入”“单二进制”“多模型”“原生子代理”都不能单独构成独有优势。Reasonix 新主线已有单 Go 二进制与多入口，Pi 有进程内 SDK，OpenCode 有服务端接口，Codex 本身也有 Rust 实现和 App Server。Rust 对现有 Rust 宿主的集成价值是合理优势判断，低延迟、低内存和任务效果则必须测量。[Reasonix 主线][S1]、[Pi SDK][S7]、[OpenCode Server][S9]、[Codex App Server][S12]。
 
-建议的近期顺序：执行与权限一致性 → Provider 正确性 → 持久化证据/恢复 → 宿主事件和评测 → 依据用户场景选择检索、编辑器协议和产品界面。暂不因为竞品具备某个功能就复制整个产品形态。
+建议的近期顺序：统一四门禁与跨进程 Workspace 租约验收 → 执行与权限一致性 → Provider 正确性 → 持久化证据/恢复 → 宿主事件和评测 → 依据用户场景选择检索、编辑器协议和产品界面。暂不因为竞品具备某个功能就复制整个产品形态。
+
+## 定位收敛：共享调度与可控多代理协作
+
+产品定位收敛为：**引擎统一做共享调度，代理协作可控、证据可查**。围绕用户明确的痛点（模型限流/429、并行改动冲突、编译/浏览器重任务资源争抢、重复探索与预算/验收成本），判断标准不是“功能名是否出现在文档里”，而是有没有实现与可复现证据。
+
+### 能力状态（避免混淆）
+
+| 状态 | 内容 | 依据边界 |
+| --- | --- | --- |
+| 已落地（实现 + 工作区离线测试用例） | 进程内调度与跨进程协作配额（`src/scheduling.rs`/`src/coordinator.rs`/`src/shared_limits.rs`，模型/重任务 `flock` 配额与 429 冷却）；子代理 `Queued`/`Running` FIFO 与 `ToolEvidence`；Anthropic/Google/Ollama 原生协议路由（`tests/provider_routes.rs`）；项目 MCP 启动前指纹授权（`src/mcp.rs`）；编辑前内容/身份校验（`src/workspace.rs`）；执行证据 journal（`src/journal.rs`）与结构化 `completion_call`/`diagnostic`；插件输出/MCP 帧/RPC 行大小限额 | 本地模拟端点 / 单元 / 多进程测试用例；本轮已通过离线验收，但不等于真实 Provider、真实崩溃或跨平台验收 |
+| 已实现与接口边界 | 四项质量门禁均已通过；跨进程 Workspace 路径租约已接入 `src/workspace.rs` 并覆盖取消保留；显式 `dedup_key` 仅在 Coordinator API 层，CLI 未暴露 | 显式 key 尚未暴露 CLI；协作式租约只覆盖接入的工作区操作 |
+| 未实现或未验证 | 自动冲突合并；OS 内存/资源隔离与沙箱；精确费用硬限额（当前为 token 计数）；跨进程 token 预算持久化；真实 Provider 线上路径与认证；跨平台行为；真实崩溃恢复；同模型同预算任务对比 | 无实现或无证据，禁止在 README/TODO 中提前宣称 |
+
+### 近期验收指标
+
+| 指标 | 可验证结果 | 关联需求 |
+| --- | --- | --- |
+| 429 不成风暴 | 模拟 Provider 返回 429 时，并发任务共享冷却、请求计数不放大；恢复后正常继续 | REQ-SCHEDULE |
+| 同 Provider 共享冷却 | 冷却窗口（含 `Retry-After`）对父/子代理与 RPC 任务一致可见 | REQ-SCHEDULE |
+| 冲突任务排队、无关任务并行 | 并发写同一路径不交错覆盖；写不同目标的任务保持并行 | REQ-CONFLICT |
+| 重任务配额 | 编译/浏览器等重任务并发与时间受限，轻任务不被挤占，取消后资源回收 | REQ-QUOTA |
+| 预算预留与真实 usage | 请求前预留、请求后记录真实 usage；缺 usage 标 unknown，不用字节估算冒充账单 | REQ-BUDGET |
+| 显式任务 key 去重 | 相同 key 并发提交只执行一次，并给出复用/拒绝响应 | REQ-DEDUP |
+| 结构化验收证据 | 任务、配置、请求计数、usage、耗时、退出状态与失败分类可复查 | REQ-ACCEPT |
+
+上述指标已有实现与工作区测试用例，状态为「已实现、已通过本轮离线验收」；跨进程 Workspace 租约已有离线测试，真实 Provider 与跨平台仍待验证。
 
 ## 调查口径
 
@@ -53,7 +79,7 @@ Reasonix 特别注意：不能继续把它概括为“仅 DeepSeek、必须 Node
 | --- | --- | --- |
 | 已有三层 Rust 源码和 Host 抽象，能作为库运行 | 事实 | [lib.rs](../src/lib.rs)、[host 示例](../examples/host.rs)、[分层说明](rig-source.md)；不是仅有 CLI 包装。 |
 | 对 Ravomi 的 Rust 宿主有集成适配优势 | 推断 | 同语言、同异步生态及可替换 Host 减少跨进程接口需求；仍需 SDK 兼容与生命周期测试证明维护收益。 |
-| 内置原生子代理有调度保护 | 事实 | [subagent.rs](../src/subagent.rs)：并发、只读、重叠写限制；不是操作系统或凭据隔离。 |
+| 内置原生子代理有调度保护 | 事实 | [subagent.rs](../src/subagent.rs)：并发上限、`Queued` FIFO、只读并行与整工作区 writer 独占；子任务与父任务共享同一 Scheduler；不是操作系统、内存或凭据隔离。 |
 | 对终端有具体状态集成 | 事实 | OSC 7501 规范与离线终端测试通过；跨终端支持范围需继续验证。 |
 | 默认工作区工具有界、会话有原子写入 | 事实，有例外 | 内置读写/search 与 Shell 限额已实现；插件/MCP、取消线程及会话恢复缺口见审查，不可外推到全部工具。 |
 | Rust 所以更快、更省内存、更安全 | 未证实 | 没有相同构建、任务、模型和平台的测量；Codex 也有 Rust 实现，Reasonix 也有原生二进制。 |
@@ -66,14 +92,20 @@ Reasonix 特别注意：不能继续把它概括为“仅 DeepSeek、必须 Node
 
 | 需求标识 | 场景与目标 | 当前基础 / 关联问题 | 优先级 / 规模 / 依赖 | 可验收结果 |
 | --- | --- | --- | --- | --- |
-| REQ-POLICY | 宿主限制工具，扩展和子代理不得绕过 | Workspace 审批/ToolFilter 已有；AUD-02/03/07，extra_tools 的 host-controlled 边界待明确 | P1 / 大 / 无 | 全入口经过统一决策；deny 优先；审批绑定规范化参数、cwd、工具身份；项目配置未信任不得启动；嵌套权限只收窄。 |
-| REQ-PROCESS | 取消、超时后不残留计算和新副作用 | Shell 有进程组；插件与 blocking 文件操作缺口 AUD-01/05/06/12 | P1 / 中 / POLICY | CLI/RPC/EOF、超时、父子任务、后代进程均有回收测试；输出与 CPU 有界；已发生修改与取消后的执行严格区分。 |
-| REQ-PROVIDER | 用户选择官方供应商即可使用正确协议 | 原生适配在 core，但产品预设采用 Custom；AUD-04/18 | P1 / 中 / 无 | 原生/兼容路由显式；路径、认证、工具流、thinking、usage、限额、断流和错误分类的离线契约通过；线上测试另行标记。 |
-| REQ-RECOVERY | 长任务失败后知道做过什么，安全继续 | 会话原子快照已有；AUD-10/11/13/19 | P2 / 大 / PROCESS、POLICY | intent/result/unknown 持久化；崩溃注入不盲目重放；同名/最新会话准确；可选文件快照不覆盖用户后改内容。 |
-| REQ-EVENTS | Ravomi/终端/其他宿主能显示并追踪运行 | Host/OSC/RPC 和底层 observe 已有；AUD-15 | P2 / 中 / POLICY | 稳定 session/run/turn/tool-call/subagent ID，事件序列、usage、审批/取消/错误状态；脱敏和慢消费者压力验收；协议版本/能力可查询。 |
+| REQ-POLICY | 宿主限制工具，扩展和子代理不得绕过 | Workspace 审批/ToolFilter 与 AUD-02/03/07 已落地；extra_tools 的 host-controlled 边界待明确 | P1 / 大 / 无 | 全入口经过统一决策；deny 优先；审批绑定规范化参数、cwd、工具身份；项目配置未信任不得启动；嵌套权限只收窄。 |
+| REQ-PROCESS | 取消、超时后不残留计算和新副作用 | Shell/插件进程组、输出限额与 AUD-01/05/06/12 已落地；真实故障注入待验收 | P1 / 中 / POLICY | CLI/RPC/EOF、超时、父子任务、后代进程均有回收测试；输出与 CPU 有界；已发生修改与取消后的执行严格区分。 |
+| REQ-SCHEDULE | 429 不成风暴，同一 Provider 共享冷却 | `Coordinator` 进程内准入 + `SharedLimits` 跨进程 `flock` 配额；429 `Retry-After` 冷却；`src/scheduling.rs` 真实 dispatch hook | P1 / 中 / PROCESS | 已实现并通过离线验收：模拟 429 / 并发槽位 / 跨进程配额用例已存在；未联网真实 Provider、跨平台未验证。 |
+| REQ-CONFLICT | 冲突任务排队、无关任务并行 | 进程内路径作用域租约；子代理 FIFO 整工作区 writer 独占、只读并行；跨进程 workspace 租约已接入工作区执行路径 | P1 / 中 / SCHEDULE | 已实现并通过离线验收：进程内冲突/饥饿用例已存在；跨进程租约已接入工作区执行路径，无自动冲突合并。 |
+| REQ-QUOTA | 重任务有独立并发/时间配额 | heavy 本地 + 跨进程默认 2；shell/plugin/mcp 保守计入 heavy | P1 / 中 / SCHEDULE | 已实现并通过离线验收：本地/跨进程 heavy 用例已存在；未接入 dispatch 的工具与直接启动进程不保证受限，无 OS 隔离。 |
+| REQ-BUDGET | 请求前预留、请求后记录真实 usage | `--max-model-calls` 硬次数；`--max-total-tokens` 预留+真实 usage 结算，未知按预留、超预留阻止后续 | P1 / 中 / PROVIDER | 已实现并通过离线验收：预留/未知/overage 用例已存在；为 token 计数非费用硬限，跨进程预算未持久化。 |
+| REQ-DEDUP | 显式任务 key 去重 | `Coordinator::dedup_key`；子代理相同 session + 相同活动请求复用 `run_id` | P2 / 小 / SCHEDULE | 已实现并通过离线验收：dedup 与 run_id 复用用例已存在；CLI 未暴露 dedup 参数。 |
+| REQ-ACCEPT | 结构化验收证据可复查 | journal + `ToolEvidence` + `completion_call`/`diagnostic` 事件 + 离线评测 harness | P2 / 中 / EVENTS、EVAL | 已实现并通过离线验收：证据/事件脱敏用例已存在；harness 为探针非 benchmark，最终门禁已通过，真实任务对比待执行。 |
+| REQ-PROVIDER | 用户选择官方供应商即可使用正确协议 | 原生路由 AUD-04 已落地（离线契约）；AUD-18 能力来源待统一 | P1 / 中 / 无 | 原生/兼容路由显式；路径、认证、工具流、thinking、usage、限额、断流和错误分类的离线契约通过；线上测试另行标记。 |
+| REQ-RECOVERY | 长任务失败后知道做过什么，安全继续 | 会话原子快照与 AUD-10/11/13/19 已落地；崩溃注入与端到端恢复未验收 | P2 / 大 / PROCESS、POLICY | intent/result/unknown 持久化；崩溃注入不盲目重放；同名/最新会话准确；可选文件快照不覆盖用户后改内容。 |
+| REQ-EVENTS | Ravomi/终端/其他宿主能显示并追踪运行 | Host/OSC/RPC、`completion_call`/`diagnostic` 与底层 observe 已有；AUD-15 贯通待完成 | P2 / 中 / POLICY | 稳定 session/run/turn/tool-call/subagent ID，事件序列、usage、审批/取消/错误状态；脱敏和慢消费者压力验收；协议版本/能力可查询。 |
 | REQ-CONTEXT | 长任务保留约束且控制成本，大仓库能找到相关代码 | 指令/skill/模板/安全工具边界与摘要已有；AUD-06/14/18 | P2 / 大 / EVENTS、EVAL | 原始 transcript 可查；约束和未完成项评测；稳定前缀及实际 token/cache 指标；对 repo map/LSP/索引先做效果试验再选型。 |
-| REQ-EXTENSIONS | 插件/MCP 可预测接入并被监督 | 动态工具桥已有；AUD-02/03/05/07/08/09/16 | P2 / 中 / POLICY、PROCESS | 分页、冲突拒绝、required/optional、复用重连、协商/取消/通知和负向 conformance；错误可定位到服务与调用。 |
-| REQ-ISOLATE | 宿主选择真实受限执行与并行修改环境 | 路径检查和重叠写限制已有；尚无 OS sandbox | P2 / 大 / POLICY、PROCESS | backend 状态可查询；无 backend 的失败行为明确；越界文件/网络/资源测试按平台执行；worktree 的冲突合并与安全隔离分别验收。 |
+| REQ-EXTENSIONS | 插件/MCP 可预测接入并被监督 | 动态工具桥与 AUD-02/03/05/07/08/09 已落地；AUD-16 生命周期/重连待补 | P2 / 中 / POLICY、PROCESS | 分页、冲突拒绝、required/optional、复用重连、协商/取消/通知和负向 conformance；错误可定位到服务与调用。 |
+| REQ-ISOLATE | 宿主选择真实受限执行与并行修改环境 | 路径检查/重叠写限制与跨进程 workspace 租约模块已有；无 OS sandbox | P2 / 大 / POLICY、PROCESS | backend 状态可查询；无 backend 的失败行为明确；越界文件/网络/资源测试按平台执行；worktree 的冲突合并与安全隔离分别验收。跨进程租约已有取消、进程退出回收用例。 |
 | REQ-SDK | 第三方 Rust 宿主稳定使用三个层次 | run/Host/hook/bus 已有；AUD-15/20 | P2 / 中 / EVENTS | 最小与完整宿主示例可编译；生命周期/取消/错误契约清晰；公共 API 兼容检查；先接底层能力，不复制另一套循环。 |
 | REQ-EVAL | 用证据判断改进、选模型和比较竞品 | 协议单测较多，缺真实任务对照 | P2 / 中 / PROVIDER、EVENTS | 固定任务集、评估器、模型与预算；输出正确性、成本、时间、缓存、取消清理、恢复和修改冲突数据；保留失败案例和原始配置。 |
 | REQ-DISTRIBUTION | 不同平台能可靠安装与升级 | npm/安装 fixtures 已有；AUD-17/20 | P2 / 中 / 无 | 平台与 feature 矩阵；helper crate 自身检查；下载/解压上限、校验失败不污染已有安装；registry 发布依赖闭包和许可证来源记录可核对。 |
@@ -110,6 +142,7 @@ Reasonix 特别注意：不能继续把它概括为“仅 DeepSeek、必须 Node
 | 取消 | 插件、Shell、MCP、blocking 写操作和子代理分别注入取消/EOF/超时 | 取消确认延迟、残留进程、确认后新副作用、写租约释放次序 | 插件已复现缺陷，Shell 现有测试通过 |
 | 恢复 | 请求前、执行中、结果返回后、保存前分别中断 | 执行证据完整性、unknown 比例、重复副作用、用户能否继续 | 当前只有回合成功快照保障 |
 | 权限 | deny/ask/allow、别名、通配符、参数变化、项目 MCP 和嵌套调用 | 拒绝时无未授权新副作用；平台沙箱另测试路径/网络越界 | 插件过滤和 MCP 信任缺口已复现 |
+| 限流与调度 | 模拟 Provider 的 429/`Retry-After`，并发父/子代理与 RPC 任务；请求计数与时间线 | 请求不放大、冷却共享、冲突排队/无关并行；跨进程 workspace 租约已有离线验证，线上表现仍需比较 | 已实现并通过离线验收（进程内+跨进程模块+用例）；真实 Provider 与跨平台未验证 |
 | 资源 | 长行无匹配、大输出、超长协议帧、慢消费者、并发工具和大型历史 | RSS/CPU/吞吐/退出行为有上限且可解释；不在用户真实环境制造 OOM | 仅正则小规模复杂度探针已运行 |
 | 上下文保真 | 早期用户约束、决策、未完目标、失败工具证据；长程任务 | 压缩后约束保持率和任务正确性；原始记录可查 | 现有摘要为规则截取，待专项 |
 | SDK/协议 | 宿主最小示例、重连/取消、事件顺序、错误传播、API 变更 | 兼容性与 conformance；不把“能启动”视为完整集成 | Mio 当前基础可用，待版本化 |

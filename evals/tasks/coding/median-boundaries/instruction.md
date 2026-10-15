@@ -1,0 +1,1 @@
+Fix stats.py median(values). Accept any finite iterable of numbers, do not mutate input, return the middle number for odd lengths and the mean of the middle pair for even lengths. Empty input must raise ValueError. Use only the Python standard library.

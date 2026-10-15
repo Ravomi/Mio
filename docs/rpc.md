@@ -15,7 +15,7 @@
 - 空闲时，`prompt`、`steer`、`follow_up` 都会立即开始一轮任务。
 - 运行时，`steer` 按收到顺序排队，在工具完成后附加到工具结果传给模型。若本轮没有可消费引导的工具结果，完成后先处理剩余引导，再执行 follow-up。它不会中断已发出的模型请求或正在执行的工具。
 - `follow_up` 按 FIFO 顺序在当前任务及引导完成后自动启动，不需要额外发送 `prompt`。
-- `get_state` 在运行中可用；`isStreaming` 表示任务活动状态，`followUpCount` 表示待执行 follow-up 数量。运行时的消息数来自本轮开始前的已保存历史。
+- `get_state` 在运行中可用；`isStreaming` 表示任务活动状态，`followUpCount` 表示待执行 follow-up 数量，`steeringCount` 为待注入引导数，`pendingApprovalCount` 为待审批数。运行时的消息数来自本轮开始前的已保存历史。`scheduler` 返回本进程调度的实时状态，`childTasks` 返回子代理活动的 `{running,queued,limit}`，`journalEnabled` / `journalPath` / `recovery` 返回执行证据状态（详见“调度、配额与结构化事件”）。
 - `abort` 取消当前模型/工具 future 与活动子代理，清空引导和 follow-up 队列。应答中的 `aborted` 为实际是否有活动任务；空闲取消返回 `false`。取消后可再次提交任务。
 - 运行中发送普通 `prompt`、修改会话、压缩或切换模型会返回失败，应使用 `steer` / `follow_up` 或等待空闲。启用会话持久化时，压缩、命名、新建和分叉仅在落盘成功后返回成功；失败保留原会话状态并可重试。--no-session 仅更新内存。
 - 关闭 stdin 会取消活动任务并退出。错误会清空待执行队列。取消或失败保留上次成功保存的会话；已发生的文件修改不回滚。
@@ -37,6 +37,49 @@
 ```
 
 `status` 还可能为 `cancelled` 或 `error`。`error` 状态前会发送错误事件。EOF 关闭时不保证发送结束事件，客户端需同时处理进程退出。
+
+## 调度、配额与结构化事件
+
+启动时可用 `--shared-limits-dir` / `--no-shared-limits` 和本进程 `--max-model-concurrency` / `--max-provider-concurrency` / `--max-heavy-tasks` / `--max-subagents` / `--max-model-calls` / `--max-total-tokens` 配置配额；默认同时启用进程内调度与跨进程协调（用户配置目录的 `coordination/`）。
+
+`get_state.data` 额外包含本进程调度实时状态（不伪造跨进程 active）：
+
+```json
+{
+  "type": "response",
+  "command": "get_state",
+  "id": "s1",
+  "success": true,
+  "data": {
+    "scheduler": {
+      "tasks": { "active": 1, "queued": 0, "limit": 4 },
+      "model": { "active": 1, "queued": 0, "limit": 2, "activeByProviderHash": {}, "cooldownMs": {} },
+      "heavy": { "active": 0, "queued": 0, "limit": 2 },
+      "budget": { "calls": 3, "maxCalls": null, "tokensReserved": 0, "tokensUsed": 1200, "maxTokens": null, "overage": 0, "blocked": false },
+      "shared": { "modelLimit": 2, "providerLimit": 2, "heavyLimit": 2, "cooldowns": [] },
+      "waitingSharedModel": 0,
+      "waitingSharedHeavy": 0
+    },
+    "childTasks": { "running": 1, "queued": 0, "limit": 2 },
+    "journalEnabled": true,
+    "recovery": null
+  }
+}
+```
+
+- `scheduler.model.activeByProviderHash` / `cooldownMs` 使用 endpoint + 凭据的 SHA-256 摘要作为键，不含原文；429 的 `Retry-After` 冷却也记在这里。
+- `scheduler.shared` 只返回跨进程配置与冷却；跨进程持有者无法可靠枚举，因此**不返回全局 active 计数**。共享状态不可用时返回 `{"error": "..."}`。
+- `scheduler.model.activeByProviderHash` 与 `budget` 均为本进程计数。`budget.maxCalls` / `maxTokens` 为 `null` 表示未设置上限；`tokensReserved` 是在途预留，`tokensUsed` 是结算后计数，`overage` > 0 表示实际用量超出预留、后续请求会被阻止。这是 token 计数，不是费用账单。
+- `childTasks.queued` 对应 `SubagentManager` 的 `Queued` 状态，`limit` 来自 `--max-subagents`；子代理在并发上限或工作区忙碌时排队而非拒绝。
+
+运行中还会发送结构化事件：
+
+```json
+{"type":"completion_call","data":{"runId":"...","callIndex":0,"usage":{"inputTokens":100,"outputTokens":20},"finishReason":"stop"}}
+{"type":"diagnostic","data":{"runId":"...","category":"rate_limit","message":"...","retryable":true,"httpStatus":429}}
+```
+
+`usage` 中未上报的计数为 `null`，不会伪造成 0；`completion_call` / `diagnostic` 均不含凭据、请求体或原始响应。`diagnostic.category` 为稳定分类（如 `rate_limit`、`authentication`、`scheduling`、`cancelled`），不是原始错误文本。
 
 ## 工具审批流程 (--approve)
 

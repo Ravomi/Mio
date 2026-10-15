@@ -1,4 +1,9 @@
 //! Native, in-memory child sessions. Task isolation is not process or OS isolation.
+//!
+//! Admission is queued instead of refused. Reaching the concurrency limit, an
+//! overlapping writer or an active parent workspace operation registers the run
+//! as [`Status::Queued`] and lets it start later. Queued runs are not spawned,
+//! so they hold no model, heavy-task or workspace permit while waiting.
 use crate::{
     AgentEvent, Config, Host, HostFuture, Message, Provider, RunOptions, RunTools, Services,
 };
@@ -20,15 +25,47 @@ const MAX_RECORDS: usize = 128;
 const MAX_OUTPUT: usize = 32 * 1024;
 const MAX_HISTORY: usize = 2 * 1024 * 1024;
 const MAX_WAIT: Duration = Duration::from_secs(30);
+/// Bounded structured execution evidence retained per child run.
+const MAX_EVIDENCE: usize = 32;
+const MAX_EVIDENCE_TOOL: usize = 128;
+const MAX_EVIDENCE_TEXT: usize = 256;
+const MAX_EVIDENCE_TARGET: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    /// Registered but not yet admitted: waiting for a slot or the workspace.
+    Queued,
     Running,
     Completed,
     Failed,
     Cancelled,
     TimedOut,
+}
+
+impl Status {
+    /// True while the run still owns its session and must be accounted for.
+    /// Hosts cancel active runs uniformly; every terminal state returns false.
+    pub fn is_active(self) -> bool {
+        matches!(self, Status::Queued | Status::Running)
+    }
+}
+
+/// Bounded, structured evidence derived only from real `ToolFinished` events.
+///
+/// `ok` reflects the tool's own reported result and is deliberately not a test
+/// verdict; a shell command that exits zero is not labelled as a passing test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEvidence {
+    pub tool: String,
+    pub target: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Stable FNV-1a hash of the full, untruncated result text.
+    pub result_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +80,16 @@ pub struct Snapshot {
     pub output_truncated: bool,
     pub last_tool: Option<String>,
     pub error: Option<String>,
+    pub evidence: Vec<ToolEvidence>,
+    pub evidence_truncated: bool,
+}
+
+/// Cheap live counters without cloning child output or execution evidence.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Activity {
+    pub running: usize,
+    pub queued: usize,
+    pub limit: usize,
 }
 
 #[derive(Clone, Deserialize)]
@@ -118,44 +165,101 @@ struct Session {
     cwd: PathBuf,
     read_only: bool,
     history: Vec<Message>,
+    /// Set while a queued or running run owns this session.
     active: Option<Uuid>,
 }
+
+/// Identical active/queued request identity used to reuse an existing run id.
+#[derive(Clone, PartialEq, Eq)]
+struct RequestKey {
+    goal: String,
+    cwd: PathBuf,
+    read_only: bool,
+    prompt: String,
+    tool_filter: crate::pattern::ToolFilter,
+    timeout: Duration,
+}
+
+/// Everything needed to start a queued run once admission allows it.
+struct PendingRun {
+    prompt: String,
+    history: Vec<Message>,
+    host: Arc<dyn Host>,
+    tool_filter: crate::pattern::ToolFilter,
+    timeout: Duration,
+    cancelled: oneshot::Receiver<()>,
+}
+
 struct Record {
     seq: usize,
     snapshot: Snapshot,
+    key: RequestKey,
     cancel: Option<oneshot::Sender<()>>,
     changed: watch::Sender<Status>,
+    pending: Option<PendingRun>,
 }
-#[derive(Default)]
+
 struct State {
     sessions: BTreeMap<String, Session>,
     runs: BTreeMap<Uuid, Record>,
     next_seq: usize,
     parent_operations: usize,
+    concurrency: usize,
+    timeout: Duration,
+    config: Config,
+    options: RunOptions,
+    executor: Arc<dyn Executor>,
+    runtime: Option<tokio::runtime::Handle>,
+}
+
+/// Captured admission decision for one queued run, moved off the lock before
+/// it is spawned so no mutex is held across an await or a task start.
+struct Job {
+    id: Uuid,
+    session: String,
+    task: Task,
+    cancelled: oneshot::Receiver<()>,
+    timeout: Duration,
 }
 
 /// Drop cancels outstanding children; successful history lasts for this manager's lifetime.
 pub struct SubagentManager {
     root: PathBuf,
-    config: Config,
-    options: RunOptions,
-    concurrency: usize,
-    timeout: Duration,
-    executor: Arc<dyn Executor>,
     state: Arc<Mutex<State>>,
 }
 impl Drop for SubagentManager {
     fn drop(&mut self) {
-        for record in self.state.lock().unwrap().runs.values_mut() {
-            if let Some(cancel) = record.cancel.take() {
-                let _ = cancel.send(());
+        let mut state = self.state.lock().unwrap();
+        for record in state.runs.values_mut() {
+            match record.snapshot.status {
+                Status::Queued => {
+                    // Clearing `pending` breaks the record -> host -> state cycle.
+                    record.pending = None;
+                    record.cancel = None;
+                    record.snapshot.status = Status::Cancelled;
+                    record.snapshot.error = Some("Child cancelled".into());
+                    record.changed.send_replace(Status::Cancelled);
+                }
+                Status::Running => {
+                    if let Some(cancel) = record.cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                }
+                _ => {}
             }
         }
     }
 }
 impl SubagentManager {
     pub fn new(root: &Path, config: Config, options: RunOptions) -> Result<Self, String> {
-        if !matches!(config.provider, Provider::Custom | Provider::Deepseek) {
+        if !matches!(
+            config.provider,
+            Provider::Custom
+                | Provider::Deepseek
+                | Provider::Anthropic
+                | Provider::Google
+                | Provider::Ollama
+        ) {
             return Err("This provider requires an injected account service; use new_with_antigravity for Antigravity".into());
         }
         Self::with_executor(
@@ -195,25 +299,51 @@ impl SubagentManager {
         executor: Arc<dyn Executor>,
     ) -> Result<Self, String> {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
-        if !root.is_dir()
-            || !(1..=16).contains(&concurrency)
-            || timeout.is_zero()
-            || timeout > Duration::from_secs(3600)
-            || options.instructions.len() > 128 * 1024
-            || !(1..=256).contains(&options.max_turns)
-            || config.model.trim().is_empty()
-        {
+        if !root.is_dir() {
             return Err("Invalid subagent workspace, model, limits or instructions".into());
         }
+        validate_limits(&config, &options, concurrency, timeout)?;
         Ok(Self {
             root,
-            config,
-            options,
-            concurrency,
-            timeout,
-            executor,
-            state: Arc::new(Mutex::new(State::default())),
+            state: Arc::new(Mutex::new(State {
+                sessions: BTreeMap::new(),
+                runs: BTreeMap::new(),
+                next_seq: 0,
+                parent_operations: 0,
+                concurrency,
+                timeout,
+                config,
+                options,
+                executor,
+                runtime: None,
+            })),
         })
+    }
+    /// Configure admission concurrency (1..=16) before any task starts.
+    /// Intended for the CLI `--max-subagents` flag; refusing while a task or a
+    /// parent operation is active keeps the bound stable for live queues.
+    pub fn with_concurrency(self, concurrency: usize) -> Result<Self, String> {
+        let mut this = self;
+        this.set_concurrency(concurrency)?;
+        Ok(this)
+    }
+    /// In-place equivalent of [`Self::with_concurrency`] that never drops the
+    /// manager, so a rejected resize cannot cancel live children.
+    pub fn set_concurrency(&mut self, concurrency: usize) -> Result<(), String> {
+        if !(1..=16).contains(&concurrency) {
+            return Err("Subagent concurrency must be between 1 and 16".into());
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.parent_operations != 0
+            || state
+                .runs
+                .values()
+                .any(|run| run.snapshot.status.is_active())
+        {
+            return Err("Cannot change subagent concurrency while tasks are active".into());
+        }
+        state.concurrency = concurrency;
+        Ok(())
     }
     /// Change the model for future tasks without discarding child sessions.
     /// Requires exclusive ownership and no active task or parent operation.
@@ -225,30 +355,29 @@ impl SubagentManager {
     ) -> Result<(), String> {
         let executor: Arc<dyn Executor> = match (config.provider, account) {
             (Provider::Antigravity, Some(account)) => Arc::new(AntigravityExecutor(account)),
-            (Provider::Custom | Provider::Deepseek, _) => Arc::new(NativeExecutor),
+            (
+                Provider::Custom
+                | Provider::Deepseek
+                | Provider::Anthropic
+                | Provider::Google
+                | Provider::Ollama,
+                _,
+            ) => Arc::new(NativeExecutor),
             _ => return Err("Provider requires an available account service".into()),
         };
-        let mut replacement = Self::with_executor(
-            &self.root,
-            config,
-            options,
-            self.concurrency,
-            self.timeout,
-            executor,
-        )?;
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        validate_limits(&config, &options, state.concurrency, state.timeout)?;
         if state.parent_operations != 0
             || state
                 .runs
                 .values()
-                .any(|run| run.snapshot.status == Status::Running)
+                .any(|run| run.snapshot.status.is_active())
         {
             return Err("Cannot switch model while child tasks are running".into());
         }
-        drop(state);
-        std::mem::swap(&mut self.config, &mut replacement.config);
-        std::mem::swap(&mut self.options, &mut replacement.options);
-        std::mem::swap(&mut self.executor, &mut replacement.executor);
+        state.config = config;
+        state.options = options;
+        state.executor = executor;
         Ok(())
     }
 
@@ -291,6 +420,9 @@ impl SubagentManager {
         }
         let runtime = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
         let mut state = self.state.lock().unwrap();
+        // The first dispatch installs the runtime handle the queue uses to
+        // spawn admitted runs from lease drops and child completions.
+        state.runtime = Some(runtime);
         let cwd = match &request.path {
             Some(path) => crate::checked_path(&self.root, path, false)?,
             None => state
@@ -310,28 +442,32 @@ impl SubagentManager {
         {
             return Err("Subagent record limit reached; create a new manager".into());
         }
-        if state.parent_operations > 0 {
-            return Err("Parent workspace operation is still running".into());
-        }
-        let active: Vec<_> = state
-            .sessions
-            .values()
-            .filter(|s| s.active.is_some())
-            .collect();
-        if active.len() >= self.concurrency {
-            return Err("Subagent concurrency limit reached".into());
-        }
-        for s in active {
-            if (cwd.starts_with(&s.cwd) || s.cwd.starts_with(&cwd))
-                && (!request.read_only || !s.read_only)
-            {
-                return Err("An active task holds an overlapping workspace".into());
+        let timeout = match task_timeout {
+            Some(t) => t.min(state.timeout),
+            None => state.timeout,
+        };
+        let key = RequestKey {
+            goal: request.goal.clone(),
+            cwd: cwd.clone(),
+            read_only: request.read_only,
+            prompt: request.prompt.clone(),
+            tool_filter: tool_filter.clone(),
+            timeout,
+        };
+        // Reuse the original run id for a structurally identical request while
+        // that run is still queued or running. Different requests remain an
+        // explicit error, and terminal runs are never replayed by this path.
+        if let Some(session) = state.sessions.get(&request.session)
+            && let Some(active) = session.active
+            && let Some(record) = state.runs.get(&active)
+            && record.snapshot.status.is_active()
+        {
+            if record.key == key {
+                return Ok(record.snapshot.clone());
             }
+            return Err("Session already has a different queued or running task; wait, kill it, or use a new session".into());
         }
         let history = if let Some(session) = state.sessions.get(&request.session) {
-            if session.active.is_some() {
-                return Err("Session already running".into());
-            }
             if session.cwd != cwd
                 || session.read_only != request.read_only
                 || session.goal != request.goal
@@ -354,19 +490,29 @@ impl SubagentManager {
             goal: request.goal.clone(),
             cwd: cwd.clone(),
             read_only: request.read_only,
-            status: Status::Running,
+            status: Status::Queued,
             output: String::new(),
             output_truncated: false,
             last_tool: None,
             error: None,
+            evidence: Vec::new(),
+            evidence_truncated: false,
         };
         let (cancel, cancelled) = oneshot::channel();
-        let (changed, _) = watch::channel(Status::Running);
+        let (changed, _) = watch::channel(Status::Queued);
+        // Bind the child's event/observation channel to this run before it is
+        // queued, so evidence is captured and no child text leaks to the parent.
+        let task_host: Arc<dyn Host> = Arc::new(ChildHost {
+            inner: host,
+            state: self.state.clone(),
+            id,
+            session: request.session.clone(),
+        });
         state.sessions.insert(
             request.session.clone(),
             Session {
                 goal: request.goal,
-                cwd: cwd.clone(),
+                cwd,
                 read_only: request.read_only,
                 history: history.clone(),
                 active: Some(id),
@@ -377,65 +523,22 @@ impl SubagentManager {
             Record {
                 seq,
                 snapshot: snapshot.clone(),
+                key,
                 cancel: Some(cancel),
                 changed,
+                pending: Some(PendingRun {
+                    prompt: request.prompt,
+                    history,
+                    host: task_host,
+                    tool_filter,
+                    timeout,
+                    cancelled,
+                }),
             },
         );
         drop(state);
-
-        let task_host = Arc::new(ChildHost {
-            inner: host,
-            state: self.state.clone(),
-            id,
-        });
-        let task = Task {
-            config: self.config.clone(),
-            history,
-            prompt: request.prompt,
-            cwd,
-            host: task_host,
-            options: self.options.clone(),
-            read_only: request.read_only,
-            tool_filter,
-        };
-        let executor = self.executor.clone();
-        let state = self.state.clone();
-        let timeout = match task_timeout {
-            Some(t) => t.min(self.timeout),
-            None => self.timeout,
-        };
-        runtime.spawn(async move {
-            // Drop the execution future (including shell guards) before releasing the workspace lease.
-            let outcome = {
-                let work = AssertUnwindSafe(async move { executor.execute(task).await }).catch_unwind();
-                tokio::select! {
-                    biased;
-                    _ = cancelled => Err((Status::Cancelled, "Child cancelled".to_owned())),
-                    _ = tokio::time::sleep(timeout) => Err((Status::TimedOut, "Child timed out".to_owned())),
-                    result = work => match result {
-                        Ok(Ok(history)) => match serde_json::to_vec(&history) {
-                            Ok(bytes) if bytes.len() <= MAX_HISTORY => Ok(history),
-                            _ => Err((Status::Failed, "Child history exceeded the 2 MiB limit".to_owned())),
-                        },
-                        Ok(Err(error)) => Err((Status::Failed, bounded(&error))),
-                        Err(_) => Err((Status::Failed, "Child executor panicked".to_owned())),
-                    }
-                }
-            };
-            let mut state = state.lock().unwrap();
-            let session = state.sessions.get_mut(&request.session).expect("registered child session");
-            session.active = None;
-            let (status, error) = match outcome {
-                Ok(history) => { session.history = history; (Status::Completed, None) }
-                Err((status, error)) => (status, Some(error)),
-            };
-            let record = state.runs.get_mut(&id).expect("registered child run");
-            record.snapshot.status = status;
-            record.snapshot.error = error;
-            record.cancel = None;
-            record.changed.send_replace(status);
-        });
-        Ok(snapshot)
+        pump(&self.state);
+        self.snapshot(id)
     }
     pub fn snapshot(&self, id: Uuid) -> Result<Snapshot, String> {
         self.state
@@ -452,6 +555,22 @@ impl SubagentManager {
         records.sort_by_key(|r| r.seq);
         records.into_iter().map(|r| r.snapshot.clone()).collect()
     }
+    pub fn activity(&self) -> Activity {
+        let state = self.state.lock().unwrap();
+        Activity {
+            running: state
+                .runs
+                .values()
+                .filter(|run| run.snapshot.status == Status::Running)
+                .count(),
+            queued: state
+                .runs
+                .values()
+                .filter(|run| run.snapshot.status == Status::Queued)
+                .count(),
+            limit: state.concurrency,
+        }
+    }
     pub async fn status(&self, id: Uuid, wait: Duration) -> Result<Snapshot, String> {
         let mut changed = self
             .state
@@ -462,19 +581,47 @@ impl SubagentManager {
             .ok_or("Unknown child run")?
             .changed
             .subscribe();
-        if *changed.borrow_and_update() == Status::Running {
+        if (*changed.borrow_and_update()).is_active() {
             let _ = tokio::time::timeout(wait.min(MAX_WAIT), changed.changed()).await;
         }
         self.snapshot(id)
     }
-    /// Waits until the execution future has been dropped; a new run cannot steal its lease.
+    /// Cancel a queued or running run and wait until it is terminal.
+    ///
+    /// A queued run is removed from the queue immediately, releasing its
+    /// session; a running run receives cancellation. A cancelled blocking
+    /// workspace operation may still be writing until its worker returns, so
+    /// this never implies rollback.
     pub async fn kill(&self, id: Uuid) -> Result<Snapshot, String> {
+        let mut pump_needed = false;
         {
             let mut state = self.state.lock().unwrap();
             let record = state.runs.get_mut(&id).ok_or("Unknown child run")?;
-            if let Some(cancel) = record.cancel.take() {
-                let _ = cancel.send(());
+            match record.snapshot.status {
+                Status::Queued => {
+                    record.pending = None;
+                    record.cancel = None;
+                    record.snapshot.status = Status::Cancelled;
+                    record.snapshot.error = Some("Child cancelled".into());
+                    record.changed.send_replace(Status::Cancelled);
+                    let session = record.snapshot.session.clone();
+                    if let Some(entry) = state.sessions.get_mut(&session)
+                        && entry.active == Some(id)
+                    {
+                        entry.active = None;
+                    }
+                    pump_needed = true;
+                }
+                Status::Running => {
+                    if let Some(cancel) = record.cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                }
+                _ => {}
             }
+        }
+        if pump_needed {
+            pump(&self.state);
         }
         self.status(id, MAX_WAIT).await
     }
@@ -501,11 +648,17 @@ impl SubagentManager {
     }
     pub(crate) fn parent_operation(&self, write: bool) -> Result<ParentLease, String> {
         let mut state = self.state.lock().unwrap();
-        if state
-            .sessions
-            .values()
-            .any(|s| s.active.is_some() && (write || !s.read_only))
-        {
+        // Only a *running* child conflicts: a queued run cannot start while
+        // `parent_operations > 0`, so it never overlaps the parent operation.
+        let running_conflict = state.sessions.values().any(|session| {
+            session.active.is_some_and(|id| {
+                state.runs.get(&id).is_some_and(|record| {
+                    record.snapshot.status == Status::Running
+                        && (write || !record.snapshot.read_only)
+                })
+            })
+        });
+        if running_conflict {
             return Err("Wait for active children before accessing their workspace".into());
         }
         state.parent_operations += 1;
@@ -515,9 +668,178 @@ impl SubagentManager {
 pub(crate) struct ParentLease(Arc<Mutex<State>>);
 impl Drop for ParentLease {
     fn drop(&mut self) {
-        self.0.lock().unwrap().parent_operations -= 1;
+        {
+            let mut state = self.0.lock().unwrap();
+            state.parent_operations -= 1;
+        }
+        // A parent workspace operation ending is an admission event.
+        pump(&self.0);
     }
 }
+
+impl State {
+    /// Mark every admission-eligible queued run Running, oldest first.
+    ///
+    /// Strict head-of-line FIFO: when the oldest queued run cannot start, no
+    /// younger run may jump ahead of it. This keeps an existing writer from
+    /// being starved by a stream of newer read-only tasks while still letting
+    /// read-only runs share the workspace.
+    fn take_startable(&mut self) -> Vec<Job> {
+        let mut jobs = Vec::new();
+        if self.parent_operations > 0 {
+            return jobs;
+        }
+        let mut running = self
+            .runs
+            .values()
+            .filter(|run| run.snapshot.status == Status::Running)
+            .count();
+        let mut writer_running = self
+            .runs
+            .values()
+            .any(|run| run.snapshot.status == Status::Running && !run.snapshot.read_only);
+        let mut queued: Vec<Uuid> = self
+            .runs
+            .iter()
+            .filter(|(_, run)| run.snapshot.status == Status::Queued)
+            .map(|(id, _)| *id)
+            .collect();
+        queued.sort_by_key(|id| self.runs.get(id).map(|run| run.seq).unwrap_or(usize::MAX));
+        let config = self.config.clone();
+        let options = self.options.clone();
+        for id in queued {
+            if running >= self.concurrency {
+                break;
+            }
+            let read_only = self.runs[&id].snapshot.read_only;
+            if read_only && writer_running {
+                break;
+            }
+            if !read_only && running > 0 {
+                break;
+            }
+            let Some(record) = self.runs.get_mut(&id) else {
+                continue;
+            };
+            let Some(pending) = record.pending.take() else {
+                continue;
+            };
+            let session = record.snapshot.session.clone();
+            let cwd = record.snapshot.cwd.clone();
+            let task = Task {
+                config: config.clone(),
+                history: pending.history,
+                prompt: pending.prompt,
+                cwd,
+                host: pending.host,
+                options: options.clone(),
+                read_only,
+                tool_filter: pending.tool_filter,
+            };
+            record.snapshot.status = Status::Running;
+            record.changed.send_replace(Status::Running);
+            jobs.push(Job {
+                id,
+                session,
+                task,
+                cancelled: pending.cancelled,
+                timeout: pending.timeout,
+            });
+            running += 1;
+            if !read_only {
+                writer_running = true;
+            }
+        }
+        jobs
+    }
+}
+
+/// Try to admit queued runs. The lock is released before anything is spawned,
+/// and no waiter is polled here, so this is safe from a lease drop or a
+/// blocking worker thread.
+fn pump(state: &Arc<Mutex<State>>) {
+    let (jobs, runtime) = {
+        let mut state = state.lock().unwrap();
+        let Some(runtime) = state.runtime.clone() else {
+            return;
+        };
+        (state.take_startable(), runtime)
+    };
+    for job in jobs {
+        let state = state.clone();
+        runtime.spawn(async move { run_job(job, state).await });
+    }
+}
+
+async fn run_job(job: Job, state: Arc<Mutex<State>>) {
+    let Job {
+        id,
+        session,
+        task,
+        cancelled,
+        timeout,
+    } = job;
+    let executor = { state.lock().unwrap().executor.clone() };
+    // Drop the execution future (including shell guards) before releasing the workspace lease.
+    let outcome = {
+        let work = AssertUnwindSafe(async move { executor.execute(task).await }).catch_unwind();
+        tokio::select! {
+            biased;
+            _ = cancelled => Err((Status::Cancelled, "Child cancelled".to_owned())),
+            _ = tokio::time::sleep(timeout) => Err((Status::TimedOut, "Child timed out".to_owned())),
+            result = work => match result {
+                Ok(Ok(history)) => match serde_json::to_vec(&history) {
+                    Ok(bytes) if bytes.len() <= MAX_HISTORY => Ok(history),
+                    _ => Err((Status::Failed, "Child history exceeded the 2 MiB limit".to_owned())),
+                },
+                Ok(Err(error)) => Err((Status::Failed, bounded(&error))),
+                Err(_) => Err((Status::Failed, "Child executor panicked".to_owned())),
+            }
+        }
+    };
+    {
+        let mut state = state.lock().unwrap();
+        let child = state
+            .sessions
+            .get_mut(&session)
+            .expect("registered child session");
+        child.active = None;
+        let (status, error) = match outcome {
+            Ok(history) => {
+                child.history = history;
+                (Status::Completed, None)
+            }
+            Err((status, error)) => (status, Some(error)),
+        };
+        let record = state.runs.get_mut(&id).expect("registered child run");
+        record.snapshot.status = status;
+        record.snapshot.error = error;
+        record.cancel = None;
+        record.pending = None;
+        record.changed.send_replace(status);
+    }
+    // A terminal child frees its slot and may unblock the head of the queue.
+    pump(&state);
+}
+
+fn validate_limits(
+    config: &Config,
+    options: &RunOptions,
+    concurrency: usize,
+    timeout: Duration,
+) -> Result<(), String> {
+    if !(1..=16).contains(&concurrency)
+        || timeout.is_zero()
+        || timeout > Duration::from_secs(3600)
+        || options.instructions.len() > 128 * 1024
+        || !(1..=256).contains(&options.max_turns)
+        || config.model.trim().is_empty()
+    {
+        return Err("Invalid subagent workspace, model, limits or instructions".into());
+    }
+    Ok(())
+}
+
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.len() > 128
@@ -532,16 +854,29 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 fn bounded(text: &str) -> String {
-    let mut end = text.len().min(MAX_OUTPUT);
+    bounded_to(text, MAX_OUTPUT)
+}
+fn bounded_to(text: &str, max: usize) -> String {
+    let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     text[..end].to_owned()
 }
+/// Stable FNV-1a hash so a host can compare evidence against a claimed result.
+fn result_hash(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
 struct ChildHost {
     inner: Arc<dyn Host>,
     state: Arc<Mutex<State>>,
     id: Uuid,
+    session: String,
 }
 impl Host for ChildHost {
     fn approve_tool(&self, operation: &str, target: &str) -> Result<(), String> {
@@ -556,6 +891,14 @@ impl Host for ChildHost {
         self.inner.shell(command, cwd)
     }
     fn on_event(&self, event: AgentEvent) {
+        if let AgentEvent::ToolFinished {
+            operation,
+            target,
+            result,
+        } = &event
+        {
+            self.inner.on_tool_result(operation, target, result);
+        }
         if let Some(record) = self.state.lock().unwrap().runs.get_mut(&self.id) {
             match event {
                 AgentEvent::Text(text) => {
@@ -567,12 +910,63 @@ impl Host for ChildHost {
                     record.snapshot.output.push_str(&text[..end]);
                     record.snapshot.output_truncated |= end < text.len();
                 }
-                AgentEvent::ToolStarted { operation, .. }
-                | AgentEvent::ToolFinished { operation, .. } => {
+                AgentEvent::ToolStarted { operation, .. } => {
                     record.snapshot.last_tool = Some(bounded(&operation));
+                }
+                AgentEvent::ToolFinished {
+                    operation,
+                    target,
+                    result,
+                } => {
+                    record.snapshot.last_tool = Some(bounded(&operation));
+                    let (ok, summary, error, detail) = match &result {
+                        Ok(text) => (
+                            true,
+                            Some(bounded_to(text, MAX_EVIDENCE_TEXT)),
+                            None,
+                            text.as_str(),
+                        ),
+                        Err(text) => (
+                            false,
+                            None,
+                            Some(bounded_to(text, MAX_EVIDENCE_TEXT)),
+                            text.as_str(),
+                        ),
+                    };
+                    let evidence = ToolEvidence {
+                        tool: bounded_to(&operation, MAX_EVIDENCE_TOOL),
+                        target: bounded_to(&target, MAX_EVIDENCE_TARGET),
+                        ok,
+                        summary,
+                        error,
+                        result_hash: result_hash(detail),
+                    };
+                    if record.snapshot.evidence.len() < MAX_EVIDENCE {
+                        record.snapshot.evidence.push(evidence);
+                    } else {
+                        record.snapshot.evidence_truncated = true;
+                    }
                 }
             }
         }
+    }
+
+    /// Inherit the parent's observation channel, stamped with this child
+    /// run's identity. No text, provider body or request content crosses here.
+    fn on_completion_call(&self, call: &crate::CompletionCallObservation) {
+        let mut observed = call.clone();
+        observed.run_id = self.id;
+        observed.agent = Some(self.session.clone());
+        self.inner.on_completion_call(&observed);
+    }
+
+    /// Inherit the parent's diagnostic channel, stamped with this child run's
+    /// identity. The diagnostic is already sanitized by the run.
+    fn on_diagnostic(&self, diagnostic: &crate::RunDiagnostic) {
+        let mut observed = diagnostic.clone();
+        observed.run_id = self.id;
+        observed.agent = Some(self.session.clone());
+        self.inner.on_diagnostic(&observed);
     }
 }
 
@@ -631,7 +1025,7 @@ impl PortableTool for SubagentTool {
     type Output = Value;
     type Error = std::convert::Infallible;
     fn description(&self) -> String {
-        "Delegate a self-contained task to a native child with independent history. Children cannot delegate. Default read-only; explicitly set read_only=false for edits. Keep session goal/path/access unchanged to resume. Poll status by run_id (wait_ms up to 30000), collect results before final answer; completed means execution ended, independently verify results. Wait before parent writes or starting overlapping write tasks. Sessions live only in this process; fork clones last successful history. No OS sandbox.".into()
+        "Delegate a self-contained task to a native child with independent history. Children cannot delegate. Default read-only; explicitly set read_only=false for edits. Keep session goal/path/access unchanged to resume. Poll status by run_id (wait_ms up to 30000), collect results before final answer; completed means execution ended, inspect the reported evidence and independently verify results. Tasks queue while concurrency or the workspace is busy, so a delegate may return queued; wait before parent writes or starting overlapping write tasks. Sessions live only in this process; fork clones last successful history. No OS sandbox.".into()
     }
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{
@@ -679,12 +1073,11 @@ mod tests {
         }
         fn on_event(&self, _: AgentEvent) {}
     }
-    #[tokio::test]
-    async fn parent_and_child_workspace_operations_share_leases() {
-        let dir = tempfile::tempdir().unwrap();
-        let manager = Arc::new(
+
+    fn manager(root: &Path) -> Arc<SubagentManager> {
+        Arc::new(
             SubagentManager::with_executor(
-                dir.path(),
+                root,
                 Config {
                     model: "mock".into(),
                     ..Config::default()
@@ -695,7 +1088,13 @@ mod tests {
                 Arc::new(Pending),
             )
             .unwrap(),
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn parent_lease_drop_wakes_queued_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path());
         let task = Delegate {
             session: "child".into(),
             goal: "review".into(),
@@ -704,9 +1103,68 @@ mod tests {
             read_only: true,
         };
         let guard = manager.parent_operation(true).unwrap();
-        assert!(manager.delegate(task.clone(), Arc::new(Pending)).is_err());
+        let queued = manager.delegate(task.clone(), Arc::new(Pending)).unwrap();
+        assert_eq!(queued.status, Status::Queued);
+        assert!(queued.status.is_active());
+        // Re-delegating the exact same request reuses the queued run.
+        let duplicate = manager.delegate(task.clone(), Arc::new(Pending)).unwrap();
+        assert_eq!(duplicate.run_id, queued.run_id);
+        // A different prompt is still an explicit rejection.
+        let different = Delegate {
+            session: "child".into(),
+            goal: "review".into(),
+            prompt: "other".into(),
+            path: None,
+            read_only: true,
+        };
+        assert!(manager.delegate(different, Arc::new(Pending)).is_err());
+        drop(guard);
+        assert_eq!(
+            manager.snapshot(queued.run_id).unwrap().status,
+            Status::Running
+        );
+        manager.kill(queued.run_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn manager_drop_breaks_queued_host_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path());
+        let weak = Arc::downgrade(&manager.state);
+        let guard = manager.parent_operation(true).unwrap();
+        let task = Delegate {
+            session: "child".into(),
+            goal: "review".into(),
+            prompt: "review".into(),
+            path: None,
+            read_only: true,
+        };
+        let queued = manager.delegate(task, Arc::new(Pending)).unwrap();
+        assert_eq!(queued.status, Status::Queued);
+        drop(manager);
+        assert!(weak.upgrade().is_some());
+        drop(guard);
+        assert!(weak.upgrade().is_none(), "queued host cycle must not leak");
+    }
+
+    #[tokio::test]
+    async fn parent_and_child_workspace_operations_share_leases() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path());
+        let task = Delegate {
+            session: "child".into(),
+            goal: "review".into(),
+            prompt: "review".into(),
+            path: None,
+            read_only: true,
+        };
+        let guard = manager.parent_operation(true).unwrap();
+        let queued = manager.delegate(task.clone(), Arc::new(Pending)).unwrap();
+        assert_eq!(queued.status, Status::Queued);
         drop(guard);
         let child = manager.delegate(task, Arc::new(Pending)).unwrap();
+        assert_eq!(child.run_id, queued.run_id);
+        assert_eq!(child.status, Status::Running);
         let mut workspace = crate::Workspace::new(dir.path(), Arc::new(Pending)).unwrap();
         workspace.subagents = Some(manager.clone());
         assert!(
@@ -725,5 +1183,15 @@ mod tests {
             std::fs::read_to_string(dir.path().join("result")).unwrap(),
             "allowed"
         );
+    }
+
+    #[test]
+    fn status_is_active_covers_queued_and_running() {
+        assert!(Status::Queued.is_active());
+        assert!(Status::Running.is_active());
+        assert!(!Status::Completed.is_active());
+        assert!(!Status::Failed.is_active());
+        assert!(!Status::Cancelled.is_active());
+        assert!(!Status::TimedOut.is_active());
     }
 }

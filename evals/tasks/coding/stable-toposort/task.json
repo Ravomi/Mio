@@ -1,0 +1,12 @@
+{
+  "id": "stable-toposort",
+  "task_set": "mio-python-acceptance-v1",
+  "task_set_version": 1,
+  "title": "Stable topological ordering",
+  "language": "python",
+  "covers": ["topological order", "deterministic tie-break", "cycle detection", "input immutability"],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 10
+}
