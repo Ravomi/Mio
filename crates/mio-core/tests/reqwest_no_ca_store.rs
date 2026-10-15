@@ -4,7 +4,7 @@
 //! reqwest's rustls backend loads the platform CA store while building the
 //! client; on a host with none (a bare `ubuntu` container, say)
 //! `reqwest::Client::new()` panics with "No CA certificates were loaded from
-//! the system". [`rig_reqwest::shared`] promises a transport, so that failure
+//! the system". [`mio_reqwest::shared`] promises a transport, so that failure
 //! must come back from the first call as `ProviderError::Http`.
 //!
 //! The store is emptied through the `SSL_CERT_FILE` / `SSL_CERT_DIR`
@@ -38,7 +38,7 @@ async fn the_shared_transport_reports_a_missing_ca_store_on_send() {
     empty_the_ca_store();
 
     let model = OpenAIConfig::new("test-key")
-        .connect(rig_reqwest::shared())
+        .connect(mio_reqwest::shared())
         .completion("gpt-5.2");
     let request = CompletionRequest::new("hello");
     let outcome = match model.call(request.clone()).await {

@@ -64,7 +64,7 @@ pub use agent::{
 
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use rig_derive::rig_tool;
+pub use mio_derive::rig_tool;
 
 // Compile-time thread-safety contract: the agent surface must be safe to hold
 // in shared host state (worker pools, ECS resources) on native targets.

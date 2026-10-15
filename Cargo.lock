@@ -1438,8 +1438,8 @@ dependencies = [
  "indexmap",
  "loom",
  "mio-core",
- "rig-derive",
- "rig-reqwest",
+ "mio-derive",
+ "mio-reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -1464,8 +1464,8 @@ dependencies = [
  "libc",
  "mio-agent",
  "mio-core",
+ "mio-reqwest",
  "reqwest",
- "rig-reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1492,6 +1492,10 @@ dependencies = [
  "mime",
  "mime_guess",
  "mio-core",
+ "mio-derive",
+ "mio-http",
+ "mio-reqwest",
+ "mio-tungstenite",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -1499,10 +1503,6 @@ dependencies = [
  "proptest",
  "quick-xml",
  "redis",
- "rig-derive",
- "rig-http",
- "rig-reqwest",
- "rig-tungstenite",
  "schemars",
  "serde",
  "serde_json",
@@ -1516,6 +1516,75 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "mio-derive"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "convert_case",
+ "mio-agent",
+ "mio-core",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "schemars",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tokio",
+ "tracing-subscriber",
+ "trybuild",
+]
+
+[[package]]
+name = "mio-http"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-timer",
+ "http",
+ "mime",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "mio-reqwest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "http",
+ "mio-http",
+ "reqwest",
+ "reqwest-middleware",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "mio-tungstenite"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "http",
+ "mio-http",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -2233,73 +2302,6 @@ dependencies = [
  "serde",
  "thiserror",
  "tower-service",
-]
-
-[[package]]
-name = "rig-derive"
-version = "0.44.0"
-dependencies = [
- "anyhow",
- "convert_case",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "schemars",
- "serde",
- "serde_json",
- "syn 2.0.119",
- "tokio",
- "tracing-subscriber",
- "trybuild",
-]
-
-[[package]]
-name = "rig-http"
-version = "0.44.0"
-dependencies = [
- "bytes",
- "futures",
- "futures-timer",
- "http",
- "mime",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "rig-reqwest"
-version = "0.44.0"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "http",
- "reqwest",
- "reqwest-middleware",
- "rig-http",
- "thiserror",
- "tokio",
- "tokio-test",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "rig-tungstenite"
-version = "0.44.0"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "http",
- "rig-http",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]

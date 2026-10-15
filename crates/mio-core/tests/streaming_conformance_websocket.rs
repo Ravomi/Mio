@@ -26,7 +26,7 @@ use mio_core::test_utils::streaming_conformance::{
 };
 use mio_core::test_utils::{RecordingHttpClient, SequencedStreamingHttpClient};
 
-use rig_tungstenite::tokio_tungstenite::{accept_async, tungstenite::Message};
+use mio_tungstenite::tokio_tungstenite::{accept_async, tungstenite::Message};
 use tokio::net::TcpListener;
 
 /// Lower the fixture's byte frames onto ws text messages (one per `data:`

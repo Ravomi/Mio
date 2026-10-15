@@ -254,7 +254,7 @@ impl ResponsesWebSocketSessionBuilder {
     #[cfg(all(feature = "tungstenite", not(target_family = "wasm")))]
     #[cfg_attr(docsrs, doc(cfg(feature = "tungstenite")))]
     pub async fn connect(self) -> Result<ResponsesWebSocketSession, ProviderError> {
-        self.connect_with(&rig_tungstenite::TungsteniteClient::new())
+        self.connect_with(&mio_tungstenite::TungsteniteClient::new())
             .await
     }
 

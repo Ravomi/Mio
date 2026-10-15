@@ -1,7 +1,6 @@
 [workspace]
-members = [".", "crates/mio-core", "crates/mio-agent"]
-default-members = [".", "crates/mio-core", "crates/mio-agent"]
-exclude = ["third_party/rig/rig-http", "third_party/rig/rig-reqwest", "third_party/rig/rig-tungstenite", "third_party/rig/rig-derive"]
+members = [".", "crates/mio-core", "crates/mio-agent", "crates/mio-http", "crates/mio-reqwest", "crates/mio-tungstenite", "crates/mio-derive"]
+default-members = [".", "crates/mio-core", "crates/mio-agent", "crates/mio-http", "crates/mio-reqwest", "crates/mio-tungstenite", "crates/mio-derive"]
 resolver = "3"
 
 [package]
@@ -30,7 +29,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 mio-core = { version = "=0.1.0", path = "crates/mio-core", default-features = false, features = ["reqwest", "rustls"] }
 mio-agent = { version = "=0.1.0", path = "crates/mio-agent", default-features = false }
-rig-reqwest = { version = "=0.44.0", path = "third_party/rig/rig-reqwest", default-features = false, features = ["rustls"] }
+mio-reqwest = { version = "=0.1.0", path = "crates/mio-reqwest", default-features = false, features = ["rustls"] }
 tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "fs", "io-util", "io-std", "signal", "process", "net", "rt-multi-thread"] }
 futures-util = "=0.3.34"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "form", "stream", "system-proxy"] }

@@ -16,7 +16,7 @@ format remain unchanged. This is a Rust package/API naming break.
 
 ## Provenance
 
-Upstream: https://github.com/0xPlaygrounds/rig, version **0.44.0**, commit `2d1071e0e0c602f994e9d6cfd8cf5faea6f53650`. The imported crates retain their MIT notices, original manifests and revision metadata. The two Mio layer READMEs describe the maintained forks. Copyright and the acknowledgment in `CREDITS.md` remain intact.
+Upstream: https://github.com/0xPlaygrounds/rig, version **0.44.0**, commit `2d1071e0e0c602f994e9d6cfd8cf5faea6f53650`. The source forks retain their MIT notices, original manifests and revision metadata. The two Mio layer READMEs describe the maintained forks. Copyright and the acknowledgment in `CREDITS.md` remain intact.
 
 The source was copied from the published crate archives resolved by Mio's existing lockfile. Archive SHA-256 values:
 
@@ -32,21 +32,19 @@ The source was copied from the published crate archives resolved by Mio's existi
 
 ## Local integration
 
-Transport helpers remain under `third_party/rig` (`rig-http`, `rig-reqwest`,
-`rig-tungstenite`). Runtime and development dependencies resolve to these local
-sources. `rig-derive` is also local: its resolver recognizes `mio-core` and
-`mio-agent`, including renamed Cargo dependencies. The public `rig_tool` macro
-name and internal `rig` self-aliases remain for source compatibility; they do
-not link a second upstream runtime. The published upstream `rig-cassette`
-adapters are not type-compatible with these forks. Implement the local
-`mio_core::serve::Recorder` contract when recording is needed.
+Transport contracts, HTTP and websocket implementations, and procedural macros are
+maintained as `mio-http`, `mio-reqwest`, `mio-tungstenite` and `mio-derive` under
+`crates/`. All seven packages are default workspace members. Dependencies and
+Rust imports use Mio names; no upstream Rig package is linked. The public
+`rig_tool` macro and internal `rig` self-aliases remain for source compatibility.
+The macro resolver recognizes `mio-core` and `mio-agent`, including renamed
+Cargo dependencies. The published upstream `rig-cassette` adapters are not
+type-compatible; implement `mio_core::serve::Recorder` for recording.
 
 The upstream builder rejection test uses a local recorder that panics if called,
 instead of importing the otherwise absent cassette crate. The switched-model warning test warms and rebuilds tracing callsite interest
-before asserting, following the upstream tracing-isolation guidance. All three layers are
-default workspace members, so the root quality commands cover their tests as
-well as the product. Auxiliary transport and macro crates retain their own
-manifests outside the workspace.
+before asserting, following the upstream tracing-isolation guidance. All layers and supporting crates are default workspace members, so root quality
+commands also cover transport and macro tests.
 
 Source-walk assertions target the maintained Mio layers, rather than absent
 upstream Bedrock, Gemini gRPC and ECS packages.
@@ -75,7 +73,7 @@ local naming and behavior changes. `Cargo.toml.orig` files are archival only.
 
 Run `cargo fmt --check`, `cargo check --all-targets --locked`,
 `cargo test --locked`, and `cargo clippy --all-targets --locked -- -D warnings`.
-Inspect `cargo tree --locked` to ensure no registry `rig-core` or `rig-agent`
+Inspect `cargo tree --locked` to ensure no registry Rig package
 is linked. Optional feature combinations need their own validation.
 
 ## Publishing

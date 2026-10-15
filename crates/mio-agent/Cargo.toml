@@ -25,7 +25,7 @@ rustdoc-args = [
 audio = ["mio-core/audio"]
 default = ["derive"]
 derive = [
-    "dep:rig-derive",
+    "dep:mio-derive",
     "mio-core/derive",
 ]
 image = ["mio-core/image"]
@@ -83,9 +83,9 @@ version = "2"
 path = "../mio-core"
 default-features = false
 
-[dependencies.rig-derive]
-path = "../../third_party/rig/rig-derive"
-version = "0.44.0"
+[dependencies.mio-derive]
+path = "../mio-derive"
+version = "0.1.0"
 optional = true
 
 [dependencies.schemars]
@@ -119,9 +119,9 @@ features = ["futures-03"]
 [dev-dependencies.anyhow]
 version = "1"
 
-[dev-dependencies.rig-reqwest]
-path = "../../third_party/rig/rig-reqwest"
-version = "0.44.0"
+[dev-dependencies.mio-reqwest]
+path = "../mio-reqwest"
+version = "0.1.0"
 
 [dev-dependencies.tracing-subscriber]
 version = "0.3"

@@ -39,7 +39,7 @@ pub mod driver;
 pub mod effect;
 pub mod embeddings;
 pub mod error;
-pub use rig_http::http_client;
+pub use mio_http::http_client;
 pub mod id;
 #[cfg(feature = "image")]
 #[cfg_attr(docsrs, doc(cfg(feature = "image")))]
@@ -69,11 +69,11 @@ pub mod tool;
 pub mod transcript;
 pub mod transcription;
 pub mod vector_store;
-pub use rig_http::wasm_compat;
+pub use mio_http::wasm_compat;
 pub mod wire;
 #[cfg(feature = "websocket")]
 #[cfg_attr(docsrs, doc(cfg(feature = "websocket")))]
-pub use rig_http::ws_client;
+pub use mio_http::ws_client;
 
 pub use completion::message;
 pub use driver::{DynModel, Model};
@@ -89,14 +89,14 @@ pub use serde_json;
 
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use rig_derive::ContextValue;
+pub use mio_derive::ContextValue;
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use rig_derive::Embed;
+pub use mio_derive::Embed;
 
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use rig_derive::rig_tool;
+pub use mio_derive::rig_tool;
 
 pub mod telemetry;
 

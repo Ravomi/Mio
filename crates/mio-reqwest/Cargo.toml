@@ -1,0 +1,159 @@
+[package]
+edition = "2024"
+rust-version = "1.95.0"
+name = "mio-reqwest"
+version = "0.1.0"
+build = false
+exclude = [
+    "tests/middleware_features.rs",
+    "tests/fixtures/middleware_features",
+]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "The bundled reqwest HTTP transport for Rig."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/Ravomi/Mio"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+
+[features]
+default = ["rustls"]
+native-tls = [
+    "reqwest/native-tls",
+    "reqwest/charset",
+    "reqwest/http2",
+    "reqwest/system-proxy",
+]
+reqwest-middleware = ["reqwest-middleware-rustls"]
+reqwest-middleware-native-tls = [
+    "dep:reqwest-middleware",
+    "native-tls",
+]
+reqwest-middleware-rustls = [
+    "dep:reqwest-middleware",
+    "rustls",
+    "reqwest-middleware/rustls",
+]
+rustls = [
+    "reqwest/rustls",
+    "reqwest/charset",
+    "reqwest/http2",
+    "reqwest/system-proxy",
+]
+socks = ["reqwest/socks"]
+
+[lib]
+name = "mio_reqwest"
+path = "src/lib.rs"
+
+[[test]]
+name = "cancellation"
+path = "tests/cancellation.rs"
+
+[[test]]
+name = "middleware_runtime"
+path = "tests/middleware_runtime.rs"
+
+[[test]]
+name = "multipart"
+path = "tests/multipart.rs"
+
+[[test]]
+name = "off_runtime"
+path = "tests/off_runtime.rs"
+
+[dependencies.bytes]
+version = "1"
+
+[dependencies.futures]
+version = "0.3"
+
+[dependencies.http]
+version = "1"
+
+[dependencies.reqwest]
+version = "0.13"
+features = [
+    "json",
+    "stream",
+    "multipart",
+]
+default-features = false
+
+[dependencies.reqwest-middleware]
+version = "0.5"
+features = [
+    "json",
+    "multipart",
+    "charset",
+    "http2",
+]
+optional = true
+default-features = false
+
+[dependencies.mio-http]
+path = "../mio-http"
+
+[dependencies.thiserror]
+version = "2"
+
+[dependencies.url]
+version = "2"
+
+[dev-dependencies.anyhow]
+version = "1"
+
+[dev-dependencies.futures]
+version = "0.3"
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dev-dependencies.tokio-test]
+version = "0.4"
+
+[dev-dependencies.tracing-subscriber]
+version = "0.3"
+features = ["env-filter"]
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies.tokio]
+version = "1"
+features = [
+    "rt",
+    "rt-multi-thread",
+    "time",
+]
+
+[lints.clippy]
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+dbg_macro = "forbid"
+expect_fun_call = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+large_enum_variant = "allow"
+panic = "deny"
+panic_in_result_fn = "deny"
+result_large_err = "allow"
+should_implement_trait = "allow"
+todo = "forbid"
+too_many_arguments = "allow"
+type_complexity = "allow"
+unimplemented = "forbid"
+unreachable = "deny"
+unwrap_used = "deny"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(rig_loom)"]

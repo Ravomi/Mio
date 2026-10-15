@@ -82,7 +82,7 @@ impl Account {
             .build()
             .map_err(|_| "无法创建授权连接")?;
         let client = OpenAIConfig::with_key(&chatgpt::DIALECT, "")
-            .connect(rig_reqwest::ReqwestClient::from(http))
+            .connect(mio_reqwest::ReqwestClient::from(http))
             .authenticate(&auth)
             .await
             .map_err(

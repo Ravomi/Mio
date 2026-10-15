@@ -49,11 +49,11 @@ macro_rules! http_client {
             }
 
             /// A client that sends through the shared reqwest client
-            /// (`rig_reqwest::shared()`), built once per process.
+            /// (`mio_reqwest::shared()`), built once per process.
             #[cfg(feature = "reqwest")]
             #[cfg_attr(docsrs, doc(cfg(feature = "reqwest")))]
             pub fn client(self) -> $client {
-                self.connect(rig_reqwest::shared())
+                self.connect(mio_reqwest::shared())
             }
         }
     };

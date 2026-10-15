@@ -25,12 +25,12 @@ pub use completion::{
 };
 pub use embeddings::{MockEmbeddingModel, MockEmbeddings, MockMultiTextDocument, MockTextDocument};
 pub use memory::{AppendFailingMemory, CountingMemory, FailingMemory};
-pub use relay::MockRelay;
-pub use rig_http::test_utils::{
+pub use mio_http::test_utils::{
     CapturedHttpRequest, HttpErrorStreamingClient, MockHttpResponse, MockStreamingClient,
     NonSuccessStreamingClient, RecordingHttpClient, SequencedHttpClient,
     SequencedStreamingHttpClient,
 };
+pub use relay::MockRelay;
 pub use streaming::{
     MOCK_PROVIDER, MockDecoder, MockDocument, MockFrame, MockStreamEvent, mock_final,
     mock_final_with_total_tokens,

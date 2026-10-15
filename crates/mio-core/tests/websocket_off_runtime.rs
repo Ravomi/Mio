@@ -60,7 +60,7 @@ fn serve_one_turn_after(
                     .expect("address should send");
 
                 let (stream, _) = listener.accept().await.expect("accept");
-                let mut socket = rig_tungstenite::tokio_tungstenite::accept_async(stream)
+                let mut socket = mio_tungstenite::tokio_tungstenite::accept_async(stream)
                     .await
                     .expect("upgrade");
 
@@ -83,7 +83,7 @@ fn serve_one_turn_after(
 
                 for event in events {
                     socket
-                        .send(rig_tungstenite::tokio_tungstenite::tungstenite::Message::text(event))
+                        .send(mio_tungstenite::tokio_tungstenite::tungstenite::Message::text(event))
                         .await
                         .expect("event should send");
                 }

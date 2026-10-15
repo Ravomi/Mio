@@ -1,0 +1,9 @@
+[package]
+name = "agent-renamed"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+renamed = { package = "mio-agent", path = "../../../../mio-agent" }

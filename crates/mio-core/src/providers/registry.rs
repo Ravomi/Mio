@@ -815,7 +815,7 @@ impl ProviderRef {
             Recipe::Registered(registered) => registered.config_from_env()?,
             Recipe::Configured(config) => config.clone().with_credential_from_env()?,
         };
-        Ok(config.completion_model(&self.model, rig_reqwest::shared()))
+        Ok(config.completion_model(&self.model, mio_reqwest::shared()))
     }
 
     /// A completion model for this reference, credentialed with `api_key`,
@@ -1005,7 +1005,7 @@ pub fn connect<'a>(
     let reference = model.into().provider_ref()?;
     Ok(reference
         .config(api_key)
-        .completion_model(reference.model(), rig_reqwest::shared()))
+        .completion_model(reference.model(), mio_reqwest::shared()))
 }
 
 /// The completion model `model` selects, credentialed with `api_key`,
