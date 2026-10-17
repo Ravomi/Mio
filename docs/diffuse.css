@@ -1,0 +1,265 @@
+/* Mio diffuse skin — palette from the cat logo (ink · cobalt · violet · pink).
+   Loaded after styles.css so it only overrides tokens and atmosphere. */
+:root {
+  --logo-ink: #0d0c16;
+  --logo-cobalt: #4f86f7;
+  --logo-violet: #7a5cf0;
+  --logo-pink: #f07fb2;
+  --logo-peach: #ffb08a;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0c16;
+  --bg-soft: #131224;
+  --ink: #f4f1fb;
+  --ink-secondary: #cfcae0;
+  --muted: #a39dbb;
+  --accent: #5b8cff;
+  --accent-text: #b4c6ff;
+  --purple: #b79cff;
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-strong: rgba(255, 255, 255, 0.075);
+  --glass-border: rgba(190, 175, 255, 0.16);
+  --line: rgba(190, 175, 255, 0.14);
+  --band: rgba(122, 92, 240, 0.06);
+  --band-2: transparent;
+}
+
+html[data-theme="light"] {
+  --bg: #f6f2ee;
+  --accent: #3d63f0;
+}
+
+/* ---------- diffuse atmosphere: big saturated light + grain ---------- */
+html::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  filter: none;
+  opacity: 1;
+  background:
+    radial-gradient(52vw 46vw at 8% 6%, rgba(79, 134, 247, 0.55), transparent 68%),
+    radial-gradient(46vw 42vw at 96% 14%, rgba(122, 92, 240, 0.5), transparent 68%),
+    radial-gradient(50vw 40vw at 78% 96%, rgba(240, 127, 178, 0.42), transparent 70%),
+    radial-gradient(40vw 34vw at 4% 88%, rgba(255, 176, 138, 0.22), transparent 70%);
+}
+
+html[data-theme="light"]::before {
+  background:
+    radial-gradient(52vw 46vw at 8% 6%, rgba(79, 134, 247, 0.4), transparent 68%),
+    radial-gradient(46vw 42vw at 96% 14%, rgba(167, 139, 250, 0.4), transparent 68%),
+    radial-gradient(50vw 40vw at 78% 96%, rgba(240, 127, 178, 0.35), transparent 70%),
+    radial-gradient(40vw 34vw at 4% 88%, rgba(255, 176, 138, 0.35), transparent 70%);
+}
+
+body::after {
+  opacity: 0.34;
+  mix-blend-mode: overlay;
+}
+
+/* ---------- hero: one big glowing logo, no heavy glass slab ---------- */
+.hero-split {
+  position: relative;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+}
+
+.hero-right {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  overflow: visible;
+}
+
+.hero-halo {
+  inset: -42%;
+  filter: blur(54px) saturate(140%);
+}
+
+.halo-orb-a { background: radial-gradient(closest-side, rgba(79, 134, 247, 1), transparent 74%); }
+.halo-orb-b { background: radial-gradient(closest-side, rgba(122, 92, 240, 0.95), transparent 74%); }
+.halo-orb-c { background: radial-gradient(closest-side, rgba(240, 127, 178, 0.9), transparent 74%); }
+
+.hero-logo {
+  width: clamp(190px, 24vw, 340px);
+  border-radius: 28%;
+  filter: drop-shadow(0 30px 60px rgba(79, 70, 229, 0.45));
+}
+
+.hero-wordmark {
+  background: linear-gradient(100deg, #fff 10%, var(--logo-cobalt) 45%, var(--logo-pink) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-install-block,
+.ui-probe {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+/* ---------- calmer rhythm ---------- */
+:root { --section: clamp(3.5rem, 7vw, 6rem); }
+
+.features-split > * { position: static !important; }
+
+.button:not(.button-surface) {
+  background: linear-gradient(110deg, var(--logo-cobalt), var(--logo-violet) 60%, var(--logo-pink));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 14px 34px -14px rgba(122, 92, 240, 0.8);
+}
+
+.section-field,
+.section-surface {
+  background:
+    radial-gradient(60% 80% at 15% 0%, rgba(79, 134, 247, 0.12), transparent 70%),
+    radial-gradient(50% 70% at 90% 100%, rgba(240, 127, 178, 0.1), transparent 70%);
+}
+
+@media (max-width: 64em) {
+  .hero-logo { width: clamp(150px, 40vw, 240px); }
+  .hero-halo { inset: -30%; }
+}
+
+/* ---------- tighter, wider layout ---------- */
+body { overflow-x: clip; }
+
+.features-pinned-col {
+  min-height: 0;
+  top: 5.5rem;
+  background: transparent;
+  grid-column: 1 / 7;
+  padding-block: 2rem;
+}
+
+.features-live-card { min-height: 0; max-width: 480px; }
+
+.features-scroll-col {
+  grid-column: 7 / 13;
+  max-width: 36rem;
+  padding-block: 2rem;
+  gap: 4rem;
+}
+
+.capability-block p { max-width: 34rem; }
+
+.exchange-column { grid-column: 2 / 12; max-width: none; }
+.exchange-heading { margin-bottom: 2.25rem; }
+.exchange-list { gap: 3.25rem; }
+.stats-heading { margin-left: 0; margin-bottom: 2rem; }
+.stats-layout { padding-block: var(--section); }
+
+@media (min-width: 64.01em) {
+  .exchange-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1rem 1.5rem;
+    align-items: start;
+  }
+  .exchange-step-sentence { grid-column: 1 / -1; }
+  .exchange-response,
+  .exchange-response-wide { margin-left: 0; width: auto; min-height: 0; }
+}
+
+@media (max-width: 64em) {
+  .features-pinned-col { position: static; }
+  .features-scroll-col { gap: 3rem; }
+  .exchange-response, .exchange-response-wide { margin-left: 0; width: auto; }
+}
+
+/* ---------- small screens: let controls wrap instead of overflowing ---------- */
+@media (max-width: 36em) {
+  .ui-header, .control-header, .ui-footer-row { flex-wrap: wrap; gap: 0.5rem; }
+  .control-choices, .ui-tabs { flex-wrap: wrap; }
+  .choice-btn, .ui-tab, .ui-btn { max-width: 100%; white-space: normal; }
+  .ui-title, .ui-status { min-width: 0; overflow-wrap: anywhere; }
+  .bench-table-wrap { overflow-x: auto; max-width: 100%; }
+}
+
+@media (max-width: 64em) {
+  .hero-split { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 64em) {
+  .features-split { grid-template-columns: minmax(0, 1fr); }
+  .features-pinned-col, .features-scroll-col { grid-column: 1 / -1; max-width: none; padding-inline: var(--margin); }
+  .exchange-column, .stats-left-col, .stats-right-col { grid-column: 1 / -1; }
+}
+
+@media (max-width: 64em) {
+  .capability-block, .control-surface, .features-scroll-col, .ref-main, .ref-container, .ref-article { min-width: 0; max-width: 100%; }
+  .control-choices { flex-wrap: wrap; }
+  .ref-filter-select, .ref-filter-input { max-width: 100%; min-width: 0; width: 100%; }
+}
+
+/* corner-glow pseudo elements must not widen the mobile layout viewport */
+main, .ref-main { overflow-x: clip; }
+
+/* Mobile hero: keep the cat mark, navigation and primary actions in view. */
+.hero-mobile-logo { display: none; }
+
+@media (max-width: 44em) {
+  .hero-split { min-height: auto; }
+  .hero-left {
+    justify-content: flex-start;
+    gap: 1.25rem;
+    padding: 1rem var(--margin) 1.5rem;
+  }
+  .hero-left .hero-top-row {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+  .hero-left .top-links {
+    width: 100%;
+    justify-content: center;
+    gap: 0.25rem 0.4rem;
+  }
+  .hero-left .top-links a {
+    padding: 0.35rem;
+    white-space: nowrap;
+  }
+  .hero-copy-block {
+    position: relative;
+    margin-block: 0;
+    gap: 0.75rem;
+  }
+  .hero-wordmark-wrap { padding-inline-end: clamp(5rem, 28vw, 7.5rem); }
+  .hero-wordmark {
+    font-size: clamp(3rem, 16vw, 4.5rem);
+    line-height: 0.95;
+  }
+  .hero-mobile-logo {
+    display: block;
+    position: absolute;
+    top: 0;
+    inset-inline-end: 0;
+    width: clamp(4.5rem, 24vw, 6.5rem);
+    height: auto;
+    pointer-events: none;
+  }
+  .hero-cta-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .hero-cta-row > :last-child {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .hero-install-block {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .hero-right .hero-visual { display: none; }
+}

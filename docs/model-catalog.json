@@ -73,7 +73,7 @@
       "name": "anthropic",
       "displayName": "Anthropic (Compatible Gateway Required)",
       "protocol": "OpenAI Chat Completions (Via Gateway)",
-      "baseUrl": "https://api.anthropic.com/v1",
+      "baseUrl": "https://api.anthropic.com",
       "envVars": [
         "ANTHROPIC_API_KEY",
         "MIO_API_KEY"
@@ -100,7 +100,7 @@
       "name": "google",
       "displayName": "Google Gemini (OpenAI Endpoint)",
       "protocol": "Gemini OpenAI-Compatible Endpoint",
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "baseUrl": "https://generativelanguage.googleapis.com",
       "envVars": [
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
@@ -243,7 +243,7 @@
       "name": "ollama",
       "displayName": "Ollama (Local)",
       "protocol": "Local Ollama (OpenAI Compatible)",
-      "baseUrl": "http://127.0.0.1:11434/v1",
+      "baseUrl": "http://127.0.0.1:11434",
       "envVars": [
         "OLLAMA_API_KEY"
       ],

@@ -3,12 +3,14 @@
 <html data-theme="dark" data-theme-mode="dark" lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
+<meta name="color-scheme" content="dark light">
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
 <title>Documentation · Mio 原生编程 Agent 完整指南</title>
 <meta content="Mio 官方技术文档。涵盖 CLI 选项全表、会话分支、MCP 与插件、上下文压缩、子代理委派、RPC 协议与 Rust 宿主嵌入。" name="description"/>
 <link href="favicon.svg" rel="icon" type="image/svg+xml"/>
 <link href="styles.css" rel="stylesheet"/>
 <link href="reference.css" rel="stylesheet"/>
+<link rel="stylesheet" href="diffuse.css">
 </head>
 <body class="ref-page-wrap">
 <a class="skip-link" href="#main-content">跳转到正文内容 (Skip to main content)</a>
@@ -790,6 +792,66 @@ fn main() {}
 <td><code>1..256</code></td>
 <td><code>32</code></td>
 <td data-en="Maximum tool-loop steps per turn, from 1 to 256." data-zh="单次回合工具循环最大执行步数（范围校验 1–256）。">单次回合工具循环最大执行步数（范围校验 1–256）。</td>
+</tr>
+<tr>
+<td><code>--max-model-concurrency</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent model requests admitted in this process; does not widen the cross-process policy.json defaults." data-zh="本进程内并发的模型请求准入上限；不会放宽跨进程 policy.json 的全局默认限额。">本进程内并发的模型请求准入上限；不会放宽跨进程 policy.json 的全局默认限额。</td>
+</tr>
+<tr>
+<td><code>--max-provider-concurrency</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent requests admitted per provider in this process." data-zh="本进程内同一 Provider 的并发请求准入上限。">本进程内同一 Provider 的并发请求准入上限。</td>
+</tr>
+<tr>
+<td><code>--max-heavy-tasks</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent heavy tasks (shell and external tool calls) admitted in this process." data-zh="本进程内重任务（shell 与外部工具调用）并发准入上限。">本进程内重任务（shell 与外部工具调用）并发准入上限。</td>
+</tr>
+<tr>
+<td><code>--max-subagents</code></td>
+<td><code>1..16</code></td>
+<td><code>4</code></td>
+<td data-en="Concurrent admitted child tasks; excess tasks queue as Queued instead of being rejected. Only takes effect together with --subagents." data-zh="并发准入的子代理任务上限；超出上限进入 Queued 队列而非直接拒绝，需配合 --subagents 生效。">并发准入的子代理任务上限；超出上限进入 Queued 队列而非直接拒绝，需配合 --subagents 生效。</td>
+</tr>
+<tr>
+<td><code>--max-model-calls</code></td>
+<td><code>N &gt; 0</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Model-call cap. With shared coordination it also seeds or narrows the persistent budget for that root; later processes inherit it." data-zh="模型调用次数上限。启用共享协调时同时建立或收窄同 root 的持久预算，后续进程继承；放宽须使用新的共享根。">模型调用次数上限。启用共享协调时同时建立或收窄同 root 的持久预算，后续进程继承；放宽须使用新的共享根。</td>
+</tr>
+<tr>
+<td><code>--max-total-tokens</code></td>
+<td><code>N &gt; 0</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Conservative token budget reserved before each call and settled with reported usage. With shared coordination, cumulative across processes and restarts in the same root. Token accounting, not a dollar-denominated hard cap." data-zh="调用前按保守预留、结算时按 Provider 上报真实 usage 的 token 预算。启用共享协调时在同 root 跨进程、跨重启累计；属于 token 计数，不是美元硬限额。">调用前按保守预留、结算时按 Provider 上报真实 usage 的 token 预算。启用共享协调时在同 root 跨进程、跨重启累计；属于 token 计数，不是美元硬限额。</td>
+</tr>
+<tr>
+<td><code>--shared-limits-dir</code></td>
+<td><code>PATH</code></td>
+<td data-en="User config coordination/" data-zh="用户配置目录 coordination/">用户配置目录 coordination/</td>
+<td data-en="Shared cross-process quota root; the first writer pins a versioned policy.json that every process must match item by item." data-zh="跨进程共享配额根目录；首个写入者固定版本化 policy.json，后续进程必须逐项一致否则 fail-closed。">跨进程共享配额根目录；首个写入者固定版本化 policy.json，后续进程必须逐项一致否则 fail-closed。</td>
+</tr>
+<tr>
+<td><code>--no-shared-limits</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Use only in-process admission limits without reading or writing the cross-process root. Conflicts with --shared-limits-dir." data-zh="只用本进程准入限额，不读写跨进程共享根。与 --shared-limits-dir 互斥。">只用本进程准入限额，不读写跨进程共享根。与 --shared-limits-dir 互斥。</td>
+</tr>
+<tr>
+<td><code>--trust-project-mcp</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Explicitly authorize starting project .mio/mcp.json servers without per-start approval; equivalent to MIO_TRUST_PROJECT_MCP=1 (also true/yes). Authorization binds to the server fingerprint, so config changes re-request it." data-zh="显式信任并启动项目 .mio/mcp.json 中的 MCP Server，不再逐次确认；等价于环境变量 MIO_TRUST_PROJECT_MCP=1（亦接受 true/yes）。授权绑定服务器指纹，配置变化会重新请求。">显式信任并启动项目 .mio/mcp.json 中的 MCP Server，不再逐次确认；等价于环境变量 MIO_TRUST_PROJECT_MCP=1（亦接受 true/yes）。授权绑定服务器指纹，配置变化会重新请求。</td>
+</tr>
+<tr>
+<td><code>--recovery</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Print persisted .mio/journal execution evidence for unfinished or interrupted runs and exit. Scans every workspace journal unless --session/--resume narrows it; conflicts with --no-session. Mio never replays these operations and does not roll back file changes." data-zh="打印 .mio/journal 中未完成/中断运行的执行证据后退出。默认遍历工作区全部 journal，配合 --session/--resume 只看指定会话；与 --no-session 互斥。不会重放这些操作，也不回滚已发生的文件修改。">打印 .mio/journal 中未完成/中断运行的执行证据后退出。默认遍历工作区全部 journal，配合 --session/--resume 只看指定会话；与 --no-session 互斥。不会重放这些操作，也不回滚已发生的文件修改。</td>
 </tr>
 <tr>
 <td><code>--plugin-install</code></td>

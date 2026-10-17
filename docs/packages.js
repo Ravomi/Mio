@@ -487,7 +487,7 @@
         var next = cur === 'dark' ? 'light' : 'dark';
         document.documentElement.dataset.theme = next;
         document.documentElement.dataset.themeMode = next;
-        try { localStorage.setItem('mio:theme', next); } catch (e) {}
+        try { localStorage.setItem('mio:theme-v2', next); } catch (e) {}
       });
     }
 

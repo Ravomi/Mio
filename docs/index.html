@@ -2,10 +2,11 @@
 <html lang="zh-CN" data-theme="dark" data-theme-mode="dark">
 <head>
   <meta charset="UTF-8">
+<meta name="color-scheme" content="dark light">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mio - Rust 原生编程 Agent 引擎与 CLI</title>
   <meta name="description" content="Mio (mio-coding-agent) 是用 Rust 构建的无头编程 Agent 引擎与 CLI。2.5 毫秒冷启动、5.6 MB 内存占用，内置有界文件检索、唯一匹配替换、四路只读子代理与可分叉会话树，可零 IPC 嵌入 Rust 应用。">
-  <meta name="theme-color" content="#1b1d20">
+  <meta name="theme-color" content="#0d0c16">
 
   <meta property="og:title" content="Mio - Rust 原生编程 Agent 引擎与 CLI">
   <meta property="og:description" content="理解代码、唯一匹配修改、并发只读子代理与可分叉会话树。2.5 ms 启动、5.6 MB 内存，终端与宿主共用同一个 Rust 核心。">
@@ -20,12 +21,13 @@
 
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="diffuse.css">
 
   <script>
     document.documentElement.classList.add('js');
     (function () {
       try {
-        var stored = localStorage.getItem('mio:theme');
+        var stored = localStorage.getItem('mio:theme-v2');
         var mode = (stored === 'light' || stored === 'dark') ? stored : 'dark';
         document.documentElement.dataset.theme = mode;
         document.documentElement.dataset.themeMode = mode;
@@ -55,16 +57,29 @@
         </header>
 
         <div class="hero-copy-block">
-          <h1 class="display lines">
+          <div class="hero-wordmark-wrap" data-rise style="--i:0">
+            <h1 class="hero-wordmark">Mio</h1>
+            <p class="hero-tagline" data-zh="无头编码 Agent 引擎" data-en="Headless coding agent engine">无头编码 Agent 引擎</p>
+          </div>
+          <img class="hero-mobile-logo" src="mio-logo.png" alt="" aria-hidden="true" width="112" height="112" decoding="async">
+          <p class="display lines">
             <span class="line"><span data-line style="--i:0" data-zh="Rust 原生编程 Agent，" data-en="Rust-native coding agent,">Rust 原生编程 Agent，</span></span>
             <span class="line"><span data-line style="--i:1" data-zh="终端与宿主共用一核。" data-en="one core for CLI and host.">终端与宿主共用一核。</span></span>
-          </h1>
+          </p>
           <p data-rise style="--i:2" data-zh="Mio 在 2.5 毫秒内冷启动，将有界代码检索、唯一匹配替换、四路只读子代理与可分叉会话树收敛进 5.6 MB 常驻内存，也能作为 Rust crate 零 IPC 嵌入你的应用。" data-en="Mio starts in 2.5 ms, uniting bounded file inspection, unambiguous edits, four read-only subagents, and branchable session trees in 5.6 MB RSS, or embeds in-process as a Rust crate.">
             Mio 在 2.5 毫秒内冷启动，将有界代码检索、唯一匹配替换、四路只读子代理与可分叉会话树收敛进 5.6 MB 常驻内存，也能作为 Rust crate 零 IPC 嵌入你的应用。
           </p>
           <div class="hero-cta-row" data-rise style="--i:3">
-            <a href="#quickstart" class="button" data-zh="安装与运行" data-en="Install and run">安装与运行</a>
+            <a href="installation.html" class="button" data-zh="安装" data-en="Install">安装</a>
+            <a href="#quickstart" class="button button-surface" data-zh="安装与运行" data-en="Install and run">安装与运行</a>
             <a href="packages.html" class="text-action" data-zh="浏览插件目录" data-en="Browse plugin catalog">浏览插件目录</a>
+          </div>
+          <div class="hero-install-block" data-rise style="--i:4">
+            <div class="hero-install-top">
+              <span data-zh="一行安装 · 锁定依赖" data-en="One-line install · locked dependencies">一行安装 · 锁定依赖</span>
+              <button type="button" class="copy-inline-btn" data-copy-text="cargo install --git https://github.com/Ravomi/Mio --locked" data-zh="复制" data-en="Copy">复制</button>
+            </div>
+            <pre id="hero-install-cmd"><code>cargo install --git https://github.com/Ravomi/Mio --locked</code></pre>
           </div>
         </div>
       </div>
@@ -74,11 +89,21 @@
           <span class="small muted" data-zh="mio-coding-agent v0.1.0 · MIT 许可" data-en="mio-coding-agent v0.1.0 · MIT License">mio-coding-agent v0.1.0 · MIT 许可</span>
           <div class="top-links">
             <button type="button" id="langToggleBtn" aria-label="切换中英文">EN</button>
-            <button type="button" id="themeToggleBtn" aria-label="切换石墨深浅外观" data-zh="浅灰台面" data-en="Light slate">浅灰台面</button>
+            <button type="button" id="themeToggleBtn" aria-label="切换深浅外观" data-zh="浅色" data-en="Light">浅色</button>
           </div>
         </div>
 
         <div class="hero-stage-center">
+          <!-- Diffuse halo stage: logo floats on blurred cobalt / lavender / coral light -->
+          <div class="hero-visual">
+            <div class="hero-halo" aria-hidden="true">
+              <span class="halo-orb-a"></span>
+              <span class="halo-orb-b"></span>
+              <span class="halo-orb-c"></span>
+            </div>
+            <img class="hero-logo" src="mio-logo.png" alt="Mio 猫头终端提示符标志：左侧蓝紫粉颗粒弥散，中间白色 &gt;_ 提示符" width="320" height="320" fetchpriority="high" decoding="async">
+          </div>
+
           <!-- Live thing: Product control fragment that inspects the live page itself -->
           <div class="ui-probe" data-ui id="livePageProbe" role="region" aria-label="实时读取当前页面的 Mio 工作区探针">
             <div>
@@ -96,11 +121,11 @@
               <div class="ui-readout-grid" style="margin-top: 0.75rem;">
                 <div class="ui-cell">
                   <span class="ui-cell-label" data-zh="实测背景色值 (--bg)" data-en="Measured ground (--bg)">实测背景色值 (--bg)</span>
-                  <span class="ui-cell-val" id="probeBgReadout">#1b1d20 · rgb(27, 29, 32)</span>
+                  <span class="ui-cell-val" id="probeBgReadout">#f3efe8 · rgb(243, 239, 232)</span>
                 </div>
                 <div class="ui-cell">
                   <span class="ui-cell-label" data-zh="首屏主标题字号 / 行数" data-en="Hero headline size / lines">首屏主标题字号 / 行数</span>
-                  <span class="ui-cell-val" id="probeHeadlineReadout">36.0 px · 2 lines</span>
+                  <span class="ui-cell-val" id="probeHeadlineReadout">76.0 px · 1 lines</span>
                 </div>
                 <div class="ui-cell">
                   <span class="ui-cell-label" data-zh="指针坐标 / 视口宽度" data-en="Pointer / Viewport">指针坐标 / 视口宽度</span>
@@ -115,7 +140,7 @@
 
             <pre class="ui-terminal-pre" id="probeTerminalOutput"><code>$ mio --cwd ./docs -p "探查当前页面 DOM 与样式边界"
 [read] path="docs/index.html" offset=1 limit=60 (4.2 KiB / 64 KiB)
-[ok]   ground=#1b1d20, accent=#94b8d7, checked_path: 严禁越界与符号链接</code></pre>
+[ok]   ground=#f3efe8, accent=#3d63f0, grain=feTurbulence, checked_path: 严禁越界与符号链接</code></pre>
 
             <div class="ui-footer-row">
               <span data-zh="移动指针或点击上方原语按钮，实时采样本页" data-en="Move pointer or click primitives to sample this page">移动指针或点击上方原语按钮，实时采样本页</span>
@@ -427,7 +452,7 @@ mio --plugin-install git-workflow</code></pre>
 [export]   wrote self-contained report to ./session-report.html</code></pre>
                 <div class="ui-footer-row">
                   <span>支持交互式 /tree 节点回退、/compact 手动归纳与 /export 单文件导出</span>
-                  <a href="packages.html" style="color: #94b8d7;">查看全部 8 个官方插件</a>
+                  <a href="packages.html" style="color: #9db4ff;">查看全部 8 个官方插件</a>
                 </div>
               </div>
             </div>
