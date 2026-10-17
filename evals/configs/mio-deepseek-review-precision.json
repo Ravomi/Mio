@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "label": "mio-deepseek-review-precision-candidate",
+  "agent_command": "target/evals/v1-inline8k-20261017T101526Z/bin/mio --cwd {cwd} --shared-limits-dir {cwd}/../coordination --no-session --no-context-files --no-skills --no-prompt-templates --append-system-prompt {repo}/evals/prompts/review-precision.md --no-mcp --json --provider deepseek --model deepseek-chat --thinking off --max-model-calls 20 -p {prompt}",
+  "timeout_seconds": 180,
+  "event_format": "mio-jsonl",
+  "tasks_dir": "../tasks/review",
+  "output": "../../target/evals/review-precision-candidate/report.json",
+  "artifacts_dir": "../../target/evals/review-precision-candidate/artifacts",
+  "budget": {
+    "version": "deepseek-chat-off-20calls-180s-isolated-review-precision-v1",
+    "model": "deepseek-chat",
+    "thinking": "off",
+    "max_model_calls": 20,
+    "max_total_tokens": null,
+    "notes": "Uses the same frozen Mio binary, model, task set, call ceiling and timeout as the baseline review config. Only adds the generic review-precision system prompt; no task answer or credentials are stored here."
+  }
+}

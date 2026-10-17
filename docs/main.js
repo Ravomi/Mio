@@ -445,9 +445,9 @@
       var updateThemeLabel = function () {
         var cur = document.documentElement.dataset.theme || 'dark';
         if (cur === 'dark') {
-          themeBtn.textContent = currentLang === 'en' ? 'Light slate' : '浅灰台面';
+          themeBtn.textContent = currentLang === 'en' ? 'Light' : '浅色';
         } else {
-          themeBtn.textContent = currentLang === 'en' ? 'Matte graphite' : '哑光石墨';
+          themeBtn.textContent = currentLang === 'en' ? 'Dark' : '深色';
         }
       };
       updateThemeLabel();
@@ -456,7 +456,7 @@
         var next = cur === 'dark' ? 'light' : 'dark';
         document.documentElement.dataset.theme = next;
         document.documentElement.dataset.themeMode = next;
-        try { localStorage.setItem('mio:theme', next); } catch (e) {}
+        try { localStorage.setItem('mio:theme-v2', next); } catch (e) {}
         updateThemeLabel();
         window.dispatchEvent(new Event('resize'));
       });

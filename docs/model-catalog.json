@@ -1,8 +1,20 @@
 {
-  "version": "1.0",
+  "version": "1.1",
+  "source": {
+    "presets": "src/rpc.rs::PROVIDER_PRESETS",
+    "capabilities": "crates/mio-core/src/catalog/models.json",
+    "capabilitiesSha256": "ad8e171c4a439bb66070881e62d3206272502b7f08da3c6fbe987e784759dd16",
+    "reviewedAt": "2026-10-15",
+    "reviewScope": "local source alignment; not live provider verification"
+  },
+  "liveVerification": {
+    "reachable": null,
+    "authenticated": null,
+    "protocolSupported": null
+  },
   "description": "Static snapshot of Mio built-in provider presets from src/rpc.rs PROVIDER_PRESETS. Does not read user credentials.",
   "totalProviders": 10,
-  "totalModels": 27,
+  "totalModels": 29,
   "providers": [
     {
       "name": "antigravity",
@@ -13,24 +25,36 @@
         "MIO_CONFIG_DIR"
       ],
       "requiresGateway": false,
-      "notesZh": "凭据查找优先级：MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio；支持通过 mio --import-antigravity ~/.pi/agent 导入已有凭据。已有 profile 可提供默认 model。实际可用模型与档位取决于账号权限；一般 thinking 仅在 Antigravity 适配器中消费生效，不声称完整支持。",
-      "notesEn": "Credential search priority: MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio; supports importing existing profiles via mio --import-antigravity ~/.pi/agent. An existing profile can provide a default model. Available models and levels depend on account entitlements; generic thinking is consumed only by the Antigravity adapter without claiming universal support.",
+      "notesZh": "凭据查找优先级：MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio；支持通过 mio --import-antigravity ~/.pi/agent 导入已有凭据。已有 profile 可提供默认 model。实际可用模型与档位取决于账号权限；Antigravity 档位由该适配器与账号权限决定，不代替其他 Provider 的原生协议与 catalog 校验。",
+      "notesEn": "Credential search priority: MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio; supports importing existing profiles via mio --import-antigravity ~/.pi/agent. An existing profile can provide a default model. Available models and levels depend on account entitlements; Antigravity levels depend on this adapter and account entitlements; other providers use their own native protocol and catalog validation.",
       "models": [
         {
           "id": "claude-sonnet-4-5",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         },
         {
           "id": "claude-opus-4-6-thinking",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         },
         {
           "id": "gemini-2.5-pro",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         },
         {
           "id": "gemini-2.5-flash",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         }
       ]
     },
@@ -44,79 +68,109 @@
         "MIO_API_KEY"
       ],
       "requiresGateway": false,
-      "notesZh": "OpenAI 官方 Chat Completions 接口，原生支持函数调用与流式事件；思考档位由 Antigravity 专享，OpenAI 驱动忽略通用 thinking 预算。",
-      "notesEn": "Official OpenAI Chat Completions API with native tool-calling; thinking levels are Antigravity-only and ignored by standard OpenAI driver.",
+      "notesZh": "OpenAI Chat Completions 接口；工具与思考能力优先读取底层 catalog，具体档位由模型验证，不代表账号或端点已实测。",
+      "notesEn": "OpenAI Chat Completions; model capabilities come from the core catalog and local validation, not a live account or endpoint probe.",
       "models": [
         {
           "id": "gpt-4.1",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1047576,
+          "maxOutputTokens": 32768
         },
         {
           "id": "gpt-4o",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384
         },
         {
           "id": "o3",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 200000,
+          "maxOutputTokens": 100000
         },
         {
           "id": "o4-mini",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 200000,
+          "maxOutputTokens": 100000
         },
         {
           "id": "codex-mini-latest",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         }
       ]
     },
     {
       "name": "anthropic",
-      "displayName": "Anthropic (Compatible Gateway Required)",
-      "protocol": "OpenAI Chat Completions (Via Gateway)",
-      "baseUrl": "https://api.anthropic.com/v1",
+      "displayName": "Anthropic",
+      "protocol": "Anthropic Messages",
+      "baseUrl": "https://api.anthropic.com",
       "envVars": [
         "ANTHROPIC_API_KEY",
         "MIO_API_KEY"
       ],
-      "requiresGateway": true,
-      "notesZh": "⚠️ Mio 采用通用 OpenAI Chat 驱动。原生 api.anthropic.com 端点格式不兼容，必须搭配 OpenAI 兼容网关并显式指定 --base-url https://your-gateway.example/v1。",
-      "notesEn": "⚠️ Mio uses a standard OpenAI Chat driver. Native api.anthropic.com endpoint is incompatible; you must provide an OpenAI-compatible gateway via explicit --base-url.",
+      "requiresGateway": false,
+      "notesZh": "使用原生 Anthropic Messages 协议。若接入 OpenAI 兼容网关，应显式选择 custom。目录声明不代表账号、认证或线上协议已验证。",
+      "notesEn": "Uses native Anthropic Messages. Select custom for an OpenAI-compatible gateway. Catalog facts do not prove account access, authentication or live protocol support.",
       "models": [
         {
           "id": "claude-sonnet-4-5",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
         },
         {
           "id": "claude-opus-4-6",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000
         },
         {
           "id": "claude-haiku-4-5",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000
         }
       ]
     },
     {
       "name": "google",
-      "displayName": "Google Gemini (OpenAI Endpoint)",
-      "protocol": "Gemini OpenAI-Compatible Endpoint",
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "displayName": "Google Gemini",
+      "protocol": "Gemini GenerateContent",
+      "baseUrl": "https://generativelanguage.googleapis.com",
       "envVars": [
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "MIO_API_KEY"
       ],
       "requiresGateway": false,
-      "notesZh": "使用 Google Generative Language 提供的 OpenAI 兼容接口 (/v1beta/openai)。支持通过 GEMINI_API_KEY 或 GOOGLE_API_KEY 接入。",
-      "notesEn": "Uses Google Generative Language OpenAI-compatible endpoint (/v1beta/openai). Configured via GEMINI_API_KEY or GOOGLE_API_KEY.",
+      "notesZh": "使用 Google 原生 GenerateContent 协议。凭据来自 GEMINI_API_KEY 或 GOOGLE_API_KEY；账号可用性须另行实测。",
+      "notesEn": "Uses native Google GenerateContent. Credentials come from GEMINI_API_KEY or GOOGLE_API_KEY; account readiness requires a separate live probe.",
       "models": [
         {
           "id": "gemini-2.5-pro",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536
         },
         {
           "id": "gemini-2.5-flash",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536
         }
       ]
     },
@@ -135,11 +189,31 @@
       "models": [
         {
           "id": "deepseek-chat",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         },
         {
           "id": "deepseek-reasoner",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
+        },
+        {
+          "id": "deepseek-flash",
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 393216
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 393216
         }
       ]
     },
@@ -158,15 +232,24 @@
       "models": [
         {
           "id": "anthropic/claude-sonnet-4.5",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
         },
         {
           "id": "openai/gpt-4.1",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1047576,
+          "maxOutputTokens": 32768
         },
         {
           "id": "google/gemini-2.5-pro",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536
         }
       ]
     },
@@ -185,11 +268,17 @@
       "models": [
         {
           "id": "llama-3.3-70b-versatile",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 131072,
+          "maxOutputTokens": 32768
         },
         {
           "id": "qwen-qwq-32b",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         }
       ]
     },
@@ -208,11 +297,17 @@
       "models": [
         {
           "id": "grok-3",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 131072,
+          "maxOutputTokens": null
         },
         {
           "id": "grok-3-mini",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 131072,
+          "maxOutputTokens": null
         }
       ]
     },
@@ -231,33 +326,45 @@
       "models": [
         {
           "id": "codestral-latest",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 256000,
+          "maxOutputTokens": 4096
         },
         {
           "id": "mistral-large-latest",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "mio-core/catalog/models.json",
+          "contextWindow": 262144,
+          "maxOutputTokens": 262144
         }
       ]
     },
     {
       "name": "ollama",
       "displayName": "Ollama (Local)",
-      "protocol": "Local Ollama (OpenAI Compatible)",
-      "baseUrl": "http://127.0.0.1:11434/v1",
+      "protocol": "Native Ollama /api/chat",
+      "baseUrl": "http://127.0.0.1:11434",
       "envVars": [
         "OLLAMA_API_KEY"
       ],
       "requiresGateway": false,
-      "notesZh": "本地运行的 Ollama 实例（默认 http://127.0.0.1:11434/v1），无需外部密钥即可离线使用。",
-      "notesEn": "Locally running Ollama instance (default http://127.0.0.1:11434/v1), completely offline without remote keys.",
+      "notesZh": "使用本地 Ollama 原生 /api/chat 协议。预设不要求远程密钥，不代表本地守护进程正在运行。",
+      "notesEn": "Uses the local native Ollama /api/chat protocol. No remote key is required by the preset; daemon reachability is not inferred.",
       "models": [
         {
           "id": "qwen2.5-coder:32b",
-          "reasoning": false
+          "reasoning": false,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         },
         {
           "id": "deepseek-r1:32b",
-          "reasoning": true
+          "reasoning": true,
+          "capabilitySource": "provider-preset (not live verified)",
+          "contextWindow": null,
+          "maxOutputTokens": null
         }
       ]
     }

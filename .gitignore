@@ -13,4 +13,6 @@ antigravity.json
 deepseek-web.json
 /.mio/sessions/
 /.mio/journal/
+/.mio/dedup/
+/.mio/outputs/
 __pycache__/

@@ -26,9 +26,17 @@ jobs:
           components: rustfmt, clippy
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
       - name: Formatting
         run: cargo fmt --check
+      - name: Engine dependency boundaries
+        run: |
+          python3 -B tests/architecture.py
+          python3 -B scripts/check-architecture.py
+      - name: CLI to SDK semantic map (strict) and self-test
+        run: |
+          python3 scripts/check-cli-semantics.py --json --json-report "$RUNNER_TEMP/cli-sdk-semantics.json"
+          python3 -B tests/cli_semantics.py
       - name: Check all targets
         run: cargo check --all-targets --locked
       - name: Unit and integration tests
@@ -41,10 +49,49 @@ jobs:
         run: |
           python3 tests/osc7501.py
           python3 tests/cli_cancellation.py
+          python3 -B tests/cli_terminal.py
+          python3 -B tests/crash_recovery.py --binary target/debug/mio
+          python3 -B tests/checkpoint_crash_recovery.py --binary target/debug/mio
           python3 -B tests/agent_eval_harness.py
+          python3 -B tests/agent_eval_comparison.py
+          python3 -B tests/eval_diagnostics.py
+          python3 -B tests/agent_workflow_tasks.py
+          python3 -B tests/agent_review_tasks.py
+          node tests/pi_fixed_sampling_extension.mjs
       - name: Website and installation fixtures
         run: |
+          python3 -B tests/license_inventory.py
+          python3 -B tests/license_bundle.py
+          python3 scripts/bundle-licenses.py --verify
           python3 scripts/check-site.py
           bash -n docs/install.sh
           npm pack --dry-run ./npm
           node scripts/test_install_offline.js
+
+  linux-sandbox:
+    name: Required Linux sandbox isolation
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      # An unavailable namespace/helper must fail this job, never count as proof.
+      MIO_REQUIRE_BWRAP: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Install sandbox helper
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          bwrap --version
+      - name: Real backend, CLI isolation and output disk-full handling
+        shell: bash
+        run: |
+          cargo test --locked --test execution_backend --test execution_backend_routing --test sandbox_cli --test sandbox_host_boundary --test output_disk_full -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/mio-linux-sandbox.log"
+      - name: Preserve isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mio-linux-sandbox
+          path: ${{ runner.temp }}/mio-linux-sandbox.log
+          if-no-files-found: warn

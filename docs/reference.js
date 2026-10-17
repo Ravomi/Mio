@@ -3,7 +3,7 @@
  * Clean, lightweight, zero external dependencies.
  * Shared across documentation.html, models.html, changelog.html.
  * Handles:
- * - Theme Engine: syncs with mio:theme (light/dark/auto)
+ * - Theme Engine: syncs with mio:theme-v2 (light/dark/auto)
  * - Language Engine: toggle zh/en, updates [data-zh]/[data-en]
  * - Code Copy: clipboard copy with accessible live region
  * - Mobile Navigation Drawer
@@ -37,7 +37,7 @@
       document.documentElement.dataset.themeMode = mode;
       if (persist) {
         try {
-          localStorage.setItem('mio:theme', mode);
+          localStorage.setItem('mio:theme-v2', mode);
         } catch (e) {}
       }
       if (iconEl) {
@@ -58,7 +58,7 @@
 
     var savedMode = 'dark';
     try {
-      savedMode = localStorage.getItem('mio:theme') || 'dark';
+      savedMode = localStorage.getItem('mio:theme-v2') || 'dark';
     } catch (e) {}
 
     applyTheme(savedMode, false);

@@ -1,0 +1,20 @@
+diff --git a/invoice.py b/invoice.py
+--- a/invoice.py
++++ b/invoice.py
+@@ -4,13 +4,11 @@
+ def compute_invoice(items, tax_bps, coupon=None, existing_discount_cents=0):
+     subtotal = 0
+     for item in items:
+-        gross = item["unit_cents"] * item["qty"]
+-        discount_bps = item.get("discount_bps", 0)
+-        line_total = gross - (gross * discount_bps) // 10_000
++        line_total = round(item["unit_cents"] * item["qty"] * (1 - item.get("discount_rate", 0.0)))
+         subtotal += line_total
+     discount = existing_discount_cents
+-    if coupon is not None and existing_discount_cents == 0:
+-        discount = coupon["off_cents"]
++    if coupon is not None:
++        discount += coupon["off_cents"]
+     taxable = max(0, subtotal - discount)
+     tax = (taxable * tax_bps) // 10_000
+     return {"subtotal": subtotal, "discount": discount, "tax": tax, "total": taxable + tax}

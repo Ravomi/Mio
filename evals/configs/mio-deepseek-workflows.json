@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "label": "mio-deepseek-workflows",
+  "agent_command": "target/debug/mio --cwd {cwd} --shared-limits-dir {cwd}/../coordination --no-session --no-context --no-mcp --json --provider deepseek --model deepseek-chat --thinking off --max-model-calls 20 -p {prompt}",
+  "timeout_seconds": 180,
+  "event_format": "mio-jsonl",
+  "tasks_dir": "../tasks/workflows",
+  "output": "../../target/evals/workflows-deepseek.json",
+  "budget": {
+    "version": "deepseek-chat-off-20calls-180s-isolated-v2",
+    "model": "deepseek-chat",
+    "thinking": "off",
+    "max_model_calls": 20,
+    "max_total_tokens": null,
+    "notes": "DeepSeek regression profile for the mio-workflows-v1 task set. Credentials come from the environment only (DEEPSEEK_API_KEY for --provider deepseek); never put a key in this file or the command. --json makes Mio emit completion_call JSONL events that event_format mio-jsonl parses for real token usage. The budget block is declared metadata; the mirrored --max-model-calls flag is what enforces the call cap. Each task uses its own temporary coordination directory; shared call/token ledgers cannot leak between tasks or into normal user sessions."
+  }
+}

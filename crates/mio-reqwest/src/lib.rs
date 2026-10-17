@@ -61,7 +61,10 @@ impl Default for ReqwestClient {
     /// client reqwest cannot build reports the build error on every send.
     fn default() -> Self {
         fn build() -> ReqwestClient {
-            ReqwestClient(match reqwest::Client::builder().build() {
+            let builder = reqwest::Client::builder();
+            #[cfg(feature = "native-tls")]
+            let builder = builder.use_native_tls();
+            ReqwestClient(match builder.build() {
                 Ok(client) => Built::Client(Arc::new(client)),
                 Err(error) => Built::Failed(Arc::new(error)),
             })

@@ -351,6 +351,24 @@ impl ToolContext {
         self
     }
 
+    /// Attach `scope` in place of every scope of the same concrete type that
+    /// is already attached, keeping all other scopes and their lifetimes.
+    ///
+    /// [`with_scope`](Self::with_scope) appends and [`scope`](Self::scope)
+    /// answers with the first value of the requested type, so a scope attached
+    /// by an earlier party (an inherited caller context, or a host carrying
+    /// its own value of that type) would otherwise shadow the one attached
+    /// next. A driver that owns the identity of a single call replaces that
+    /// type instead: the superseded values are dropped, every other scope stays
+    /// exactly where it was, and `scope` still answers with the first of each
+    /// remaining type.
+    pub fn with_replaced_scope<T: Any + Send + Sync>(mut self, scope: std::sync::Arc<T>) -> Self {
+        self.scopes
+            .retain(|existing| existing.downcast_ref::<T>().is_none());
+        self.scopes.push(scope);
+        self
+    }
+
     /// Returns the first attached scope of type `T`, or `None` if absent.
     pub fn scope<T: Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>> {
         self.scopes

@@ -227,6 +227,278 @@ fn prompt(client: &mut RpcClient, message: &str) -> (TcpStream, Value) {
     client.request()
 }
 
+fn system_request_contains(request: &Value, expected: &str) -> bool {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| {
+            if message["role"] != "system" {
+                return false;
+            }
+            let content = &message["content"];
+            if let Some(text) = content.as_str() {
+                return text.contains(expected);
+            }
+            content.as_array().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>()
+                    .contains(expected)
+            })
+        })
+}
+
+/// 读取工作区持久化的全部 journal run（`.mio/journal/*.json`）。
+fn journal_runs(client: &RpcClient) -> Vec<Value> {
+    let directory = client._dir.path().join(".mio/journal");
+    let mut runs = Vec::new();
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+            let file: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            runs.extend(file["runs"].as_array().cloned().unwrap_or_default());
+        }
+    }
+    runs
+}
+
+/// 账本里的全部 key 记录（`.mio/dedup/task-keys.json`）。
+fn dedup_entries(client: &RpcClient) -> Vec<Value> {
+    let path = client._dir.path().join(".mio/dedup/task-keys.json");
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    file["entries"].as_array().cloned().unwrap_or_default()
+}
+
+/// 按真实 goal 定位一个 journal run；缺失即测试失败。
+fn run_with_goal<'a>(runs: &'a [Value], goal: &str) -> &'a Value {
+    runs.iter()
+        .find(|run| run["goal"] == goal)
+        .unwrap_or_else(|| panic!("journal must contain a run for {goal:?}: {runs:?}"))
+}
+
+#[test]
+fn request_compaction_keeps_pins_and_exposes_content_free_audits_in_recovery() {
+    let mut client = RpcClient::configured_args(
+        false,
+        "custom",
+        &[],
+        true,
+        false,
+        &[
+            "--context-window",
+            "8192",
+            "--max-output-tokens",
+            "256",
+            "--no-tools",
+        ],
+    );
+    let pin = format!(
+        "pin-head {} MIDDLE-CONSTRAINT {} pin-tail",
+        "界".repeat(30),
+        "文".repeat(30)
+    );
+    client.send(
+        json!({"type":"set_pinned_context","id":"audit-pins","context":{
+            "entries":[{"id":"audit-rule","kind":"constraint","text":pin}]
+        }}),
+    );
+    assert_eq!(client.response("audit-pins")["success"], true);
+    let mut audits = Vec::new();
+    for index in 0..6 {
+        let (stream, request) = prompt(
+            &mut client,
+            &format!("ORIGINAL-CONTENT-{index} {}", "history ".repeat(280)),
+        );
+        assert!(system_request_contains(&request, &pin));
+        reply(stream, None);
+        loop {
+            let event = client
+                .events
+                .recv_timeout(Duration::from_secs(5))
+                .expect("compaction event deadline");
+            if event["type"] == "context_compaction" {
+                audits.push(event["data"].clone());
+            }
+            if event["type"] == "agent_settled" {
+                assert_eq!(event["status"], "completed");
+                break;
+            }
+        }
+    }
+    assert!(
+        !audits.is_empty(),
+        "fixture must trigger actual request compaction"
+    );
+    assert!(
+        audits
+            .iter()
+            .all(|audit| audit["report"]["pinned_items_preserved"] == true)
+    );
+    assert!(
+        audits
+            .iter()
+            .all(|audit| !audit["runId"].as_str().unwrap().is_empty())
+    );
+    assert!(
+        !serde_json::to_string(&audits)
+            .unwrap()
+            .contains("ORIGINAL-CONTENT-")
+    );
+    client.send(json!({"type":"get_state","id":"audit-recovery"}));
+    let state = client.response("audit-recovery");
+    let stored = state["data"]["recovery"]["context_compactions"]
+        .as_array()
+        .unwrap();
+    assert!(!stored.is_empty());
+    assert!(
+        !serde_json::to_string(stored)
+            .unwrap()
+            .contains("ORIGINAL-CONTENT-")
+    );
+    assert!(
+        stored
+            .iter()
+            .all(|audit| !audit["journal_run_id"].as_str().unwrap().is_empty())
+    );
+    client.send(json!({"type":"compact","id":"manual-audit"}));
+    let compacted = client.response("manual-audit");
+    assert_eq!(compacted["success"], true);
+    let loss = &compacted["data"]["loss_report"];
+    assert!(loss.is_object());
+    assert_eq!(loss["pinned_items_preserved"], true);
+    client.send(json!({"type":"get_state","id":"manual-audit-recovery"}));
+    assert_eq!(
+        client.response("manual-audit-recovery")["data"]["recoveryView"]["lastCompactionLoss"],
+        *loss
+    );
+}
+
+#[test]
+fn oversized_pinned_instructions_refuse_the_request_without_contacting_provider() {
+    let mut client = RpcClient::configured_args(
+        false,
+        "custom",
+        &[],
+        false,
+        false,
+        &[
+            "--context-window",
+            "1024",
+            "--max-output-tokens",
+            "128",
+            "--no-tools",
+        ],
+    );
+    client.send(
+        json!({"type":"set_pinned_context","id":"large-pin","context":{
+            "entries":[{"id":"large","kind":"constraint","text":"x".repeat(4000)}]
+        }}),
+    );
+    assert_eq!(client.response("large-pin")["success"], true);
+    client.send(json!({"type":"prompt","id":"refused-pin","message":"continue"}));
+    assert_eq!(client.response("refused-pin")["success"], true);
+    client.settled("error");
+    assert!(client.requests.try_recv().is_err());
+    client.send(json!({"type":"get_state","id":"pin-retained"}));
+    assert_eq!(
+        client.response("pin-retained")["data"]["pinnedContext"]["entries"][0]["text"],
+        "x".repeat(4000)
+    );
+}
+
+#[test]
+fn pinned_context_reaches_requests_survives_fork_and_is_cleared_by_new_session() {
+    let mut client = RpcClient::new();
+    let text = "Preserve the public API exactly.\n尾部约束：不得发布。";
+    let pinned = json!({"entries":[{"id":"api-rule","kind":"constraint","text":text}]});
+    client.send(json!({"type":"set_pinned_context","id":"pins","context":pinned}));
+    assert_eq!(client.response("pins")["success"], true);
+    assert!(client.requests.try_recv().is_err());
+    let (stream, request) = prompt(&mut client, "inspect only");
+    assert!(system_request_contains(&request, text));
+    client.send(json!({"type":"set_pinned_context","id":"busy-pins","context":{"entries":[]}}));
+    assert_eq!(client.response("busy-pins")["success"], false);
+    reply(stream, None);
+    client.settled("completed");
+    client.send(json!({"type":"compact","id":"compact-pins"}));
+    assert_eq!(client.response("compact-pins")["success"], true);
+    client.send(json!({"type":"fork_session","id":"fork-pins"}));
+    assert_eq!(client.response("fork-pins")["success"], true);
+    client.send(json!({"type":"get_state","id":"state-pins"}));
+    assert_eq!(
+        client.response("state-pins")["data"]["pinnedContext"],
+        pinned
+    );
+    client.send(json!({"type":"new_session","id":"clear-pins"}));
+    assert_eq!(client.response("clear-pins")["success"], true);
+    client.send(json!({"type":"get_state","id":"state-clear"}));
+    assert_eq!(
+        client.response("state-clear")["data"]["pinnedContext"]["entries"],
+        json!([])
+    );
+    assert!(client.requests.try_recv().is_err());
+}
+
+#[test]
+fn invalid_or_unsavable_pinned_context_keeps_the_previous_registry() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+    let pinned = json!({"entries":[{"id":"keep","kind":"goal","text":"Finish migration"}]});
+    client.send(json!({"type":"set_pinned_context","id":"save-pins","context":pinned}));
+    assert_eq!(client.response("save-pins")["success"], true);
+    let duplicate = json!({"entries":[
+        {"id":"duplicate","kind":"goal","text":"first"},
+        {"id":"duplicate","kind":"goal","text":"second"}
+    ]});
+    client.send(json!({"type":"set_pinned_context","id":"invalid","context":duplicate}));
+    let rejected = client.until(|event| event["type"] == "response" && event["command"] == "parse");
+    assert_eq!(rejected["success"], false);
+    client.send(json!({"type":"get_state","id":"saved-state"}));
+    let state = client.response("saved-state");
+    assert_eq!(state["data"]["pinnedContext"], pinned);
+    let path = std::path::PathBuf::from(state["data"]["sessionFile"].as_str().unwrap());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    client.send(json!({"type":"set_pinned_context","id":"unsavable","context":{"entries":[]}}));
+    assert_eq!(client.response("unsavable")["success"], false);
+    client.send(json!({"type":"get_state","id":"retained-state"}));
+    assert_eq!(
+        client.response("retained-state")["data"]["pinnedContext"],
+        pinned
+    );
+    assert!(path.is_dir());
+    assert!(client.requests.try_recv().is_err());
+}
+
+#[test]
+fn protocol_discovery_is_available_idle_and_running_without_extra_requests() {
+    let mut client = RpcClient::new();
+    client.send(json!({"type":"get_state","id":"discover-idle"}));
+    let idle = client.response("discover-idle");
+    let protocol = &idle["data"]["protocol"];
+    assert_eq!(protocol["name"], "mio-jsonl-rpc");
+    assert_eq!(protocol["discoveryVersion"], 1);
+    assert_eq!(protocol["eventEnvelope"], "legacy");
+    assert_eq!(protocol["capabilities"]["eventReplay"], false);
+    assert_eq!(protocol["capabilities"]["automaticSideEffectReplay"], false);
+    assert_eq!(protocol["limits"]["inputLineBytes"], 1024 * 1024);
+    assert!(client.requests.try_recv().is_err());
+
+    let (held, _) = prompt(&mut client, "hold for discovery");
+    client.send(json!({"type":"get_state","id":"discover-running"}));
+    let running = client.response("discover-running");
+    assert_eq!(running["data"]["protocol"], *protocol);
+    assert_eq!(running["data"]["isStreaming"], true);
+    assert!(client.requests.try_recv().is_err());
+    client.send(json!({"type":"abort","id":"discover-stop"}));
+    assert_eq!(client.response("discover-stop")["success"], true);
+    client.settled("cancelled");
+    drop(held);
+}
+
 #[test]
 fn abort_interrupts_model_wait_clears_queues_and_allows_reuse() {
     let mut client = RpcClient::new();
@@ -242,6 +514,9 @@ fn abort_interrupts_model_wait_clears_queues_and_allows_reuse() {
     let state = client.response("state");
     assert_eq!(state["data"]["isStreaming"], true);
     assert_eq!(state["data"]["followUpCount"], 1);
+    assert!(state["data"]["recoveryView"]["sessionFile"].is_null());
+    assert!(state["data"]["recoveryView"]["savedMessages"].is_null());
+    assert_eq!(state["data"]["recoveryView"]["automaticReplay"], false);
     client.send(json!({"type":"abort","id":"abort"}));
     assert_eq!(client.response("abort")["data"]["aborted"], true);
     client.settled("cancelled");
@@ -449,7 +724,17 @@ fn model_switch_is_atomic_and_restores_configured_connections() {
         let state = client.response("state");
         assert_eq!(state["data"]["provider"], "deepseek");
         assert_eq!(state["data"]["model"], "deepseek-chat");
+        assert_eq!(state["data"]["modelCapabilities"]["imageInput"], false);
     }
+    client.send(json!({"type":"set_model","id":"vision","model":"openai/gpt-4o","thinking":"off"}));
+    let vision = client.response("vision");
+    assert_eq!(vision["success"], true, "{vision}");
+    assert_eq!(vision["data"]["modelCapabilities"]["imageInput"], true);
+    client.send(json!({"type":"get_state","id":"vision-state"}));
+    assert_eq!(
+        client.response("vision-state")["data"]["modelCapabilities"]["imageInput"],
+        true
+    );
     for (spec, provider) in [
         ("anthropic/claude", "anthropic"),
         ("google/test", "google"),
@@ -747,6 +1032,19 @@ fn approve_flow_allow_deny_and_unknown_request() {
     let req_id = req_event["request_id"].as_str().unwrap().to_string();
     assert_eq!(req_event["operation"], "write");
     assert_eq!(req_event["target"], "approved.txt");
+    assert_eq!(req_event["binding"]["operation"], "write");
+    assert_eq!(req_event["binding"]["tool"], "write");
+    assert_eq!(req_event["binding"]["entry"], "aggregate");
+    assert_eq!(
+        req_event["binding"]["cwd"],
+        client._dir.path().canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(
+        req_event["binding"]["paramsSha256"].as_str().unwrap().len(),
+        64
+    );
+    assert!(uuid::Uuid::parse_str(req_event["binding"]["scope"].as_str().unwrap()).is_ok());
+    assert!(uuid::Uuid::parse_str(req_event["binding"]["callId"].as_str().unwrap()).is_ok());
     assert!(!target_file.exists());
 
     client.send(json!({"type":"get_state","id":"st1"}));
@@ -805,6 +1103,14 @@ fn approve_flow_allow_deny_and_unknown_request() {
 
     let req_event_deny = client.until(|e| e["type"] == "approval_request");
     let req_id_deny = req_event_deny["request_id"].as_str().unwrap().to_string();
+    assert_ne!(
+        req_event_deny["binding"]["callId"],
+        req_event["binding"]["callId"]
+    );
+    assert_ne!(
+        req_event_deny["binding"]["paramsSha256"],
+        req_event["binding"]["paramsSha256"]
+    );
     assert!(!denied_file.exists());
 
     client.send(json!({
@@ -1087,24 +1393,28 @@ fn context_budget_rechecks_after_tools_and_preserves_call_result_pairs() {
         false,
         &[
             "--tools",
-            "read",
+            "grep",
             "--context-window",
             "8192",
             "--max-output-tokens",
             "512",
         ],
     );
-    // Two old turns fit alone; a medium tool result forces request-only compaction.
+    // grep retains enough data to exercise both history compaction and the
+    // generic active-result externalization path; read paginates before this.
+    // Two old turns fit alone; a medium grep result forces request-only compaction.
     for index in 0..2 {
         let (stream, _) = prompt(&mut client, &format!("old-{index}:{}", "x".repeat(1600)));
         reply(stream, None);
         client.settled("completed");
     }
     std::fs::write(client._dir.path().join("medium.txt"), "m".repeat(3600)).unwrap();
-    let (stream, _) = prompt(&mut client, "read medium");
+    let (stream, _) = prompt(&mut client, "grep medium");
     reply(
         stream,
-        Some(json!({"name":"read","arguments":json!({"path":"medium.txt"}).to_string()})),
+        Some(
+            json!({"name":"grep","arguments":json!({"pattern":"m","path":"medium.txt"}).to_string()}),
+        ),
     );
     let (stream, request) = client.request();
     let messages = request["messages"].as_array().unwrap();
@@ -1131,16 +1441,64 @@ fn context_budget_rechecks_after_tools_and_preserves_call_result_pairs() {
     assert_eq!(request["max_tokens"], 512);
     reply(stream, None);
     client.settled("completed");
-    // The active tool result itself cannot be removed: stop locally before another HTTP call.
+    // Preserve the active pair by spilling its body, within the same budget.
     std::fs::write(client._dir.path().join("huge.txt"), "z".repeat(20000)).unwrap();
-    let (stream, _) = prompt(&mut client, "read huge");
+    let (stream, _) = prompt(&mut client, "grep huge");
     reply(
         stream,
-        Some(json!({"name":"read","arguments":json!({"path":"huge.txt"}).to_string()})),
+        Some(
+            json!({"name":"grep","arguments":json!({"pattern":"z","path":"huge.txt"}).to_string()}),
+        ),
     );
-    let error = client.until(|event| event["type"] == "error");
-    assert!(error.to_string().contains("Context budget:"), "{error}");
-    client.settled("error");
+    let (stream, request) = client.request();
+    let messages = request["messages"].as_array().unwrap();
+    let (call_index, call) = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| message["tool_calls"].is_array())
+        .unwrap();
+    let (result_index, result) = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| message["role"] == "tool")
+        .unwrap();
+    assert!(call_index < result_index);
+    assert_eq!(call["tool_calls"][0]["id"], result["tool_call_id"]);
+    let content: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    let references = content["output_references"].as_array().unwrap();
+    assert_eq!(references.len(), 1);
+    let reference = &references[0];
+    // reply() supplied the real provider id "tool-1". The provider encoder
+    // may rename a repeated historical id in this request; the reference must
+    // keep the original identity, while the wire call/result stay paired above.
+    assert_eq!(reference["call_id"], "tool-1");
+    let relative = reference["path"].as_str().unwrap();
+    let name = relative.strip_prefix(".mio/outputs/").unwrap();
+    assert!(!name.contains('/'));
+    let bytes = std::fs::read(client._dir.path().join(".mio/outputs").join(name)).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(reference["sha256"], format!("{:x}", Sha256::digest(&bytes)));
+    assert_eq!(reference["total_bytes"], bytes.len());
+    let full: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        full["output"]
+            .as_str()
+            .unwrap()
+            .contains(&"z".repeat(20000))
+    );
+    assert!(
+        !result["content"]
+            .as_str()
+            .unwrap()
+            .contains(&"z".repeat(20000))
+    );
+    let input_limit = 8192 - 512 - (8192_usize.div_ceil(20));
+    assert!(serde_json::to_vec(messages).unwrap().len() < input_limit);
+    assert_eq!(request["max_tokens"], 512);
+    reply(stream, None);
+    client.settled("completed");
     assert!(client.requests.try_recv().is_err());
 }
 
@@ -1186,4 +1544,304 @@ fn known_nonreasoning_model_switch_is_rejected_without_changing_state() {
     assert_eq!(state["data"]["thinkingLevel"], "high");
     client.send(json!({"type":"set_model","id":"off","model":"gpt-4.1:off"}));
     assert_eq!(client.response("off")["success"], true);
+}
+
+#[test]
+fn prompt_dedup_key_reuses_task_id_without_rerunning() {
+    let mut client = RpcClient::new();
+    client.send(json!({"type":"prompt","id":"p1","message":"first","dedup_key":"job-1"}));
+    let first = client.response("p1");
+    assert_eq!(first["success"], true);
+    assert_eq!(first["data"]["status"], "started");
+    assert_eq!(first["data"]["dedup_key"], "job-1");
+    let task_id = first["data"]["task_id"].as_str().unwrap().to_owned();
+    let (stream, _) = client.request();
+    client.send(json!({"type":"prompt","id":"active-duplicate","message":"duplicate while active","dedup_key":"job-1"}));
+    let duplicate = client.response("active-duplicate");
+    assert_eq!(duplicate["data"]["status"], "deduplicated");
+    assert_eq!(duplicate["data"]["task_id"], task_id);
+    assert_eq!(duplicate["data"]["state"], "active");
+    reply(stream, None);
+    client.settled("completed");
+
+    // 相同 key 再次提交：不触发模型请求，只回放已有任务标识。
+    client.send(json!({"type":"prompt","id":"p2","message":"second","dedup_key":"job-1"}));
+    let second = client.response("p2");
+    assert_eq!(second["success"], true);
+    assert_eq!(second["data"]["status"], "deduplicated");
+    assert_eq!(second["data"]["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(second["data"]["state"], "completed");
+    client.settled("deduplicated");
+}
+
+#[test]
+fn rejected_follow_up_does_not_consume_its_dedup_key() {
+    let mut client = RpcClient::new();
+    let (held, _) = prompt(&mut client, "hold");
+    // 空消息被拒绝：key 不得被消耗。
+    client.send(json!({"type":"follow_up","id":"bad","message":"   ","dedup_key":"q1"}));
+    assert_eq!(client.response("bad")["success"], false);
+    client.send(json!({"type":"follow_up","id":"ok","message":"queued-work","dedup_key":"q1"}));
+    let ok = client.response("ok");
+    assert_eq!(ok["success"], true);
+    assert_eq!(ok["data"]["queued"], 1);
+    let task_id = ok["data"]["task_id"].as_str().unwrap().to_owned();
+
+    // 同 key 再次排队：合并到已有排队任务，队列不增长。
+    client.send(json!({"type":"follow_up","id":"dup","message":"duplicate","dedup_key":"q1"}));
+    let dup = client.response("dup");
+    assert_eq!(dup["data"]["status"], "deduplicated");
+    assert_eq!(dup["data"]["state"], "queued");
+    assert_eq!(dup["data"]["task_id"].as_str().unwrap(), task_id);
+    client.send(json!({"type":"get_state","id":"state"}));
+    assert_eq!(client.response("state")["data"]["followUpCount"], 1);
+
+    client.send(json!({"type":"abort","id":"abort"}));
+    assert_eq!(client.response("abort")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(held);
+}
+
+#[test]
+fn queue_full_rejection_does_not_consume_dedup_key() {
+    let mut client = RpcClient::new();
+    let (held, _) = prompt(&mut client, "hold");
+    for index in 0..64 {
+        let id = format!("f{index}");
+        client.send(json!({"type":"follow_up","id":id,"message":format!("queued {index}")}));
+        assert_eq!(client.response(&id)["success"], true);
+    }
+    client
+        .send(json!({"type":"follow_up","id":"overflow","message":"blocked","dedup_key":"q-full"}));
+    let overflow = client.response("overflow");
+    assert_eq!(overflow["success"], false);
+    assert!(
+        overflow["data"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("queue must have space")
+    );
+
+    client.send(json!({"type":"abort","id":"abort"}));
+    assert_eq!(client.response("abort")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(held);
+
+    // 队列已清空：被拒绝的 key 仍可正常准入，说明拒绝没有消耗它。
+    client.send(json!({"type":"prompt","id":"reuse","message":"retry","dedup_key":"q-full"}));
+    let reuse = client.response("reuse");
+    assert_eq!(reuse["success"], true);
+    assert_eq!(reuse["data"]["status"], "started");
+    let (stream, _) = client.request();
+    reply(stream, None);
+    client.settled("completed");
+}
+
+/// queued 状态的 dedup key 在真正轮到它时必须真实执行一次，执行后 key 变为
+/// completed 并继续阻止重放；受理入队那一刻就拥有权威 `Queued` 句柄，且不
+/// 会改写仍处于 active 的原任务身份/阶段。
+#[test]
+fn queued_dedup_follow_up_really_executes_when_it_becomes_active() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+    let (held, _) = prompt(&mut client, "hold");
+    // 原任务已真实准入：journal run 已绑定真实 task id 与 running 阶段。
+    let parent = run_with_goal(&journal_runs(&client), "hold").clone();
+    assert_eq!(parent["canonical_phase"], "running", "{parent}");
+    let parent_task = parent["task_id"].as_str().unwrap().to_owned();
+
+    client
+        .send(json!({"type":"follow_up","id":"q","message":"keyed-work","dedup_key":"queued-job"}));
+    let queued = client.response("q");
+    assert_eq!(queued["success"], true);
+    assert_eq!(queued["data"]["queued"], 1);
+    assert_eq!(queued["data"]["dedup_key"], "queued-job");
+    let task_id = queued["data"]["task_id"].as_str().unwrap().to_owned();
+    assert_ne!(task_id, parent_task);
+
+    // 受理入队那一刻就是权威 `Queued`：ledger 的 canonical_phase 立即为 queued，
+    // 而不是等 pop 才登记。
+    let entry = dedup_entries(&client)
+        .into_iter()
+        .find(|entry| entry["key"] == "queued-job")
+        .expect("the accepted follow_up must be recorded");
+    assert_eq!(entry["state"], "queued");
+    assert_eq!(entry["canonical_phase"], "queued", "{entry}");
+    assert_eq!(entry["task_id"].as_str().unwrap(), task_id);
+
+    // 排队登记与投影绝不改写正在运行的原任务身份/阶段，也不提前派发 HTTP。
+    let runs = journal_runs(&client);
+    let parent_now = run_with_goal(&runs, "hold");
+    assert_eq!(parent_now["canonical_phase"], "running", "{parent_now}");
+    assert_eq!(parent_now["task_id"].as_str().unwrap(), parent_task);
+    assert!(
+        runs.iter().all(|run| run["task_id"] != task_id.as_str()),
+        "a queued sibling must not open a journal run before it is admitted: {runs:?}"
+    );
+    assert!(client.requests.try_recv().is_err());
+
+    // 仍处于 queued：同 key 再次排队只会合并回放，不增长队列、不抢占执行权。
+    client
+        .send(json!({"type":"follow_up","id":"q2","message":"duplicate","dedup_key":"queued-job"}));
+    let duplicate = client.response("q2");
+    assert_eq!(duplicate["data"]["status"], "deduplicated");
+    assert_eq!(duplicate["data"]["state"], "queued");
+    assert_eq!(duplicate["data"]["task_id"].as_str().unwrap(), task_id);
+    client.send(json!({"type":"get_state","id":"state"}));
+    assert_eq!(client.response("state")["data"]["followUpCount"], 1);
+
+    // 初始回合结束后，排队中的 keyed 回合必须变成 active 并真正调用模型，
+    // 且沿用受理时的同一个真实 task id 打开 journal run。
+    reply(held, None);
+    let (stream, request) = client.request();
+    assert!(
+        request.to_string().contains("keyed-work"),
+        "queued turn must really execute: {request}"
+    );
+    let started = run_with_goal(&journal_runs(&client), "keyed-work").clone();
+    assert_eq!(started["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(started["canonical_phase"], "running", "{started}");
+    reply(stream, None);
+    client.settled("completed");
+
+    // 终态 key 保留：重复提交只回放同一个 task_id。
+    client.send(json!({"type":"prompt","id":"again","message":"again","dedup_key":"queued-job"}));
+    let again = client.response("again");
+    assert_eq!(again["success"], true);
+    assert_eq!(again["data"]["status"], "deduplicated");
+    assert_eq!(again["data"]["state"], "completed");
+    assert_eq!(again["data"]["task_id"].as_str().unwrap(), task_id);
+    client.settled("deduplicated");
+}
+
+/// 取消后排队的 key 必须保留为 cancelled 终态：既不能重放，也不会从账本消失。
+#[test]
+fn cancelled_dedup_key_is_retained_and_not_replayed() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+    let (held, _) = prompt(&mut client, "hold");
+    client
+        .send(json!({"type":"follow_up","id":"q","message":"never-runs","dedup_key":"cancel-job"}));
+    let queued = client.response("q");
+    assert_eq!(queued["success"], true);
+    let task_id = queued["data"]["task_id"].as_str().unwrap().to_owned();
+
+    client.send(json!({"type":"abort","id":"abort"}));
+    assert_eq!(client.response("abort")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(held);
+
+    // key 保留在落盘账本里，状态为 cancelled。
+    let ledger: Value = serde_json::from_str(
+        &std::fs::read_to_string(client._dir.path().join(".mio/dedup/task-keys.json")).unwrap(),
+    )
+    .unwrap();
+    let entry = ledger["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["key"] == "cancel-job")
+        .expect("cancelled key must stay in the ledger");
+    assert_eq!(entry["state"], "cancelled");
+    assert_eq!(
+        entry["canonical_phase"], "cancelled",
+        "the queued cancel must go through the real canonical phase: {entry}"
+    );
+    assert_eq!(entry["task_id"].as_str().unwrap(), task_id);
+
+    // 相同 key 再次提交：只回放 cancelled，不再执行。
+    client.send(json!({"type":"prompt","id":"replay","message":"retry","dedup_key":"cancel-job"}));
+    let replay = client.response("replay");
+    assert_eq!(replay["success"], true);
+    assert_eq!(replay["data"]["status"], "deduplicated");
+    assert_eq!(replay["data"]["state"], "cancelled");
+    assert_eq!(replay["data"]["task_id"].as_str().unwrap(), task_id);
+    client.settled("deduplicated");
+}
+
+/// 无 key 的排队回合在受理时就必须持有唯一真实句柄：应答回传真实 canonical
+/// task id（绝不附带 dedup_key），排队期零 HTTP 派发，开始执行后 journal 绑定
+/// 同一 id 不变。
+#[test]
+fn unkeyed_queued_follow_up_holds_one_real_handle_and_keeps_its_id() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+    let (held, _) = prompt(&mut client, "hold");
+    let parent_task = run_with_goal(&journal_runs(&client), "hold")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    client.send(json!({"type":"follow_up","id":"u","message":"unkeyed-work"}));
+    let queued = client.response("u");
+    assert_eq!(queued["success"], true);
+    assert_eq!(queued["data"]["queued"], 1);
+    let task_id = queued["data"]["task_id"]
+        .as_str()
+        .expect("an unkeyed queued turn must report its real canonical task id")
+        .to_owned();
+    assert!(!task_id.is_empty());
+    assert_ne!(task_id, parent_task);
+    assert!(
+        queued["data"].get("dedup_key").is_none(),
+        "an unkeyed turn must not pretend to be deduplicated: {queued}"
+    );
+
+    // 排队期零提前派发：没有第二个模型请求，也没有为它提前打开 journal run。
+    assert!(client.requests.try_recv().is_err());
+    let runs = journal_runs(&client);
+    assert_eq!(run_with_goal(&runs, "hold")["canonical_phase"], "running");
+    assert!(
+        runs.iter().all(|run| run["task_id"] != task_id.as_str()),
+        "the unkeyed queued turn must not have started yet: {runs:?}"
+    );
+
+    // 轮到它时沿用同一真实 id 打开 journal run 并执行一次。
+    reply(held, None);
+    let (stream, request) = client.request();
+    assert!(request.to_string().contains("unkeyed-work"), "{request}");
+    let started = run_with_goal(&journal_runs(&client), "unkeyed-work").clone();
+    assert_eq!(
+        started["task_id"].as_str().unwrap(),
+        task_id,
+        "the journal run must keep the id minted at acceptance"
+    );
+    assert_eq!(started["canonical_phase"], "running", "{started}");
+    reply(stream, None);
+    client.settled("completed");
+    let completed = run_with_goal(&journal_runs(&client), "unkeyed-work").clone();
+    assert_eq!(completed["task_id"].as_str().unwrap(), task_id);
+}
+
+/// 取消排队的无 key 回合沿用受理时持有的同一真实句柄：不重新注册、不重铸 ID，
+/// 取消后不派发、不开 run，后续无 key 回合铸出不同的真实 id。
+#[test]
+fn cancelled_unkeyed_queued_turn_reuses_its_accepted_handle() {
+    let mut client = RpcClient::configured_with_persist(false, "custom", &[], true);
+    let (held, _) = prompt(&mut client, "hold");
+    client.send(json!({"type":"follow_up","id":"u","message":"cancelled-unkeyed"}));
+    let queued = client.response("u");
+    assert_eq!(queued["success"], true);
+    let task_id = queued["data"]["task_id"].as_str().unwrap().to_owned();
+
+    client.send(json!({"type":"abort","id":"abort"}));
+    assert_eq!(client.response("abort")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(held);
+
+    // 取消不派发、不开 run；无 key 回合没有 legacy key 记录可查。
+    assert!(client.requests.try_recv().is_err());
+    let runs = journal_runs(&client);
+    assert!(
+        runs.iter().all(|run| run["task_id"] != task_id.as_str()),
+        "a cancelled queued turn must not open a journal run: {runs:?}"
+    );
+
+    // 取消后再排一个无 key 回合：必须铸出不同的真实 id，不复用被取消的身份。
+    let (held, _) = prompt(&mut client, "hold-again");
+    client.send(json!({"type":"follow_up","id":"u2","message":"fresh-unkeyed"}));
+    let fresh = client.response("u2");
+    assert_eq!(fresh["success"], true);
+    assert_ne!(fresh["data"]["task_id"].as_str().unwrap(), task_id);
+    client.send(json!({"type":"abort","id":"abort2"}));
+    assert_eq!(client.response("abort2")["data"]["aborted"], true);
+    client.settled("cancelled");
+    drop(held);
 }

@@ -3,6 +3,8 @@
 
 use crate::mcp::McpServerSpec;
 use crate::pattern::ToolFilter;
+use crate::unknown_effect::{UnknownReason, UnknownSideEffect};
+use crate::workspace::workspace_capability::{NodeKind, Root, StatKind};
 use crate::{AgentEvent, Host};
 use mio_core::{
     message::ToolName,
@@ -23,8 +25,14 @@ pub const COMMUNITY_WEB_URL: &str = "https://github.com/Ravomi/mio-plugins";
 
 /// Hard limit for `mio-plugin.json` and plugin MCP configuration files.
 const MAX_PLUGIN_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_PLUGIN_SKILL_ENTRIES: usize = 1000;
 /// Wall-clock budget for one declarative plugin tool invocation.
 pub const PLUGIN_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn read_plugin_config(root: &Root, relative: &str, display: &Path) -> Result<String, String> {
+    let file = root.target(relative)?.open_read()?;
+    crate::context::read_bounded_file(file, display, MAX_PLUGIN_CONFIG_BYTES)
+}
 
 fn default_skills_dirs() -> Vec<String> {
     vec!["skills".to_string()]
@@ -199,7 +207,18 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
             plugin_dir.display()
         ));
     }
-    let raw = crate::context::read_bounded_utf8(&manifest_path, MAX_PLUGIN_CONFIG_BYTES)?;
+    let absolute_dir = if plugin_dir.is_absolute() {
+        plugin_dir.to_path_buf()
+    } else {
+        plugin_dir.canonicalize().map_err(|e| {
+            format!(
+                "Failed to canonicalize plugin root {}: {e}",
+                plugin_dir.display()
+            )
+        })?
+    };
+    let root = Root::open(&absolute_dir)?;
+    let raw = read_plugin_config(&root, "mio-plugin.json", &manifest_path)?;
     let manifest: PluginManifest = serde_json::from_str(&raw)
         .map_err(|e| format!("Invalid mio-plugin.json in {}: {e}", plugin_dir.display()))?;
 
@@ -225,8 +244,8 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
 
     // Validate context_files
     for ctx_rel in &manifest.context_files {
-        let path = validate_relative_subpath(plugin_dir, ctx_rel)?;
-        if !path.is_file() {
+        validate_relative_subpath(plugin_dir, ctx_rel)?;
+        if root.target(ctx_rel)?.stat()?.kind != StatKind::File {
             return Err(format!(
                 "Plugin '{}' declared missing context_file '{ctx_rel}'",
                 manifest.name
@@ -235,24 +254,32 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
     }
 
     // Validate skills directories (if they exist)
+    let mut visited_skill_entries = 0;
     for skill_dir_rel in &manifest.skills {
         let dir = validate_relative_subpath(plugin_dir, skill_dir_rel)?;
         if dir.exists() {
-            if !dir.is_dir() {
-                return Err(format!(
+            let skills_dir = root.dir(skill_dir_rel).map_err(|_| {
+                format!(
                     "Plugin '{}' skills path '{skill_dir_rel}' is not a directory",
                     manifest.name
-                ));
-            }
-            for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-                    let skill_md = entry.path().join("SKILL.md");
-                    if !skill_md.is_file() {
+                )
+            })?;
+            for entry in skills_dir.children()? {
+                visited_skill_entries += 1;
+                if visited_skill_entries > MAX_PLUGIN_SKILL_ENTRIES {
+                    return Err(format!(
+                        "Plugin '{}' skills exceed {MAX_PLUGIN_SKILL_ENTRIES} directory entries",
+                        manifest.name
+                    ));
+                }
+                let entry = entry?;
+                if entry.kind() == NodeKind::Dir {
+                    let skill_dir = entry.open_dir()?;
+                    if skill_dir.target("SKILL.md")?.stat()?.kind != StatKind::File {
                         return Err(format!(
                             "Plugin '{}' skill directory '{}' is missing SKILL.md",
                             manifest.name,
-                            entry.file_name().to_string_lossy()
+                            entry.name()
                         ));
                     }
                 }
@@ -263,24 +290,26 @@ pub fn validate_plugin_dir(plugin_dir: &Path) -> Result<PluginManifest, String> 
     // Validate prompts directories (if they exist)
     for prompt_dir_rel in &manifest.prompts {
         let dir = validate_relative_subpath(plugin_dir, prompt_dir_rel)?;
-        if dir.exists() && !dir.is_dir() {
-            return Err(format!(
-                "Plugin '{}' prompts path '{prompt_dir_rel}' is not a directory",
-                manifest.name
-            ));
+        if dir.exists() {
+            root.dir(prompt_dir_rel).map_err(|_| {
+                format!(
+                    "Plugin '{}' prompts path '{prompt_dir_rel}' is not a directory",
+                    manifest.name
+                )
+            })?;
         }
     }
 
     // Validate mcp file (if declared)
     if let Some(ref mcp_rel) = manifest.mcp {
         let mcp_path = validate_relative_subpath(plugin_dir, mcp_rel)?;
-        if !mcp_path.is_file() {
+        if root.target(mcp_rel)?.stat()?.kind != StatKind::File {
             return Err(format!(
                 "Plugin '{}' declared missing mcp file '{mcp_rel}'",
                 manifest.name
             ));
         }
-        let mcp_raw = crate::context::read_bounded_utf8(&mcp_path, MAX_PLUGIN_CONFIG_BYTES)?;
+        let mcp_raw = read_plugin_config(&root, mcp_rel, &mcp_path)?;
         let parsed: Value = serde_json::from_str(&mcp_raw).map_err(|e| {
             format!(
                 "Plugin '{}' invalid MCP JSON '{mcp_rel}': {e}",
@@ -513,21 +542,26 @@ pub fn scaffold_plugin(target_dir: &Path, name: &str) -> Result<PathBuf, String>
 
 /// Discover all installed plugins in `.mio/plugins/*` inside `cwd`.
 pub fn discover_plugins(cwd: &Path) -> Result<Vec<InstalledPlugin>, String> {
-    let plugins_dir = cwd.join(".mio").join("plugins");
+    let canonical_cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize cwd {}: {e}", cwd.display()))?;
+    let plugins_dir = canonical_cwd.join(".mio").join("plugins");
     if !plugins_dir.is_dir() {
         return Ok(Vec::new());
     }
+    let root = Root::open(&canonical_cwd)?;
+    let plugins_dir_handle = root.dir(".mio/plugins")?;
     let mut plugins = BTreeMap::new();
-    for entry in fs::read_dir(&plugins_dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let ft = entry.file_type().map_err(|e| e.to_string())?;
-        if ft.is_symlink() || !ft.is_dir() {
+    for entry in plugins_dir_handle.children()? {
+        let entry = entry?;
+        if entry.kind() != NodeKind::Dir {
             continue;
         }
-        let dir = entry.path();
-        if !dir.join("mio-plugin.json").is_file() {
+        let plugin_dir = entry.open_dir()?;
+        if plugin_dir.target("mio-plugin.json")?.stat()?.kind != StatKind::File {
             continue;
         }
+        let dir = plugins_dir.join(entry.name());
         let manifest = validate_plugin_dir(&dir)?;
         plugins.insert(
             manifest.name.clone(),
@@ -683,7 +717,8 @@ pub fn load_plugin_mcp_specs(cwd: &Path) -> Result<BTreeMap<String, McpServerSpe
         if !mcp_path.is_file() {
             continue;
         }
-        let raw = crate::context::read_bounded_utf8(&mcp_path, MAX_PLUGIN_CONFIG_BYTES)?;
+        let root = Root::open(&plugin.root_dir)?;
+        let raw = read_plugin_config(&root, mcp_rel, &mcp_path)?;
         #[derive(Deserialize)]
         struct McpConfig {
             #[serde(rename = "mcpServers", alias = "servers", default)]
@@ -697,6 +732,37 @@ pub fn load_plugin_mcp_specs(cwd: &Path) -> Result<BTreeMap<String, McpServerSpe
     Ok(out)
 }
 
+/// Why one declarative plugin tool did not return a normal result.
+///
+/// The classification is typed and conservative: a supervision timeout means
+/// the command may already have run its side effect, so it is `Unknown` and is
+/// never reclassified by parsing the timeout message. A non-zero exit is an
+/// observed failure (`Failed`) and stays as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PluginToolError {
+    /// The command provably failed (could not start, or exited non-zero).
+    Failed(String),
+    /// The command may have run: its supervision timeout fired, so the effect
+    /// cannot be confirmed.
+    Unknown(String),
+}
+
+impl PluginToolError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Failed(message) | Self::Unknown(message) => message,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Failed(message) | Self::Unknown(message) => message,
+        }
+    }
+}
+
+/// Legacy unrestricted entry point used by the module's tests.
+#[cfg(test)]
 async fn execute_plugin_command(
     command: &[String],
     args_json: &str,
@@ -705,41 +771,95 @@ async fn execute_plugin_command(
     execute_plugin_command_with_timeout(command, args_json, cwd, PLUGIN_TOOL_TIMEOUT).await
 }
 
-/// Run a declarative plugin tool under the shared supervised-process helper.
-///
-/// The child runs in its own process group, is killed with its descendants when
-/// the future is dropped (abort/cancellation), on timeout, or when the pipe
-/// closes, and stdout/stderr are captured with a hard 32 KiB per-stream limit.
+/// Run a declarative plugin tool unrestricted. Kept for callers without a host
+/// policy; the engine uses the policy-aware path below.
+#[cfg(test)]
 async fn execute_plugin_command_with_timeout(
     command: &[String],
     args_json: &str,
     cwd: &Path,
     timeout: Duration,
 ) -> Result<String, String> {
-    if command.is_empty() {
-        return Err("Empty plugin command".into());
-    }
-    let mut cmd = tokio::process::Command::new(&command[0]);
-    for arg in &command[1..] {
-        cmd.arg(arg.replace("{args}", args_json));
-    }
-    cmd.current_dir(cwd)
-        .env("MIO_TOOL_ARGS", args_json)
-        .stdin(std::process::Stdio::null());
+    execute_plugin_command_under(
+        command,
+        args_json,
+        cwd,
+        &crate::execution_backend::ExecutionPolicy::Unrestricted,
+        timeout,
+    )
+    .await
+    .map_err(PluginToolError::into_message)
+}
 
-    let output = tokio::time::timeout(timeout, crate::shell::run_supervised(&mut cmd))
-        .await
-        .map_err(|_| format!("Plugin tool timed out after {}s", timeout.as_secs()))??;
+/// Run a declarative plugin tool under the host's execution policy.
+///
+/// The command's argv is preserved verbatim (only `{args}` substitution is
+/// applied), `MIO_TOOL_ARGS` is passed as explicit configuration rather than by
+/// inheriting the whole host environment into a sandbox, and the child runs in
+/// its own process group. It is killed with its descendants when the future is
+/// dropped (abort/cancellation), on timeout, or when the pipe closes, and
+/// stdout/stderr are captured with a hard 32 KiB per-stream limit.
+///
+/// When the requested backend cannot run, this fails instead of falling back to
+/// an unsandboxed command.
+async fn execute_plugin_command_under(
+    command: &[String],
+    args_json: &str,
+    cwd: &Path,
+    policy: &crate::execution_backend::ExecutionPolicy,
+    timeout: Duration,
+) -> Result<String, PluginToolError> {
+    use crate::execution_backend::SupervisedCommand;
+    if command.is_empty() {
+        return Err(PluginToolError::Failed("Empty plugin command".into()));
+    }
+    let request = command[1..]
+        .iter()
+        .fold(SupervisedCommand::new(&command[0], cwd), |request, arg| {
+            request.arg(arg.replace("{args}", args_json))
+        })
+        .env("MIO_TOOL_ARGS", args_json);
+    let native = policy
+        .command(&request)
+        .map_err(|error| PluginToolError::Failed(error.to_string()))?;
+    let mut cmd = tokio::process::Command::from(native);
+    cmd.stdin(std::process::Stdio::null());
+
+    // Typed supervision: a pre-spawn failure is a known `Failed` (nothing ran),
+    // while any after-spawn loss (timeout, wait, capture) is `Unknown` because
+    // the command may already have run its side effect. The classification is
+    // structural, so it is never re-derived by parsing the message.
+    let output = match crate::shell::run_supervised_with_timeout(&mut cmd, timeout).await {
+        Ok(output) => output,
+        Err(crate::shell::SupervisionError::PreSpawn(message)) => {
+            return Err(PluginToolError::Failed(message));
+        }
+        Err(crate::shell::SupervisionError::PostSpawn {
+            loss: crate::shell::SupervisionLoss::Timeout,
+            ..
+        }) => {
+            return Err(PluginToolError::Unknown(format!(
+                "Plugin tool timed out after {}s",
+                timeout.as_secs()
+            )));
+        }
+        Err(crate::shell::SupervisionError::PostSpawn { loss, detail }) => {
+            return Err(PluginToolError::Unknown(format!(
+                "Plugin tool supervision lost its result ({}): {detail}",
+                loss.as_str()
+            )));
+        }
+    };
 
     let combined = output.combined();
     if output.status.success() {
         Ok(combined)
     } else {
-        Err(format!(
+        Err(PluginToolError::Failed(format!(
             "Plugin tool exited with {}: {}",
             output.status,
             combined.trim()
-        ))
+        )))
     }
 }
 
@@ -748,6 +868,18 @@ pub fn load_plugin_tools(
     cwd: &Path,
     host: Arc<dyn Host>,
     filter: &ToolFilter,
+) -> Result<Vec<DynamicTool>, String> {
+    let policy = host.execution_policy();
+    load_plugin_tools_with_policy(cwd, host, filter, policy)
+}
+
+/// Load all handlers under one immutable policy snapshot. The sealed MCP/plugin
+/// loader shares this same snapshot across every extension in a batch.
+pub(crate) fn load_plugin_tools_with_policy(
+    cwd: &Path,
+    host: Arc<dyn Host>,
+    filter: &ToolFilter,
+    policy: crate::execution_backend::ExecutionPolicy,
 ) -> Result<Vec<DynamicTool>, String> {
     if filter.is_disabled() {
         return Ok(Vec::new());
@@ -779,33 +911,63 @@ pub fn load_plugin_tools(
             let cwd_buf = cwd.to_path_buf();
             let host_clone = host.clone();
             let qualified = full_name.clone();
+            let policy = policy.clone();
             let dyn_tool = DynamicTool::new_with_context(
                 tool_name,
                 spec.description,
                 spec.parameters,
-                move |_ctx, args| {
+                move |ctx, args| {
                     let command = command.clone();
                     let cwd_buf = cwd_buf.clone();
                     let host = host_clone.clone();
                     let qualified = qualified.clone();
+                    let policy = policy.clone();
                     Box::pin(async move {
                         let args_json = args.to_string();
                         host.on_event(AgentEvent::ToolStarted {
                             operation: qualified.clone(),
                             target: args_json.clone(),
                         });
-                        let outcome = match host.approve_tool_async(&qualified, &args_json).await {
-                            Ok(()) => execute_plugin_command(&command, &args_json, &cwd_buf).await,
-                            Err(err) => Err(err),
+                        // Admission (tool filter and approval) happens once at
+                        // the run's dispatch boundary, before this handler runs.
+                        let outcome = execute_plugin_command_under(
+                            &command,
+                            &args_json,
+                            &cwd_buf,
+                            &policy,
+                            PLUGIN_TOOL_TIMEOUT,
+                        )
+                        .await;
+                        // A supervision timeout is a typed unknown: the command
+                        // may have run its effect. Trip the run fence and record
+                        // `Unknown` before the tool-finished event so a durable
+                        // host never marks it failed or executed.
+                        if let Err(PluginToolError::Unknown(_)) = &outcome {
+                            let unknown = UnknownSideEffect::new(
+                                qualified.clone(),
+                                args_json.clone(),
+                                UnknownReason::PluginSupervision,
+                                crate::tool_identity::current_tool_call_id(),
+                            );
+                            let fence = crate::unknown_effect::mark_unknown(ctx, unknown.clone());
+                            if host.on_unknown_side_effect(&unknown).is_err()
+                                && let Some(fence) = &fence
+                            {
+                                fence.mark_persist_failed();
+                            }
+                        }
+                        let event_result: Result<String, String> = match &outcome {
+                            Ok(output) => Ok(output.clone()),
+                            Err(error) => Err(error.message().to_owned()),
                         };
                         host.on_event(AgentEvent::ToolFinished {
                             operation: qualified,
                             target: args_json,
-                            result: outcome.clone(),
+                            result: event_result,
                         });
                         let mut payload = match outcome {
                             Ok(output) => json!({ "output": output }),
-                            Err(err) => json!({ "error": err }),
+                            Err(error) => json!({ "error": error.into_message() }),
                         };
                         if let Some(steer) = host.poll_steering()
                             && !steer.trim().is_empty()
@@ -847,6 +1009,64 @@ mod tests {
 
         remove_plugin(ws_tmp.path(), "demo-plugin").unwrap();
         assert!(discover_plugins(ws_tmp.path()).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_config_and_discovery_reject_external_directory_links() {
+        use std::os::unix::fs::symlink;
+
+        let (workspace, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let plugin_dir = workspace.path().join(".mio/plugins/demo");
+        scaffold_plugin(&plugin_dir, "demo").unwrap();
+        let outside_manifest = outside.path().join("mio-plugin.json");
+        fs::rename(plugin_dir.join("mio-plugin.json"), &outside_manifest).unwrap();
+        symlink(&outside_manifest, plugin_dir.join("mio-plugin.json")).unwrap();
+        assert!(validate_plugin_dir(&plugin_dir).is_err());
+
+        fs::remove_file(plugin_dir.join("mio-plugin.json")).unwrap();
+        fs::copy(&outside_manifest, plugin_dir.join("mio-plugin.json")).unwrap();
+        let plugins_dir = workspace.path().join(".mio/plugins");
+        fs::rename(&plugins_dir, workspace.path().join("old-plugins")).unwrap();
+        symlink(outside.path(), &plugins_dir).unwrap();
+        assert!(discover_plugins(workspace.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_skill_file_link_outside_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (plugin, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let plugin_dir = plugin.path().join("demo");
+        scaffold_plugin(&plugin_dir, "demo").unwrap();
+        let skill_file = plugin_dir.join("skills/demo/SKILL.md");
+        fs::remove_file(&skill_file).unwrap();
+        let outside_file = outside.path().join("SKILL.md");
+        fs::write(&outside_file, "outside").unwrap();
+        symlink(&outside_file, &skill_file).unwrap();
+
+        assert!(
+            validate_plugin_dir(&plugin_dir)
+                .unwrap_err()
+                .contains("missing SKILL.md")
+        );
+    }
+
+    #[test]
+    fn plugin_skill_entry_scan_has_a_limit() {
+        let plugin = tempfile::tempdir().unwrap();
+        let plugin_dir = plugin.path().join("demo");
+        scaffold_plugin(&plugin_dir, "demo").unwrap();
+        for index in 0..MAX_PLUGIN_SKILL_ENTRIES {
+            fs::write(plugin_dir.join(format!("skills/unrelated-{index}")), "").unwrap();
+        }
+
+        assert!(
+            validate_plugin_dir(&plugin_dir)
+                .unwrap_err()
+                .contains("skills exceed 1000 directory entries")
+        );
     }
 
     #[test]
@@ -965,6 +1185,62 @@ mod tests {
             output.len() < 40 * 1024,
             "output grew to {} bytes",
             output.len()
+        );
+    }
+
+    /// A supervision timeout, a lost capture and a pre-spawn failure are three
+    /// different facts. Only the after-spawn losses are `Unknown`; a rejected
+    /// backend/spawn stays a known `Failed`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_plugin_supervision_failures_are_typed() {
+        use crate::execution_backend::ExecutionPolicy;
+        let cwd = tempfile::tempdir().unwrap();
+
+        let timed = execute_plugin_command_under(
+            &["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()],
+            "{}",
+            cwd.path(),
+            &ExecutionPolicy::Unrestricted,
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(timed, PluginToolError::Unknown(ref message) if message.contains("timed out")),
+            "a supervision timeout must be a typed unknown: {timed:?}"
+        );
+
+        let captured = execute_plugin_command_under(
+            &[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "head -c 8388609 /dev/zero".to_owned(),
+            ],
+            "{}",
+            cwd.path(),
+            &ExecutionPolicy::Unrestricted,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(captured, PluginToolError::Unknown(ref message) if message.contains("capture")),
+            "a lost capture after spawn must be a typed unknown: {captured:?}"
+        );
+
+        let pre_spawn = execute_plugin_command_under(
+            &["/mio-no-such-plugin-binary".to_owned()],
+            "{}",
+            cwd.path(),
+            &ExecutionPolicy::Unrestricted,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(pre_spawn, PluginToolError::Failed(_)),
+            "a spawn failure must stay a known failure: {pre_spawn:?}"
         );
     }
 

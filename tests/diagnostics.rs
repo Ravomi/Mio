@@ -14,10 +14,15 @@
 mod test_http;
 
 use mio_coding_agent::{
-    AgentEvent, CompletionCallObservation, Config, DiagnosticCategory, Host, HostFuture, Message,
-    Provider, RunDiagnostic, RunOptions, Services, ThinkingLevel, run_with_options,
+    AgentEvent, CompletionCallObservation, Config, DiagnosticCategory, ExecutionTiming,
+    ExecutionTimingKind, ExecutionTimingStatus, Host, HostFuture, Message, Provider, RunDiagnostic,
+    RunOptions, RunTools, Services, ThinkingLevel, run_with_options, run_with_tools,
+    run_with_tools_message,
     subagent::{Delegate, Executor, Status, SubagentManager, Task},
 };
+use mio_core::message::ToolName;
+use mio_core::message::{DocumentSourceKind, Image, ImageMediaType, UserContent};
+use mio_core::tool::ToolExecutionError;
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -35,6 +40,7 @@ struct RecordingHost {
     completions: Mutex<Vec<CompletionCallObservation>>,
     diagnostics: Mutex<Vec<RunDiagnostic>>,
     events: Mutex<Vec<AgentEvent>>,
+    timings: Mutex<Vec<ExecutionTiming>>,
 }
 
 impl Host for RecordingHost {
@@ -52,6 +58,10 @@ impl Host for RecordingHost {
 
     fn on_diagnostic(&self, diagnostic: &RunDiagnostic) {
         self.diagnostics.lock().unwrap().push(diagnostic.clone());
+    }
+
+    fn on_execution_timing(&self, timing: &ExecutionTiming) {
+        self.timings.lock().unwrap().push(timing.clone());
     }
 }
 
@@ -197,6 +207,152 @@ fn openai_stream(id: &str, text: &str, usage: Option<(u64, u64, u64)>) -> String
     }
     frames.push("data: [DONE]".to_owned());
     frames.join("\n\n") + "\n\n"
+}
+
+#[tokio::test]
+async fn typed_sdk_image_reaches_the_provider_and_history() {
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XcZUAAAAASUVORK5CYII=";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let (_, request) = test_http::read_json(&mut socket);
+        let parts = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .expect("user message")["content"]
+            .as_array()
+            .expect("typed parts");
+        assert_eq!(parts[0]["text"], "describe image");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            format!("data:image/png;base64,{PNG}")
+        );
+        write_response(
+            &mut socket,
+            &Response::sse_with_request_id(openai_stream("image-test", "a dot", None), "image-req"),
+        );
+    });
+    let prompt = Message::User {
+        content: vec![
+            UserContent::text("describe image"),
+            UserContent::Image(Image {
+                data: DocumentSourceKind::Base64(PNG.into()),
+                media_type: Some(ImageMediaType::PNG),
+                detail: None,
+                native: None,
+            }),
+        ],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let history = run_with_tools_message(
+        Config {
+            provider: Provider::Custom,
+            model: "gpt-4o".into(),
+            base_url: format!("http://{address}/v1"),
+            api_key: "local-test".into(),
+        },
+        vec![],
+        prompt.clone(),
+        dir.path(),
+        Arc::new(RecordingHost::default()),
+        Services::default(),
+        RunTools {
+            options: RunOptions {
+                context_window: Some(128_000),
+                ..RunOptions::default()
+            },
+            ..RunTools::default()
+        },
+    )
+    .await
+    .unwrap();
+    server.join().unwrap();
+    assert!(history.contains(&prompt));
+}
+
+/// An SSE turn that emits one or more tool calls for `tool_name`. The arguments
+/// are serialized JSON, exactly as a provider streams them.
+fn openai_tool_stream(id: &str, tool_name: &str, calls: &[(&str, Value)]) -> String {
+    let tool_calls = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (call_id, arguments))| {
+            json!({
+                "index": index,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tool_name, "arguments": arguments.to_string()}
+            })
+        })
+        .collect::<Vec<_>>();
+    let frames = [
+        json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": tool_calls}, "finish_reason": null}]
+        })
+        .to_string(),
+        json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+        })
+        .to_string(),
+    ];
+    frames
+        .iter()
+        .map(|frame| format!("data: {frame}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        + "\n\ndata: [DONE]\n\n"
+}
+
+/// A host whose local shell sleeps, so a tool span has a measurable floor.
+struct SlowToolHost {
+    completions: Mutex<Vec<CompletionCallObservation>>,
+    timings: Mutex<Vec<ExecutionTiming>>,
+}
+
+impl SlowToolHost {
+    fn new() -> Self {
+        Self {
+            completions: Mutex::new(Vec::new()),
+            timings: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Host for SlowToolHost {
+    fn shell(&self, command: &str, _: &Path) -> HostFuture<Result<String, String>> {
+        let delay = match command {
+            "slow" => Duration::from_millis(60),
+            "fast" => Duration::from_millis(10),
+            _ => Duration::from_millis(0),
+        };
+        let command = command.to_owned();
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(format!("ran {command}"))
+        })
+    }
+
+    fn on_event(&self, _: AgentEvent) {}
+
+    fn on_completion_call(&self, call: &CompletionCallObservation) {
+        self.completions.lock().unwrap().push(call.clone());
+    }
+
+    fn on_execution_timing(&self, timing: &ExecutionTiming) {
+        self.timings.lock().unwrap().push(timing.clone());
+    }
 }
 
 #[tokio::test]
@@ -464,4 +620,231 @@ async fn diagnostic_serialization_has_no_forbidden_fields() {
     for forbidden in ["raw", "body", "headers", "sourceChain", "url", "apiKey"] {
         assert!(!object.contains_key(forbidden), "{forbidden}");
     }
+}
+
+/// One run, two same-named tool calls with different spans, then a final turn.
+#[tokio::test]
+async fn execution_timing_measures_model_and_tool_spans() {
+    let server = MockServer::start(vec![
+        Response::sse_with_request_id(
+            openai_tool_stream(
+                "chatcmpl-tools",
+                "workspace",
+                &[
+                    (
+                        "call_slow",
+                        json!({"operation": "shell", "path": "", "value": "slow"}),
+                    ),
+                    (
+                        "call_fast",
+                        json!({"operation": "shell", "path": "", "value": "fast"}),
+                    ),
+                ],
+            ),
+            "req-tools-1",
+        ),
+        Response::sse_with_request_id(openai_stream("chatcmpl-done", "ok", None), "req-tools-2"),
+    ]);
+    let host = Arc::new(SlowToolHost::new());
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_with_options(
+        Config {
+            provider: Provider::Custom,
+            model: "test".into(),
+            base_url: format!("http://{}/v1", server.address),
+            api_key: "local-test".into(),
+        },
+        vec![],
+        "run two commands",
+        dir.path(),
+        host.clone(),
+        Services::default(),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+
+    let timings = host.timings.lock().unwrap().clone();
+    let completions = host.completions.lock().unwrap().clone();
+    assert_eq!(completions.len(), 2, "{completions:?}");
+    let run_id = completions[0].run_id;
+    assert!(completions.iter().all(|call| call.run_id == run_id));
+
+    let model: Vec<_> = timings
+        .iter()
+        .filter(|timing| timing.kind == ExecutionTimingKind::Model)
+        .collect();
+    let tool: Vec<_> = timings
+        .iter()
+        .filter(|timing| timing.kind == ExecutionTimingKind::Tool)
+        .collect();
+    assert_eq!(model.len(), 2, "{timings:?}");
+    assert_eq!(tool.len(), 2, "{timings:?}");
+    // Every observation carries this run's UUID, shared with the callbacks.
+    assert!(
+        timings.iter().all(|timing| timing.run_id == run_id),
+        "{timings:?}"
+    );
+    assert!(
+        model
+            .iter()
+            .all(|timing| timing.status == ExecutionTimingStatus::Success)
+    );
+    assert!(
+        tool.iter()
+            .all(|timing| timing.status == ExecutionTimingStatus::Success)
+    );
+
+    // Effect ids are the dispatcher's: four dispatches, four distinct ids. Two
+    // calls of the same tool stay separate because the hook keys by effect id,
+    // never by tool name.
+    let mut ids: Vec<u64> = timings.iter().map(|timing| timing.effect_id).collect();
+    assert!(ids.iter().all(|id| *id != 0), "{timings:?}");
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 4, "{timings:?}");
+
+    // Spans are non-negative and cover the tool's own sleep: the 60 ms call
+    // and the 10 ms call are not conflated or added together.
+    let mut tool_ms: Vec<u64> = tool.iter().map(|timing| timing.duration_ms).collect();
+    tool_ms.sort_unstable();
+    // Loaded CI machines may delay either call; avoid an upper wall-time bound.
+    assert!(tool_ms[0] >= 5, "{timings:?}");
+    assert!(tool_ms[1] >= 50, "{timings:?}");
+
+    // No argument, tool name, credential or workspace path is part of an
+    // observation.
+    let json = serde_json::to_string(&timings).unwrap();
+    for leaked in [
+        SECRET,
+        "slow",
+        "fast",
+        "workspace",
+        "local-test",
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!json.contains(leaked), "timing leaked `{leaked}`: {json}");
+    }
+}
+
+#[tokio::test]
+async fn failed_model_call_emits_no_execution_timing() {
+    let body = json!({"error": {"message": SECRET}}).to_string();
+    let (result, host) = run_once(vec![Response::json_status(500, body)]).await;
+    assert!(result.is_err());
+    // The completion never reached an outcome, so nothing is fabricated.
+    assert!(host.timings.lock().unwrap().is_empty());
+    assert_eq!(host.diagnostics.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn failed_tool_outcome_is_classified_as_error() {
+    // A dynamic tool whose handler answers with an error: the engine turns it
+    // into a failed `ToolResult`, so the measured status must be `error` while
+    // the surrounding model calls stay `success`.
+    let failing = mio_agent::tool::DynamicTool::new(
+        ToolName::new("fixture_fail").expect("tool name"),
+        "always fails",
+        json!({"type": "object"}),
+        |_| Box::pin(async { Err(ToolExecutionError::other("fixture failure")) }),
+    );
+    let server = MockServer::start(vec![
+        Response::sse_with_request_id(
+            openai_tool_stream("chatcmpl-fail", "fixture_fail", &[("call_fail", json!({}))]),
+            "req-fail-1",
+        ),
+        Response::sse_with_request_id(
+            openai_stream("chatcmpl-recovered", "recovered", None),
+            "req-fail-2",
+        ),
+    ]);
+    let host = Arc::new(RecordingHost::default());
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_with_tools(
+        Config {
+            provider: Provider::Custom,
+            model: "test".into(),
+            base_url: format!("http://{}/v1", server.address),
+            api_key: "local-test".into(),
+        },
+        vec![],
+        "fail a tool",
+        dir.path(),
+        host.clone(),
+        Services::default(),
+        RunTools {
+            extra_tools: vec![failing],
+            ..RunTools::default()
+        },
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+
+    let timings = host.timings.lock().unwrap().clone();
+    let tool: Vec<_> = timings
+        .iter()
+        .filter(|timing| timing.kind == ExecutionTimingKind::Tool)
+        .collect();
+    assert_eq!(tool.len(), 1, "{timings:?}");
+    assert_eq!(tool[0].status, ExecutionTimingStatus::Error);
+    assert!(
+        timings
+            .iter()
+            .filter(|timing| timing.kind == ExecutionTimingKind::Model)
+            .all(|timing| timing.status == ExecutionTimingStatus::Success),
+        "{timings:?}"
+    );
+}
+
+#[test]
+fn execution_timing_serialization_is_exactly_scoped() {
+    let timing = ExecutionTiming {
+        run_id: uuid::Uuid::nil(),
+        effect_id: 42,
+        kind: ExecutionTimingKind::Tool,
+        status: ExecutionTimingStatus::Error,
+        duration_ms: 7,
+    };
+    let value = serde_json::to_value(&timing).unwrap();
+    let object = value.as_object().unwrap();
+    let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["runId", "effectId", "kind", "status", "durationMs"],
+        "field order and set are stable"
+    );
+    assert_eq!(value["kind"], json!("tool"));
+    assert_eq!(value["status"], json!("error"));
+    assert_eq!(value["durationMs"], json!(7));
+    assert_eq!(value["effectId"], json!(42));
+    assert_eq!(
+        value["runId"],
+        json!("00000000-0000-0000-0000-000000000000")
+    );
+    for forbidden in [
+        "args",
+        "arguments",
+        "target",
+        "reply",
+        "raw",
+        "body",
+        "headers",
+        "url",
+        "apiKey",
+        "api_key",
+        "sourceChain",
+    ] {
+        assert!(!object.contains_key(forbidden), "{forbidden}");
+    }
+    let roundtrip: ExecutionTiming = serde_json::from_value(value).unwrap();
+    assert_eq!(roundtrip, timing);
+
+    let model = serde_json::to_value(ExecutionTiming {
+        kind: ExecutionTimingKind::Model,
+        status: ExecutionTimingStatus::Success,
+        ..timing
+    })
+    .unwrap();
+    assert_eq!(model["kind"], json!("model"));
+    assert_eq!(model["status"], json!("success"));
 }

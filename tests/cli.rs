@@ -46,6 +46,39 @@ fn help_validation_and_listing_need_no_model() {
 }
 
 #[test]
+fn rpc_starts_with_an_unselected_large_skill() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join(".agents/skills/large");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let mut skill = "---\nname: large\ndescription: Large optional skill\n---\n".to_owned();
+    skill.push_str(&"x".repeat(32 * 1024));
+    std::fs::write(skill_dir.join("SKILL.md"), skill).unwrap();
+
+    let mut child = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args(["--model", "test-model", "--mode", "rpc"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        child.stdin.as_mut().unwrap(),
+        r#"{{"id":"1","type":"get_state"}}"#
+    )
+    .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "RPC startup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(output.stdout.trim_ascii()).unwrap();
+    assert_eq!(response["id"], "1");
+    assert_eq!(response["success"], true);
+}
+
+#[test]
 fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -167,12 +200,13 @@ fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     assert!(!String::from_utf8_lossy(&original).contains("local-test-credential"));
     let original_session = mio_coding_agent::session::Session::load(&original_path).unwrap();
     let events = run(&["--resume", "--fork", "-p", "continue task"]);
-    assert!(events.iter().any(|e| {
-        e["type"] == "tool_finished"
-            && e["data"]["result"]["Err"]
-                .as_str()
-                .is_some_and(|s| s.contains("disabled"))
-    }));
+    // The shared policy refuses the aggregate operation before entering the
+    // workspace body, so no shell tool-finished event may be fabricated.
+    assert!(
+        !events
+            .iter()
+            .any(|e| { e["type"] == "tool_finished" && e["data"]["operation"] == "shell" })
+    );
     assert!(!dir.path().join("should-not-exist").exists());
     assert_eq!(std::fs::read(&original_path).unwrap(), original);
     let fork_path = events.last().unwrap()["session"].as_str().unwrap();
@@ -180,6 +214,15 @@ fn cli_edits_with_project_context_then_resumes_forks_and_disables_shell() {
     assert_eq!(fork.parent_id, Some(original_session.id));
     assert!(fork.history.len() > original_session.history.len());
     let requests = server.join().unwrap();
+    let refused = requests[3]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_2")
+        .expect("the refused call must resolve with its original provider id");
+    let denial = refused["content"].to_string();
+    assert!(denial.contains("Tool policy denied"), "{denial}");
+    assert!(denial.contains("does not allow 'shell'"), "{denial}");
     let first = requests[0]["messages"].to_string();
     assert!(
         first.contains("Project marker")
@@ -371,4 +414,314 @@ fn cli_plugin_lifecycle_init_validate_install_list_search_remove() {
         .unwrap();
     assert!(rm_out.status.success());
     assert!(!dir.path().join(".mio/plugins/demo-plugin").exists());
+}
+
+fn parse_json_lines(stdout: &[u8]) -> Vec<Value> {
+    String::from_utf8(stdout.to_vec())
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn write_completion(socket: &mut std::net::TcpStream) {
+    let chunk = |delta: Value, finish: Value| {
+        json!({"id":"test","object":"chat.completion.chunk","created":0,"model":"test","choices":[{"index":0,"delta":delta,"finish_reason":finish}]}).to_string()
+    };
+    let body = format!(
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        chunk(json!({"role":"assistant","content":"ok"}), Value::Null),
+        chunk(json!({}), json!("stop"))
+    );
+    write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+}
+
+#[test]
+fn dedup_key_is_persisted_and_prevents_replay_across_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (_, request) = test_http::read_json(&mut socket);
+        write_completion(&mut socket);
+        request
+    });
+    let run = |base: &str| {
+        cli()
+            .arg("--cwd")
+            .arg(dir.path())
+            .args([
+                "--model",
+                "test",
+                "--base-url",
+                base,
+                "--json",
+                "--dedup-key",
+                "job-1",
+                "-p",
+                "do it",
+            ])
+            .output()
+            .unwrap()
+    };
+    let first = run(&format!("http://{address}/v1"));
+    assert!(
+        first.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let events = parse_json_lines(&first.stdout);
+    let task = events
+        .iter()
+        .find(|event| event["type"] == "task")
+        .expect("task event");
+    assert_eq!(task["reused"], false);
+    assert_eq!(task["dedup_key"], "job-1");
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let request = server.join().unwrap();
+    assert!(request["messages"].to_string().contains("do it"));
+
+    // 第二次运行指向不可达端口：命中 dedup 时不应发出任何模型请求。
+    let second = run("http://127.0.0.1:1/v1");
+    assert!(
+        second.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let events = parse_json_lines(&second.stdout);
+    let task = events
+        .iter()
+        .find(|event| event["type"] == "task")
+        .expect("task event");
+    assert_eq!(task["reused"], true);
+    assert_eq!(task["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(task["state"], "completed");
+    assert!(dir.path().join(".mio/dedup/task-keys.json").is_file());
+}
+
+#[test]
+fn dedup_key_validation_rejects_invalid_combinations() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["--dedup-key", "", "-p", "x"],
+        vec!["--dedup-key", "   ", "-p", "x"],
+        vec!["--dedup-key", "k", "--no-session", "-p", "x"],
+        vec!["--dedup-key", "k", "--mode", "rpc"],
+    ] {
+        let output = cli()
+            .arg("--cwd")
+            .arg(dir.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "expected rejection for {args:?}");
+    }
+}
+
+#[test]
+fn active_dedup_key_is_not_replayed_after_a_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger_dir = dir.path().join(".mio/dedup");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+    // 账本校验要求 task_id 是 UUID；这里模拟一个被强杀后停留在 active 的记录。
+    let crashed_task_id = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    std::fs::write(
+        ledger_dir.join("task-keys.json"),
+        json!({
+            "version": 1,
+            "updated": 0,
+            "entries": [
+                {"task_id":crashed_task_id,"state":"active","key":"job-crash","updated":0}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // 不可达端点证明命中 dedup 后没有触发模型调用。
+    let output = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args([
+            "--model",
+            "test",
+            "--base-url",
+            "http://127.0.0.1:1/v1",
+            "--json",
+            "--dedup-key",
+            "job-crash",
+            "-p",
+            "retry",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = parse_json_lines(&output.stdout);
+    let task = events
+        .iter()
+        .find(|event| event["type"] == "task")
+        .expect("task event");
+    assert_eq!(task["reused"], true);
+    assert_eq!(task["task_id"], crashed_task_id);
+    assert_eq!(task["state"], "active");
+}
+
+#[test]
+fn corrupt_dedup_ledger_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger_dir = dir.path().join(".mio/dedup");
+    std::fs::create_dir_all(&ledger_dir).unwrap();
+    std::fs::write(ledger_dir.join("task-keys.json"), "{not json").unwrap();
+    let output = cli()
+        .arg("--cwd")
+        .arg(dir.path())
+        .args([
+            "--model",
+            "test",
+            "--base-url",
+            "http://127.0.0.1:1/v1",
+            "--dedup-key",
+            "k",
+            "-p",
+            "x",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("task key ledger"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// 不同进程并发抢同一 dedup key：只有一个进程真正发起模型请求，其余进程只回放
+/// 已有的 task_id；所有进程报告的 task_id 必须一致，且账本里也只剩这一条记录。
+#[test]
+fn concurrent_processes_execute_one_dedup_key_once_with_a_shared_task_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut served = 0usize;
+        let mut first_served: Option<Instant> = None;
+        let mut last_request = None;
+        loop {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let (_, request) = test_http::read_json(&mut socket);
+                    served += 1;
+                    last_request = Some(request);
+                    first_served.get_or_insert_with(Instant::now);
+                    write_completion(&mut socket);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    match first_served {
+                        // 首个请求之后再留 2s 宽限期，确认没有第二个进程也去执行。
+                        Some(at) if at.elapsed() > Duration::from_secs(2) => break,
+                        Some(_) => {}
+                        // 没等到任何请求时最多等 20s（正常情况应远早于此）。
+                        None if start.elapsed() > Duration::from_secs(20) => break,
+                        None => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        (served, last_request)
+    });
+
+    let base = format!("http://{address}/v1");
+    let contenders = 4;
+    let mut children = Vec::new();
+    for _ in 0..contenders {
+        children.push(
+            cli()
+                .arg("--cwd")
+                .arg(dir.path())
+                .args([
+                    "--model",
+                    "test",
+                    "--base-url",
+                    &base,
+                    "--json",
+                    "--dedup-key",
+                    "shared-job",
+                    "-p",
+                    "do the shared job",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let outputs: Vec<std::process::Output> = children
+        .into_iter()
+        .map(|child| child.wait_with_output().unwrap())
+        .collect();
+    for output in &outputs {
+        assert!(
+            output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let tasks: Vec<Value> = outputs
+        .iter()
+        .map(|output| {
+            parse_json_lines(&output.stdout)
+                .into_iter()
+                .find(|event| event["type"] == "task")
+                .expect("each process must report a task event")
+        })
+        .collect();
+    let ids: std::collections::BTreeSet<String> = tasks
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        1,
+        "all processes must share one task id: {tasks:?}"
+    );
+    assert_eq!(
+        tasks.iter().filter(|task| task["reused"] == false).count(),
+        1,
+        "exactly one process may acquire the key: {tasks:?}"
+    );
+    let (served, request) = server.join().unwrap();
+    assert_eq!(served, 1, "only one real model request is allowed");
+    assert!(
+        request.unwrap()["messages"]
+            .to_string()
+            .contains("do the shared job")
+    );
+    let ledger: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".mio/dedup/task-keys.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = ledger["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "the ledger keeps exactly one record");
+    assert_eq!(entries[0]["key"], "shared-job");
+    assert_eq!(
+        entries[0]["task_id"].as_str().unwrap(),
+        ids.iter().next().unwrap()
+    );
 }

@@ -1,0 +1,12 @@
+{
+  "id": "review-clean-refactor",
+  "task_set": "mio-review-v1",
+  "task_set_version": 2,
+  "title": "Review a behavior-preserving refactor",
+  "language": "python",
+  "covers": ["structured review", "false positives", "source preservation"],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 15
+}

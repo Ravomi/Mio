@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "label": "mio-deepseek-comparison",
+  "agent_command": "target/debug/mio --cwd {cwd} --shared-limits-dir {cwd}/../coordination --no-session --no-context --no-context-files --no-skills --no-prompt-templates --no-mcp --json --provider deepseek --model deepseek-flash --thinking off --temperature 0 --max-output-tokens 8192 -p {prompt}",
+  "timeout_seconds": 180,
+  "event_format": "mio-jsonl",
+  "isolate_agent_env": true,
+  "tasks_dir": "../tasks/workflows",
+  "output": "../../target/evals/mio-deepseek-comparison.json",
+  "budget": {
+    "version": "deepseek-flash-off-t0-8192-180s-nocap-workflows-v1",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "thinking": "off",
+    "temperature": 0,
+    "max_output_tokens": 8192,
+    "max_model_calls": null,
+    "max_total_tokens": null,
+    "notes": "Cross-agent comparison profile: same provider (deepseek), same model (deepseek-flash), thinking off, fixed sampling temperature 0 and a per-request output cap of 8192 tokens, the same mio-workflows-v1 task set and the same 180s per-task wall timeout as evals/configs/pi-deepseek-comparison.json. deepseek-flash is the model both agents actually list; the older deepseek-chat profile in evals/configs/mio-deepseek.json is left unchanged. No model-call or token cap is set on either side: Pi cannot enforce one, so this side deliberately mirrors that instead of claiming a token hard budget. Only the runner's wall-clock timeout is enforced; the budget block stays declared metadata. The declared temperature and output cap are not just metadata: Mio sends them on every request through --temperature 0 and --max-output-tokens 8192. Context discovery, MCP and skills/prompt templates are disabled to match Pi's flags. Credentials come from the environment only (DEEPSEEK_API_KEY); never put a key in this file or the command."
+  }
+}

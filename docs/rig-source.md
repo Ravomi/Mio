@@ -1,5 +1,10 @@
 # Mio layers and Rig provenance
 
+This is a source-origin record, not a current dependency declaration. The
+resolved workspace contains no external `rig-*` packages; the maintained
+runtime and transport packages use Mio names. Original copyright and MIT
+permission notices remain with the forked source.
+
 Mio maintains three layers in one Cargo workspace:
 
 | Package | Source | Responsibility |

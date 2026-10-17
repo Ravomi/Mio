@@ -1,40 +1,27 @@
 # Mio 需求与 coding agent 调查
 
-调查日期：2026-10-15。Mio 首次审查基线：`60cfb8c82f419e6c3e8320db84c880e3bb19fd46`；其后工作区（未提交）落入批次 2 实现（`AUD-03/04/12/13/19` 等），本文档已据工作区代码与测试用例更新定位与验收口径。本文件与 [项目审查](reviews/2026-10-15-audit.md)、[TODO](../TODO.md) 配套。
+调查日期：2026-10-15。Mio 首次审查基线：`60cfb8c82f419e6c3e8320db84c880e3bb19fd46`。本文档据工作区代码与离线测试用例记录定位与验收口径，阶段划分与 [TODO](../TODO.md)、[项目审查](reviews/2026-10-15-audit.md) 对齐。
 
 ## 结论与定位建议
 
-**把 Mio 定位为「共享调度与可控多代理协作的 coding agent 引擎」**：由引擎在真实 dispatch 边界统一管理模型请求（限流/429 冷却）、任务并发（冲突排队、无关并行）、重任务配额、预算预留与真实 usage、显式任务 key 去重和结构化验收证据，并可由 Rust 宿主直接集成。进程内调度、跨进程协作配额、子代理 `Queued` FIFO 与执行证据 journal 已有实现与工作区测试用例；跨进程 Workspace 租约已接入工作区执行路径，四项质量门禁均已通过。**不宣称** OS 内存隔离、自动冲突合并、精确费用硬限额，也不宣称真实线上或跨平台已验证。
+**把 Mio 定位为「共享调度与可控多代理协作的 coding agent 引擎」**：由引擎在真实 dispatch 边界统一管理模型请求（限流/429 冷却）、任务并发（冲突排队、无关并行）、重任务配额、预算预留与真实 usage、显式任务 key 去重和结构化验收证据，并可由 Rust 宿主直接集成。进程内调度、跨进程协作配额、子代理 `Queued` FIFO、执行证据 journal 与跨进程 `Workspace` 路径租约均有实现与离线测试用例；四项 Cargo 质量门禁、站点校验与离线评测器自测均已通过。**不宣称** OS 内存隔离、自动冲突合并、精确费用硬限额，也不宣称真实线上 Provider、真实崩溃或跨平台已验证。
 
 “无头”“可嵌入”“单二进制”“多模型”“原生子代理”都不能单独构成独有优势。Reasonix 新主线已有单 Go 二进制与多入口，Pi 有进程内 SDK，OpenCode 有服务端接口，Codex 本身也有 Rust 实现和 App Server。Rust 对现有 Rust 宿主的集成价值是合理优势判断，低延迟、低内存和任务效果则必须测量。[Reasonix 主线][S1]、[Pi SDK][S7]、[OpenCode Server][S9]、[Codex App Server][S12]。
 
-建议的近期顺序：统一四门禁与跨进程 Workspace 租约验收 → 执行与权限一致性 → Provider 正确性 → 持久化证据/恢复 → 宿主事件和评测 → 依据用户场景选择检索、编辑器协议和产品界面。暂不因为竞品具备某个功能就复制整个产品形态。
+路线图按四阶段推进，顺序依据已复现缺陷与宿主引擎定位：阶段一已完成核心防线、共享调度与原生路由离线验收；阶段二补恢复闭环、连接韧性、事件版本化与上下文保真；阶段三做同条件评测、大仓库检索、真实沙箱与 SDK 拆分；阶段四再按需求证据演进宿主生态与产品形态。暂不因为竞品具备某个功能就复制整个产品形态。
 
 ## 定位收敛：共享调度与可控多代理协作
 
 产品定位收敛为：**引擎统一做共享调度，代理协作可控、证据可查**。围绕用户明确的痛点（模型限流/429、并行改动冲突、编译/浏览器重任务资源争抢、重复探索与预算/验收成本），判断标准不是“功能名是否出现在文档里”，而是有没有实现与可复现证据。
 
-### 能力状态（避免混淆）
+| 阶段 | 已确认能力与依据 | 可验证验收指标 | 未实现或未验证 |
+| --- | --- | --- | --- |
+| 一：核心防线与共享调度 | 进程内调度与跨进程协作配额（`src/scheduling.rs`/`src/coordinator.rs`/`src/shared_limits.rs`，模型/重任务 `flock` 配额与 429 冷却）；子代理 `Queued`/`Running` FIFO 与 `ToolEvidence`；Anthropic/Google/Ollama 原生协议路由（`tests/provider_routes.rs`）；项目 MCP 启动前指纹授权（`src/mcp.rs`）；编辑前内容/身份校验与跨进程 `Workspace` 路径租约（`src/workspace.rs`）；执行证据 journal（`src/journal.rs`）与结构化 `completion_call`/`diagnostic`；插件输出/MCP 帧/RPC 行大小限额；四项质量门禁与站点检查通过 | REQ-SCHEDULE：429 不成风暴、同一 Provider 冷却对父/子代理与 RPC 一致可见；REQ-CONFLICT：冲突任务排队、无关任务并行；REQ-QUOTA：重任务配额与取消回收；REQ-BUDGET：请求前预留、结算真实 usage，缺 usage 标 unknown；REQ-DEDUP：相同 key 只执行一次；REQ-ACCEPT：任务/配置/请求计数/usage/耗时/退出状态可复查 | 本地模拟端点/单元/多进程测试，不等于真实 Provider、真实崩溃或跨平台验收；显式 `dedup_key` 仅在 Coordinator API，CLI 未暴露 |
+| 二：恢复、连接与事件 | 会话原子保存与同名/最新会话、编辑冲突检测；journal intent/result/unknown 与 `--no-session` 禁用；底层 observe/telemetry 能力可用 | REQ-RECOVERY：各阶段中断后证据完整、不重复副作用；REQ-POLICY/REQ-PROCESS：全入口统一门禁、拒绝时无未授权副作用；REQ-EVENTS/REQ-CONTEXT：ID 贯通、压缩后保留约束与未完目标 | 崩溃注入与端到端恢复未验收；无持久化 MCP trust store、required/optional 与重连；事件版本化与 ID 全链路贯通未完成；大输出未外置为文件引用 |
+| 三：评测、检索与隔离 | 协议单测与离线评测 harness（自述为探针，非 benchmark）；CLI、Host 抽象与终端状态集成可运行 | REQ-EVAL：固定模型/任务集/预算对比正确性、成本、延迟、缓存、取消与恢复；REQ-ISOLATE：backend 状态可查询、越界测试按平台执行；REQ-SDK/REQ-DISTRIBUTION：最小与完整示例可编译、安装与发布闭包可核对 | 无同模型同预算对照；无 repo map/LSP/符号索引选型；无真实 OS 沙箱；`src/bin/mio.rs` 未拆分，helper crate 平台/feature 矩阵与 registry 发布未收口 |
+| 四：宿主与产品 | CLI、Host 抽象与终端状态集成已有可运行基础 | REQ-PRODUCT：选定首要宿主与目标任务，各产品形态独立可回退 | 首要宿主未经用户调查确认；ACP/HTTP、会话树、Plan 模式、后台作业未排期 |
 
-| 状态 | 内容 | 依据边界 |
-| --- | --- | --- |
-| 已落地（实现 + 工作区离线测试用例） | 进程内调度与跨进程协作配额（`src/scheduling.rs`/`src/coordinator.rs`/`src/shared_limits.rs`，模型/重任务 `flock` 配额与 429 冷却）；子代理 `Queued`/`Running` FIFO 与 `ToolEvidence`；Anthropic/Google/Ollama 原生协议路由（`tests/provider_routes.rs`）；项目 MCP 启动前指纹授权（`src/mcp.rs`）；编辑前内容/身份校验（`src/workspace.rs`）；执行证据 journal（`src/journal.rs`）与结构化 `completion_call`/`diagnostic`；插件输出/MCP 帧/RPC 行大小限额 | 本地模拟端点 / 单元 / 多进程测试用例；本轮已通过离线验收，但不等于真实 Provider、真实崩溃或跨平台验收 |
-| 已实现与接口边界 | 四项质量门禁均已通过；跨进程 Workspace 路径租约已接入 `src/workspace.rs` 并覆盖取消保留；显式 `dedup_key` 仅在 Coordinator API 层，CLI 未暴露 | 显式 key 尚未暴露 CLI；协作式租约只覆盖接入的工作区操作 |
-| 未实现或未验证 | 自动冲突合并；OS 内存/资源隔离与沙箱；精确费用硬限额（当前为 token 计数）；跨进程 token 预算持久化；真实 Provider 线上路径与认证；跨平台行为；真实崩溃恢复；同模型同预算任务对比 | 无实现或无证据，禁止在 README/TODO 中提前宣称 |
-
-### 近期验收指标
-
-| 指标 | 可验证结果 | 关联需求 |
-| --- | --- | --- |
-| 429 不成风暴 | 模拟 Provider 返回 429 时，并发任务共享冷却、请求计数不放大；恢复后正常继续 | REQ-SCHEDULE |
-| 同 Provider 共享冷却 | 冷却窗口（含 `Retry-After`）对父/子代理与 RPC 任务一致可见 | REQ-SCHEDULE |
-| 冲突任务排队、无关任务并行 | 并发写同一路径不交错覆盖；写不同目标的任务保持并行 | REQ-CONFLICT |
-| 重任务配额 | 编译/浏览器等重任务并发与时间受限，轻任务不被挤占，取消后资源回收 | REQ-QUOTA |
-| 预算预留与真实 usage | 请求前预留、请求后记录真实 usage；缺 usage 标 unknown，不用字节估算冒充账单 | REQ-BUDGET |
-| 显式任务 key 去重 | 相同 key 并发提交只执行一次，并给出复用/拒绝响应 | REQ-DEDUP |
-| 结构化验收证据 | 任务、配置、请求计数、usage、耗时、退出状态与失败分类可复查 | REQ-ACCEPT |
-
-上述指标已有实现与工作区测试用例，状态为「已实现、已通过本轮离线验收」；跨进程 Workspace 租约已有离线测试，真实 Provider 与跨平台仍待验证。
+自动冲突合并、OS 内存/资源隔离与沙箱、精确费用硬限额（当前为 token 计数）、跨进程 token 预算持久化、真实 Provider 线上路径与认证、跨平台行为、真实崩溃恢复、同模型同预算任务对比均无实现或无证据，禁止在 README/TODO 中提前宣称。
 
 ## 调查口径
 
@@ -57,7 +44,7 @@ Reasonix 特别注意：不能继续把它概括为“仅 DeepSeek、必须 Node
 | **Reasonix**，`esengine/DeepSeek-Reasonix/main-v2` | Go 单二进制，终端/桌面/浏览器/ACP 入口；配置式多模型、缓存感知上下文维护；文档提供权限、沙箱与检查点设计。[S1][S2][S3][S4] | 对已使用 Rust/Tokio 的 Ravomi 宿主，进程内接入 `mio-core → mio-agent → mio-coding-agent`，替换 Host 和自有工具较直接；这是架构适配判断。 | Mio 缺编辑检查点、产品用量/缓存事件和真实隔离验收；Reasonix Go SDK 文档是 **extension sidecar SDK**，不能直接等同于其核心进程内 SDK。其权限/沙箱也有平台限制。[S4][S5] |
 | **Pi**，当前项目 `earendil-works/pi` | 极简可扩展 harness，skills/扩展/模板/包；TypeScript 进程内 SDK、会话树、RPC 与 settled 事件。README 明确子代理/plan 可通过扩展实现，默认不内建。[S6][S7] | Mio 的原生 Rust 子代理和重叠写调度适合 Rust 宿主；不要求宿主采用 TS/Node。 | 可嵌入和 headless 并非 Mio 独有；Mio 会话树、扩展生命周期和稳定集成文档尚需增强。Pi 无默认子代理不代表无法使用子代理。 |
 | **OpenCode**，`anomalyco/opencode/dev` 与官方文档 | 开源 agent，build/plan 与子代理；独立 HTTP 服务提供 OpenAPI 与事件流；权限支持 allow/ask/deny 和外部目录规则。[S8][S9][S10] | Mio 可作为库集成至 Rust 进程，不强制宿主围绕 HTTP 服务建模；CLI 可作为单独适配层。 | Mio 尚无同等级服务协议/客户端生成契约；先修过滤与扩展信任，再讨论 ACP/HTTP。权限规则存在不能直接证明 OS 沙箱覆盖。 |
-| **Aider**，`Aider-AI/aider/main` | 明确的 repo map 与图排序/预算机制，Git 工作流和自动 lint/test 反馈；代码理解、编辑与验证形成清楚产品闭环。[S11][S11a] | Mio 更侧重通用 Agent 引擎和宿主控制，可让宿主选择版本管理策略；当前仓库严格使用 GitButler。 | Mio 缺经过评测的 repo map/符号检索及自动验证闭环；不要仅增加搜索工具名就宣称大仓库能力相当。Aider 的可扩展能力未在本轮完整核验。 |
+| **Aider**，`Aider-AI/aider/main` | 明确的 repo map 与图排序/预算机制，Git 工作流和自动 lint/test 反馈；代码理解、编辑与验证形成清楚产品闭环。[S11][S11a] | Mio 更侧重通用 Agent 引擎和宿主控制，并统一使用 jj 管理 change、workspace 与远程同步。 | Mio 缺经过评测的 repo map/符号检索及自动验证闭环；不要仅增加搜索工具名就宣称大仓库能力相当。Aider 的可扩展能力未在本轮完整核验。 |
 | **Codex CLI / App Server / SDK**，官方文档 | App Server 提供会话、审批和流式事件集成；SDK 可启动、继续和恢复线程；官方单独描述审批与平台沙箱。[S12][S13][S14] | Mio 可控制自有运行循环、Provider 适配和 Rust 公共库边界，适合需要自主维护引擎的宿主。 | Rust、无头、SDK、审批和子代理等不应被描述为独有；Mio 缺统一执行门禁和版本化事件。开放组件不等于模型、账号、托管服务或全部产品形态都开放。 |
 | **Claude Code / Claude Agent SDK**，补充参照 | 官方 SDK 暴露内置工具、hooks、MCP、权限、子代理与会话，并支持 Python/TS 宿主。[S15] | Mio 自有 MIT 项目代码和可维护的 Rust 引擎适合自主集成；具体第三方代码仍保留各自许可证。 | 比较集成设计，不归入开源主样本；账号授权、服务可用性及第三方产品集成受具体条款约束，不由“有 SDK”推导可任意复用账号。 |
 

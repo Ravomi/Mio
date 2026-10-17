@@ -9,10 +9,15 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "The bundled tungstenite websocket backend for Rig."
+description = "The bundled tungstenite WebSocket backend for Mio."
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/Ravomi/Mio"
+
+exclude = [
+    "/Cargo.toml.orig",
+    "/.cargo_vcs_info.json",
+]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -39,6 +44,7 @@ version = "0.3"
 
 [dependencies.mio-http]
 path = "../mio-http"
+version = "=0.1.0"
 features = ["websocket"]
 
 [dependencies.thiserror]

@@ -1204,3 +1204,478 @@ async fn shared_root_isolates_provider_cooldowns() {
     );
     assert_eq!(healthy.request_count(), 1);
 }
+
+/// A shared budget seeded from local flags persists in the shared root: reported
+/// usage settles into the durable ledger, a second scheduler (restart / another
+/// process) inherits it, and the next completion is refused before any request
+/// reaches the provider.
+#[tokio::test]
+async fn shared_budget_persists_across_scheduler_restart_and_blocks_dispatch() {
+    let root = tempfile::tempdir().unwrap();
+    let server = MockServer::start(vec![Scripted::immediate(text_response_usage(
+        "first", 1_000_000,
+    ))]);
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(server.base_url());
+    let budget_limits = || {
+        limits(|limits| {
+            limits.max_total_tokens = Some(1_000_000);
+        })
+    };
+
+    let first = Arc::new(
+        scheduling::Scheduler::new(budget_limits(), Some(root.path())).expect("shared root"),
+    );
+    run_with_options(
+        config.clone(),
+        Vec::new(),
+        "first",
+        dir.path(),
+        TestHost::new(),
+        Services::default(),
+        RunOptions {
+            scheduler: Some(first.clone()),
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("first run settles inside the budget");
+    let snapshot = first.snapshot();
+    assert_eq!(
+        snapshot["shared"]["budget"]["maxTokens"].as_u64(),
+        Some(1_000_000)
+    );
+    assert_eq!(
+        snapshot["shared"]["budget"]["tokensUsed"].as_u64(),
+        Some(1_000_000)
+    );
+    assert_eq!(snapshot["shared"]["budget"]["calls"].as_u64(), Some(1));
+    assert_eq!(
+        snapshot["shared"]["budget"]["tokensReserved"].as_u64(),
+        Some(0)
+    );
+
+    // A second scheduler on the same root inherits the durable policy and usage.
+    let second = Arc::new(
+        scheduling::Scheduler::new(budget_limits(), Some(root.path())).expect("shared root"),
+    );
+    assert_eq!(
+        second.snapshot()["shared"]["budget"]["tokensUsed"].as_u64(),
+        Some(1_000_000),
+        "settled usage must survive a scheduler restart"
+    );
+
+    let host = TestHost::new();
+    let result = run_with_options(
+        config,
+        Vec::new(),
+        "second",
+        dir.path(),
+        host.clone(),
+        Services::default(),
+        RunOptions {
+            scheduler: Some(second.clone()),
+            ..RunOptions::default()
+        },
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "the persisted budget must refuse the next call"
+    );
+    assert_eq!(
+        server.request_count(),
+        1,
+        "the refused completion must never reach the provider"
+    );
+    assert!(
+        host.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Scheduling),
+        "the shared-budget refusal is classified as scheduling"
+    );
+}
+
+/// A wider local budget never expands an already-recorded shared budget; an
+/// unset local budget inherits it, and a narrower one may still narrow it.
+#[tokio::test]
+async fn wider_local_budget_does_not_expand_the_shared_policy() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(
+        scheduling::Scheduler::new(
+            limits(|limits| {
+                limits.max_total_tokens = Some(200_000);
+            }),
+            Some(root.path()),
+        )
+        .is_ok()
+    );
+    assert!(
+        scheduling::Scheduler::new(
+            limits(|limits| {
+                limits.max_total_tokens = Some(500_000);
+            }),
+            Some(root.path()),
+        )
+        .is_err(),
+        "a wider local budget must fail closed against the recorded shared policy"
+    );
+    let inherited =
+        scheduling::Scheduler::new(coordinator::Limits::default(), Some(root.path())).unwrap();
+    assert_eq!(
+        inherited.snapshot()["shared"]["budget"]["maxTokens"].as_u64(),
+        Some(200_000),
+        "an unset local budget inherits the recorded shared budget"
+    );
+    let narrowed = scheduling::Scheduler::new(
+        limits(|limits| {
+            limits.max_total_tokens = Some(50_000);
+        }),
+        Some(root.path()),
+    )
+    .unwrap();
+    assert_eq!(
+        narrowed.snapshot()["shared"]["budget"]["maxTokens"].as_u64(),
+        Some(50_000)
+    );
+}
+
+/// Cancelling a run whose completion was already dispatched charges the shared
+/// reservation instead of refunding it, so cancellation cannot bypass the
+/// cross-process budget.
+#[tokio::test]
+async fn cancelled_shared_budget_reservation_is_not_refunded() {
+    let root = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        scheduling::Scheduler::new(
+            limits(|limits| {
+                limits.max_total_tokens = Some(10_000_000);
+            }),
+            Some(root.path()),
+        )
+        .unwrap(),
+    );
+    let server = MockServer::start(vec![Scripted::held(text_response("held"))]);
+    let dir = tempfile::tempdir().unwrap();
+    let run = spawn_run(
+        config_for(server.base_url()),
+        dir.path().to_path_buf(),
+        "held",
+        TestHost::new(),
+        scheduler.clone(),
+    );
+    server.wait_for_requests(1, "held dispatch").await;
+    wait_until("shared reservation visible", Duration::from_secs(5), || {
+        scheduler.snapshot()["shared"]["budget"]["tokensReserved"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    })
+    .await;
+
+    run.abort();
+    let _ = run.await;
+    wait_until("shared reservation settled", Duration::from_secs(5), || {
+        scheduler.snapshot()["shared"]["budget"]["tokensReserved"].as_u64() == Some(0)
+    })
+    .await;
+    let used = scheduler.snapshot()["shared"]["budget"]["tokensUsed"]
+        .as_u64()
+        .unwrap_or(0);
+    assert!(
+        used > 0,
+        "a cancelled in-flight reservation must be charged, not refunded"
+    );
+    server.release();
+}
+
+/// The same OpenAI stream shape as [`openai_tool_stream`], but with an explicit
+/// call id so one test can make several distinct tool turns in a single run.
+fn openai_tool_stream_with_id(id: &str, name: &str, args: Value, usage: Option<Value>) -> String {
+    let tool_calls = json!( [{
+        "index": 0,
+        "id": id,
+        "type": "function",
+        "function": {"name": name, "arguments": args.to_string()}
+    }]);
+    format!(
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        chunk(
+            json!({"role": "assistant", "tool_calls": tool_calls}),
+            Value::Null,
+            None
+        ),
+        chunk(json!({}), json!("tool_calls"), usage)
+    )
+}
+
+/// A finite model-call cap is visible to the model on every real outgoing
+/// request: each carries a small trusted runtime note whose remaining count
+/// shrinks as admitted calls are counted. The run still uses the original cap
+/// and keeps its last admitted call for a successful final answer, without any
+/// hidden extra call.
+#[tokio::test]
+async fn runtime_budget_note_tracks_the_cap_and_keeps_the_last_call_for_the_answer() {
+    let cap = 3u64;
+    let scheduler = Arc::new(
+        scheduling::Scheduler::new(limits(|limits| limits.max_model_calls = Some(cap)), None)
+            .unwrap(),
+    );
+    let server = MockServer::start(vec![
+        Scripted::immediate(Response::sse(openai_tool_stream_with_id(
+            "call_note_1",
+            "read",
+            json!({"path": "note.txt"}),
+            None,
+        ))),
+        Scripted::immediate(Response::sse(openai_tool_stream_with_id(
+            "call_note_2",
+            "read",
+            json!({"path": "note.txt"}),
+            None,
+        ))),
+        Scripted::immediate(text_response("final answer")),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "fixture").unwrap();
+
+    let result = run_with_options(
+        config_for(server.base_url()),
+        Vec::new(),
+        "read the note twice, then answer",
+        dir.path(),
+        TestHost::new(),
+        Services::default(),
+        RunOptions {
+            scheduler: Some(scheduler.clone()),
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("the last admitted call must still produce the final answer");
+    assert!(!result.is_empty());
+
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        cap as usize,
+        "the run must use the original cap and never a hidden extra call"
+    );
+    let body = |index: usize| serde_json::to_string(&requests[index].body).unwrap();
+    let first = body(0);
+    let second = body(1);
+    let third = body(2);
+    for (index, rendered) in [&first, &second, &third].iter().enumerate() {
+        assert!(
+            rendered.contains("[mio-budget]"),
+            "call {index} must carry the trusted runtime note: {rendered}"
+        );
+        assert_eq!(
+            rendered.matches("[mio-budget]").count(),
+            1,
+            "call {index} must carry exactly one non-accumulated note: {rendered}"
+        );
+        assert!(
+            rendered.contains("pre-admission snapshot incl. this call, not a guarantee"),
+            "call {index} must state the snapshot is pre-admission and not a guarantee: {rendered}"
+        );
+        assert!(
+            rendered.contains("not a guarantee or authorization"),
+            "call {index} must keep the not-an-authorization caveat: {rendered}"
+        );
+        assert!(
+            rendered.contains("concurrency can lower it."),
+            "call {index} must keep the concurrency caveat: {rendered}"
+        );
+    }
+    // The guidance is phase-aware on the real known minimum, not one generic
+    // sentence: 3 keeps the mid remainder guidance, 2 asks for verification
+    // only, and 1 states this snapshot's last call. The old blanket
+    // "save one call to answer last" assertion is replaced by the stronger
+    // per-phase assertions below; the generic wording now applies only at six
+    // or more known calls left (or an unknown remainder).
+    assert!(
+        first.contains("calls left: local 3 (min 3)"),
+        "first call must see the full cap: {first}"
+    );
+    assert!(
+        first.contains(
+            "make the needed changes from known facts; keep calls for verification and the answer"
+        ),
+        "first call must see the mid-remainder phase guidance: {first}"
+    );
+    assert!(
+        !first.contains("last call in this snapshot"),
+        "the first call is not the final call: {first}"
+    );
+    assert!(
+        second.contains("calls left: local 2 (min 2)"),
+        "second call must see one started call: {second}"
+    );
+    assert!(
+        second.contains(
+            "use this call for necessary verification only; answer next call and report gaps"
+        ),
+        "second call must see the verify-only phase guidance: {second}"
+    );
+    assert!(
+        !second.contains("last call in this snapshot"),
+        "the second call is not the final call: {second}"
+    );
+    assert!(
+        third.contains("calls left: local 1 (min 1)"),
+        "the last call must see exactly one remaining call for the answer: {third}"
+    );
+    assert!(
+        third.contains("last call in this snapshot"),
+        "the last call must see the final-call phase: {third}"
+    );
+    assert!(
+        third.contains("state done/not-done/unverified; no tools; do not claim unverified success"),
+        "the last call must be told to answer now without claiming unverified success: {third}"
+    );
+    assert!(
+        !third.contains("save one call to answer last"),
+        "the last call must not get the generic remainder guidance: {third}"
+    );
+    // R14: the eligible final call is the only one whose protocol-level
+    // `tool_choice` is narrowed to `none`, asking the provider for the model's
+    // own text answer; every earlier call keeps its provider choice. The same
+    // real request still advertises every tool on every call, and the final text
+    // turn still completes normally. The note never erases a tool definition.
+    for (index, request) in requests.iter().enumerate() {
+        let tools = request.body["tools"].as_array().unwrap_or_else(|| {
+            panic!(
+                "call {index} must still advertise its tool definitions: {}",
+                request.body
+            )
+        });
+        assert!(
+            !tools.is_empty(),
+            "call {index} must not lose its tool definitions: {}",
+            request.body
+        );
+        if index + 1 == cap as usize {
+            assert_eq!(
+                request.body.get("tool_choice"),
+                Some(&json!("none")),
+                "the eligible final call must request the model's text answer: {}",
+                request.body
+            );
+        } else {
+            assert!(
+                request.body.get("tool_choice") != Some(&json!("none")),
+                "call {index} must not be narrowed before the final slot: {}",
+                request.body
+            );
+        }
+    }
+    assert_eq!(
+        requests[0].body["tools"], requests[1].body["tools"],
+        "tool definitions must not be tightened between calls"
+    );
+    assert_eq!(
+        requests[1].body["tools"], requests[2].body["tools"],
+        "tool definitions must not be tightened between calls"
+    );
+    assert_eq!(
+        requests[0].body.get("tool_choice"),
+        requests[1].body.get("tool_choice"),
+        "tool_choice must stay unchanged before the final slot"
+    );
+    assert!(
+        serde_json::to_string(&result)
+            .unwrap()
+            .contains("final answer"),
+        "the last admitted call must still produce its normal text answer"
+    );
+    assert_eq!(
+        scheduler.snapshot()["budget"]["calls"].as_u64(),
+        Some(cap),
+        "all admitted calls are the original cap"
+    );
+}
+
+/// The phase note is guidance only: a model that ignores the final-call hint
+/// and asks for yet another tool turn is still stopped by the original finite
+/// cap. Nothing auto-answers, retries or fabricates a success on its behalf.
+#[tokio::test]
+async fn runtime_budget_note_cannot_override_the_cap_when_tools_continue() {
+    let cap = 3u64;
+    let scheduler = Arc::new(
+        scheduling::Scheduler::new(limits(|limits| limits.max_model_calls = Some(cap)), None)
+            .unwrap(),
+    );
+    let server = MockServer::start(vec![
+        Scripted::immediate(Response::sse(openai_tool_stream_with_id(
+            "call_phase_1",
+            "read",
+            json!({"path": "note.txt"}),
+            None,
+        ))),
+        Scripted::immediate(Response::sse(openai_tool_stream_with_id(
+            "call_phase_2",
+            "read",
+            json!({"path": "note.txt"}),
+            None,
+        ))),
+        // The third request already saw "last call in this snapshot" and still
+        // answered with a tool call instead of the requested final text.
+        Scripted::immediate(Response::sse(openai_tool_stream_with_id(
+            "call_phase_3",
+            "read",
+            json!({"path": "note.txt"}),
+            None,
+        ))),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "fixture").unwrap();
+    let host = TestHost::new();
+    let result = run_with_options(
+        config_for(server.base_url()),
+        Vec::new(),
+        "keep reading even after the last-call hint",
+        dir.path(),
+        host.clone(),
+        Services::default(),
+        RunOptions {
+            scheduler: Some(scheduler.clone()),
+            ..RunOptions::default()
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "the original cap must stop the run instead of auto-answering"
+    );
+    assert!(
+        result.unwrap_err().contains("Scheduling"),
+        "refusal is still attributed to scheduling admission"
+    );
+    assert!(
+        host.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Scheduling),
+        "the refusal is classified as a scheduling diagnostic"
+    );
+    assert_eq!(
+        server.request_count(),
+        cap as usize,
+        "the hint must not admit a hidden extra call"
+    );
+    assert_eq!(
+        scheduler.snapshot()["budget"]["calls"].as_u64(),
+        Some(cap),
+        "the admitted calls are still exactly the original cap"
+    );
+    let third = serde_json::to_string(&server.requests()[2].body).unwrap();
+    assert!(
+        third.contains("last call in this snapshot"),
+        "the final admitted call really did see the final-call guidance: {third}"
+    );
+    assert!(
+        third.contains("no tools; do not claim unverified success"),
+        "the final admitted call really did see the no-more-tools and no-unverified-success guidance: {third}"
+    );
+}

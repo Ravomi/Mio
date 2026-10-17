@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "label": "pi-deepseek-comparison",
+  "agent_command": "/home/waya/.local/bin/pi-delegate --owner codex --heavy -- --mode json -p --no-session --no-mcp --no-extensions -e {repo}/evals/adapters/pi-fixed-sampling.ts --no-context-files --no-skills --no-prompt-templates --no-approve --provider deepseek --model deepseek-flash --thinking off {prompt}",
+  "timeout_seconds": 180,
+  "event_format": "pi-jsonl",
+  "tasks_dir": "../tasks/workflows",
+  "output": "../../target/evals/pi-deepseek-comparison.json",
+  "isolate_agent_env": true,
+  "budget": {
+    "version": "deepseek-flash-off-t0-8192-180s-nocap-workflows-v1",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "thinking": "off",
+    "temperature": 0,
+    "max_output_tokens": 8192,
+    "max_model_calls": null,
+    "max_total_tokens": null,
+    "notes": "Cross-agent comparison profile: same provider (deepseek), same model (deepseek-flash), thinking off, fixed sampling temperature 0 and a per-request output cap of 8192 tokens, the same mio-workflows-v1 task set and the same 180s per-task wall timeout as evals/configs/mio-deepseek-comparison.json. deepseek-flash is the model both agents actually list; pi's --no-extensions still loads the explicit -e test adapter evals/adapters/pi-fixed-sampling.ts, which verifies ctx.model.provider/id and forces temperature 0 / max_tokens 8192 through the before_provider_request hook. Pi has no model-call or token budget flag, so no cap is set on either side and this report never claims a token hard budget; only the runner's wall-clock timeout is enforced and the budget block stays declared metadata. MCP, user/built-in extensions, context files, skills and prompt templates are disabled to match the Mio side. --mode json emits message_end assistant events that event_format pi-jsonl parses for real token usage. Credentials come from the environment only (DEEPSEEK_API_KEY); never put a key in this file or the command. The default command is the official delegated Pi entry point (/home/waya/.local/bin/pi-delegate --owner codex --heavy -- ...), which is a machine-local path; for a portable or offline check, override it with --agent-command using a plain 'pi' argv template, and note that such a run is then not the officially delegated entry. This requires the runner to start outside a delegated session, because pi-delegate refuses recursive delegation. --isolate-agent-env deliberately preserves the inherited PI_DELEGATE_ACTIVE marker instead of deleting it, so isolation cannot be used to nest delegation; start the runner from a non-delegated environment."
+  }
+}

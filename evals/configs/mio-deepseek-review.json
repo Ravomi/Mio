@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "label": "mio-deepseek-review-pilot",
+  "agent_command": "target/evals/v1-inline8k-20261017T101526Z/bin/mio --cwd {cwd} --shared-limits-dir {cwd}/../coordination --no-session --no-context --no-mcp --json --provider deepseek --model deepseek-chat --thinking off --max-model-calls 20 -p {prompt}",
+  "timeout_seconds": 180,
+  "event_format": "mio-jsonl",
+  "tasks_dir": "../tasks/review",
+  "output": "../../target/evals/review-pilot-20261017/report.json",
+  "artifacts_dir": "../../target/evals/review-pilot-20261017/artifacts",
+  "budget": {
+    "version": "deepseek-chat-off-20calls-180s-isolated-v2",
+    "model": "deepseek-chat",
+    "thinking": "off",
+    "max_model_calls": 20,
+    "max_total_tokens": null,
+    "notes": "Small self-authored structured-review pilot. The task set is independent of the v1 six-task release gate. Credentials come from the environment and are never stored in this config."
+  }
+}

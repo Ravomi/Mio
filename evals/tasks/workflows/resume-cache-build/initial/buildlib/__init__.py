@@ -1,0 +1,1 @@
+"""Deterministic fixture build pipeline."""

@@ -9,10 +9,15 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Internal crate that implements Rig derive macros."
+description = "Procedural macros for Mio tools and model contracts."
 readme = false
 license = "MIT"
 repository = "https://github.com/Ravomi/Mio"
+
+exclude = [
+    "/Cargo.toml.orig",
+    "/.cargo_vcs_info.json",
+]
 
 [lib]
 name = "mio_derive"
@@ -164,8 +169,10 @@ check-cfg = ["cfg(rig_loom)"]
 
 [dev-dependencies.mio-core]
 path = "../mio-core"
+version = "=0.1.0"
 features = ["test-utils", "reqwest"]
 
 [dev-dependencies.mio-agent]
 path = "../mio-agent"
+version = "=0.1.0"
 features = ["test-utils"]

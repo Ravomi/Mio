@@ -23,6 +23,7 @@ pub mod runner;
 mod streaming;
 mod telemetry;
 mod tool;
+mod tool_invocation;
 mod typed;
 
 /// Fallback display name used in telemetry spans and logs when an agent has no
@@ -54,4 +55,5 @@ pub use streaming::{
     MultiTurnStreamItem, RUN_EVENTS_CAPACITY, RunEvents, StreamToStdoutError, StreamingResult,
     stream_to_stdout,
 };
+pub use tool_invocation::ToolInvocation;
 pub use typed::{TypedOutput, TypedPromptResponse, TypedRun};

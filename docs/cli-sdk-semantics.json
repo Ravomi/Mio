@@ -1,0 +1,1832 @@
+{
+  "manifestVersion": 1,
+  "design": "DES-03",
+  "title": "Mio CLI flag -> engine/SDK semantic map and allowed-difference ledger",
+  "description": "Machine-checkable DES-03 ledger. Every real CLI flag/alias from src/bin/mio_cli/args.rs (plus -h/--help/-V/--version/--) is assigned to exactly one entry. engine_mapping entries must point at a real Args field, a real wiring location, real public API declarations, and a real test definition. allowed_difference entries must use one of the bounded DES-03 reasons. Static checks only: this manifest never claims that a behavior test passed.",
+  "flagSource": "src/bin/mio_cli/args.rs",
+  "additionalFlags": [
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+    "--"
+  ],
+  "classificationRules": {
+    "engine_mapping": "The flag is wired to shared engine semantics through RunOptions/RunTools/ToolPolicy/Config/Host or a public engine module. Engine-mapping entries must not be excused as rendering.",
+    "allowed_difference": "The flag only changes presentation, approval interaction form, persistence defaults, an explicit host-supplied connection/model value, or is a standalone maintenance command. Reason must be one of the bounded enum below."
+  },
+  "allowedDifferenceReasons": {
+    "terminal_rendering": "CLI-only presentation of the shared event stream (text/json/rpc formatting, help text). Does not alter engine state, admission, budgets or recovery.",
+    "approval_interaction": "CLI-only approval interaction form (TTY / non-TTY / RPC broker). The admission decision itself stays in the public ToolPolicy; the flag never changes which calls are admitted.",
+    "persistence_defaults": "CLI-only persistence default: where/whether a session file is loaded or written. The engine receives the same history and Host API; no engine branch is introduced.",
+    "host_configuration": "Explicit host-supplied connection/model value (model, provider preset, base URL). The engine routes the same Config regardless of who supplies it; no CLI-only execution branch.",
+    "maintenance": "Standalone CLI maintenance/introspection command that does not enter the shared agent run loop. It is explained individually below and, where it touches engine-owned state, uses the listed public API."
+  },
+  "semanticsCriticalFlags": [
+    "--no-shell",
+    "--dedup-key",
+    "--tools",
+    "--exclude-tools",
+    "--no-tools",
+    "--no-mcp",
+    "--subagents",
+    "--auto-compact",
+    "--context-window",
+    "--max-output-tokens",
+    "--temperature",
+    "--sandbox",
+    "--sandbox-read-only",
+    "--rewind",
+    "--output-cleanup-plan",
+    "--output-cleanup-confirm",
+    "--checkpoints",
+    "--recovery",
+    "--max-model-calls",
+    "--max-total-tokens"
+  ],
+  "evidenceBoundary": "Everything in this file is a static mapping/symbol-existence claim. Passing this checker does not prove runtime CLI/SDK parity; that still requires the real loopback/integration gate on a fixed source revision.",
+  "entries": [
+    {
+      "name": "--cwd",
+      "aliases": [
+        "--cwd"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "cwd",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "let cwd = args"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "run_with_tools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/cli_sdk_parity.rs",
+          "name": "cli_and_sdk_share_tool_semantics_on_one_loopback_task"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The parity test exercises the CLI cwd -> run_with_tools path; it does not prove workspace-boundary behavior for every tool."
+    },
+    {
+      "name": "--thinking",
+      "aliases": [
+        "--thinking"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "thinking",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "thinking: args.thinking"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "validate_model_thinking"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/thinking.rs",
+          "name": "thinking_encodes_actual_provider_requests"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The test proves provider request encoding for a selected thinking level; CLI parsing/validation wiring is only checked statically."
+    },
+    {
+      "name": "--context-window",
+      "aliases": [
+        "--context-window"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "context_window",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "context_window: args.context_window"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        },
+        {
+          "file": "src/context_budget.rs",
+          "symbol": "ContextBudget"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context_budget.rs",
+          "name": "resolves_catalog_overrides_fallback_and_output_reserve"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Covers ContextBudget::resolve override precedence, not the CLI flag parse path."
+    },
+    {
+      "name": "--max-output-tokens",
+      "aliases": [
+        "--max-output-tokens"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_output_tokens",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "max_output_tokens: args.max_output_tokens"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sampling.rs",
+          "name": "explicit_temperature_and_output_limit_reach_the_wire"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the value reaches the provider request in a loopback run; CLI parse/validation is static here."
+    },
+    {
+      "name": "--temperature",
+      "aliases": [
+        "--temperature"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "temperature",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "temperature: args.temperature"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "validate_model_temperature"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sampling.rs",
+          "name": "invalid_or_unsupported_temperature_is_refused_locally"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves local refusal of invalid temperature; the accepted-value wire path is covered by a sibling test not listed as the primary evidence."
+    },
+    {
+      "name": "-p",
+      "aliases": [
+        "-p",
+        "--print"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "prompt",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if let Some(prompt) = args.prompt"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "run_with_tools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/cli_sdk_parity.rs",
+          "name": "cli_and_sdk_share_tool_semantics_on_one_loopback_task"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The parity test drives the one-shot task prompt through the CLI; it does not enumerate all prompt-length/exit paths."
+    },
+    {
+      "name": "--",
+      "aliases": [
+        "--"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "prompt",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/args.rs",
+          "contains": "parsed.prompt = Some(args.collect::<Vec<_>>().join(\" \"))"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "run_with_tools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/cli_sdk_parity.rs",
+          "name": "cli_and_sdk_share_tool_semantics_on_one_loopback_task"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The prompt->engine path is exercised by the parity test; the POSIX separator itself is covered only by the static args.rs arm extraction."
+    },
+    {
+      "name": "-t",
+      "aliases": [
+        "-t",
+        "--tools"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "tools",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "ToolFilter::from_cli("
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/pattern.rs",
+          "symbol": "ToolFilter"
+        },
+        {
+          "file": "src/pattern.rs",
+          "symbol": "from_cli"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunTools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/pattern.rs",
+          "name": "test_tool_filter_cli_and_whitelist"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves ToolFilter::from_cli allow-list construction; the CLI flag string is only statically mapped."
+    },
+    {
+      "name": "-xt",
+      "aliases": [
+        "-xt",
+        "--exclude-tools"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "exclude_tools",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "ToolFilter::from_cli("
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/pattern.rs",
+          "symbol": "ToolFilter"
+        },
+        {
+          "file": "src/pattern.rs",
+          "symbol": "from_cli"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunTools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/pattern.rs",
+          "name": "test_tool_filter_cli_and_whitelist"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Same public constructor as --tools; the exclusion-priority assertion lives in the same test."
+    },
+    {
+      "name": "-nt",
+      "aliases": [
+        "-nt",
+        "--no-tools"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_tools",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "ToolFilter::from_cli("
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/pattern.rs",
+          "symbol": "ToolFilter"
+        },
+        {
+          "file": "src/pattern.rs",
+          "symbol": "none"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunTools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/pattern.rs",
+          "name": "test_tool_filter_cli_and_whitelist"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The test covers the from_cli no-tools branch; end-to-end 'no tool is dispatched' is not asserted here."
+    },
+    {
+      "name": "--no-shell",
+      "aliases": [
+        "--no-shell"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_shell",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "tool_filter.without_shell()"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/pattern.rs",
+          "symbol": "ToolFilter"
+        },
+        {
+          "file": "src/pattern.rs",
+          "symbol": "without_shell"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/no_shell_policy.rs",
+          "name": "without_shell_denies_both_aliases_but_keeps_file_tools"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Four no_shell_policy tests plus CLI/SDK loopback parity exist; this entry does not claim the 21-test run in this round."
+    },
+    {
+      "name": "--no-mcp",
+      "aliases": [
+        "--no-mcp"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_mcp",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/runner.rs",
+          "contains": "if self.no_mcp"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/mcp.rs",
+          "symbol": "load_policy_bound_tools"
+        },
+        {
+          "file": "src/mcp.rs",
+          "symbol": "PolicyBoundTools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/cli_sdk_parity.rs",
+          "name": "cli_and_sdk_share_tool_semantics_on_one_loopback_task"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The parity test runs with --no-mcp to isolate tool semantics; it is not a dedicated MCP-discovery-off assertion."
+    },
+    {
+      "name": "--trust-project-mcp",
+      "aliases": [
+        "--trust-project-mcp"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "trust_project_mcp",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/runner.rs",
+          "contains": "if self.trust_project_mcp"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/mcp.rs",
+          "symbol": "load_policy_bound_tools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/mcp_lifecycle.rs",
+          "name": "project_start_approval_is_a_distinct_operation"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Covers the Host policy for a distinct project-start approval; the CLI flag/env branch is only statically mapped."
+    },
+    {
+      "name": "--recovery",
+      "aliases": [
+        "--recovery"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "recovery",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.recovery"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/journal.rs",
+          "symbol": "Journal"
+        },
+        {
+          "file": "src/journal.rs",
+          "symbol": "RecoveryReport"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/journal_correlation.rs",
+          "name": "the_recovery_report_exposes_the_real_dispatch_correlation"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the recovery report carries real dispatch correlation; the CLI rendering of that report is not part of this check."
+    },
+    {
+      "name": "--checkpoints",
+      "aliases": [
+        "--checkpoints"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "checkpoints",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.checkpoints.then"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/checkpoint.rs",
+          "symbol": "CheckpointStore"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/checkpoint_cli.rs",
+          "name": "checkpoints_cannot_be_enabled_without_persistence"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the persistence precondition; snapshot/rewind behavior is covered by other checkpoint targets not claimed here."
+    },
+    {
+      "name": "--rewind",
+      "aliases": [
+        "--rewind"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "rewind",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "runner::rewind_file"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/checkpoint.rs",
+          "symbol": "CheckpointStore"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/checkpoint_cli.rs",
+          "name": "maintenance_lists_rewinds_and_protects_later_user_edits"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The test protects later user edits on rewind; it does not re-run every rewind race in this round."
+    },
+    {
+      "name": "--output-cleanup-plan",
+      "aliases": [
+        "--output-cleanup-plan"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "output_cleanup_plan",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "output_cleanup::selected"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/output_store.rs",
+          "symbol": "OutputStore"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/output_cleanup_cli.rs",
+          "name": "offline_plan_needs_no_provider_and_refuses_overwrite"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the dry-run plan needs no provider and refuses overwrite; full cleanup reachability is covered by separate output_cleanup targets."
+    },
+    {
+      "name": "--output-cleanup-confirm",
+      "aliases": [
+        "--output-cleanup-confirm"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "output_cleanup_confirm",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "output_cleanup::selected"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/output_store.rs",
+          "symbol": "OutputStore"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/output_cleanup_cli.rs",
+          "name": "confirm_deletes_only_unreferenced_expired_outputs"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves unreferenced+expired deletion on confirm; it does not assert every reference source in this check."
+    },
+    {
+      "name": "--dedup-key",
+      "aliases": [
+        "--dedup-key"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "dedup_key",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.dedup_key.as_deref()"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/dedup.rs",
+          "symbol": "TaskKeyLedger"
+        },
+        {
+          "file": "src/dedup.rs",
+          "symbol": "validate_key"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/dedup_cli.rs",
+          "name": "cli_reused_task_event_reports_unknown_for_terminal_record"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves a reused key reports the recorded task state. Dedup is a real execution/persistence semantic and is mapped to the public TaskKeyLedger, not to a rendering exemption."
+    },
+    {
+      "name": "--skill",
+      "aliases": [
+        "--skill"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "skills",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "for name in &args.skills"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ProjectContext"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_skills_and_symlink_escape"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves skill selection and symlink-escape refusal; the CLI repetition/instruction-size limits are only statically mapped."
+    },
+    {
+      "name": "--template",
+      "aliases": [
+        "--template"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "template",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if let Some(name) = &args.template"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ProjectContext"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_template_substitution"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves $ARGUMENTS substitution via the public ProjectContext path."
+    },
+    {
+      "name": "--system-prompt",
+      "aliases": [
+        "--system-prompt"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "system_prompt",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "system_prompt: args.system_prompt.clone()"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ContextOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_claude_md_context_options_and_at_file_expansion"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves ContextOptions system-prompt/file handling, not the CLI flag string."
+    },
+    {
+      "name": "--append-system-prompt",
+      "aliases": [
+        "--append-system-prompt"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "append_system_prompt",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "append_system_prompt: args.append_system_prompt.clone()"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ContextOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_claude_md_context_options_and_at_file_expansion"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Same public ContextOptions field; append semantics are covered by the same test."
+    },
+    {
+      "name": "--no-context",
+      "aliases": [
+        "--no-context"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_context",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if args.no_context"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ProjectContext"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/run_correlation.rs",
+          "name": "subagent_child_run_stays_isolated_and_links_the_parent_scope"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The run_correlation test uses --no-context to keep the workspace prompt-free; a dedicated load/none assertion is not claimed."
+    },
+    {
+      "name": "--no-context-files",
+      "aliases": [
+        "--no-context-files"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_context_files",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "no_context_files: args.no_context_files"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ContextOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_claude_md_context_options_and_at_file_expansion"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves option-driven context-file exclusion through the public ContextOptions path."
+    },
+    {
+      "name": "--no-skills",
+      "aliases": [
+        "--no-skills"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_skills",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "no_skills: args.no_skills"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ContextOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_load_ancestor_order_and_system_md"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves ContextOptions-driven skill scanning control; the CLI conflict rules are only statically mapped."
+    },
+    {
+      "name": "--no-prompt-templates",
+      "aliases": [
+        "--no-prompt-templates"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_prompt_templates",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.no_prompt_templates"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/context.rs",
+          "symbol": "ProjectContext"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "src/context.rs",
+          "name": "test_template_substitution"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The public template path is tested positively; the disable branch is checked statically against the same path, not executed here."
+    },
+    {
+      "name": "--tool-concurrency",
+      "aliases": [
+        "--tool-concurrency"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "tool_concurrency",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "tool_concurrency: args.tool_concurrency"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/batch_output_budget.rs",
+          "name": "concurrent_reverse_order_batch_is_externalized_and_reconstructable"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves concurrent tool batch execution/externalization; the 1-32 validation is only statically mapped."
+    },
+    {
+      "name": "--max-turns",
+      "aliases": [
+        "--max-turns"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_turns",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "max_turns: args.max_turns"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/dispatch_observation_denial.rs",
+          "name": "refusal_has_correlated_outcome_but_no_committed_dispatch"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The test bounds a denied dispatch within the turn budget; it is not a dedicated max-turns boundary test."
+    },
+    {
+      "name": "--max-model-concurrency",
+      "aliases": [
+        "--max-model-concurrency"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_model_concurrency",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "model: args.max_model_concurrency"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        },
+        {
+          "file": "src/scheduling.rs",
+          "symbol": "Scheduler"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "shared_scheduler_model_slot_queues_and_cancellation_releases"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves scheduler model-slot queueing/cancellation; the CLI 1-64 bound is only statically mapped."
+    },
+    {
+      "name": "--max-provider-concurrency",
+      "aliases": [
+        "--max-provider-concurrency"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_provider_concurrency",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "provider_model: args.max_provider_concurrency"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        },
+        {
+          "file": "src/scheduling.rs",
+          "symbol": "Scheduler"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "rate_limit_cools_down_one_provider_without_replay"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves per-provider cooldown/admission; it does not re-run the CLI numeric bound."
+    },
+    {
+      "name": "--max-heavy-tasks",
+      "aliases": [
+        "--max-heavy-tasks"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_heavy_tasks",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "heavy: args.max_heavy_tasks"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        },
+        {
+          "file": "src/scheduling.rs",
+          "symbol": "Scheduler"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "heavy_tool_quota_queues_and_cancellation_releases"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the heavy-tool quota with queueing and cancellation."
+    },
+    {
+      "name": "--max-subagents",
+      "aliases": [
+        "--max-subagents"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_subagents",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "agent: args.max_subagents"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        },
+        {
+          "file": "src/subagent.rs",
+          "symbol": "SubagentManager"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/rpc.rs",
+          "name": "rpc_exposes_live_admission_and_enforces_cli_budget_before_network"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves live admission/budget enforcement through RPC; the CLI agent-limit value is only statically mapped."
+    },
+    {
+      "name": "--max-model-calls",
+      "aliases": [
+        "--max-model-calls"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_model_calls",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "max_model_calls: args.max_model_calls"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "model_call_budget_blocks_before_request"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves the call budget blocks before a request; the CLI positive-value check is only statically mapped."
+    },
+    {
+      "name": "--max-total-tokens",
+      "aliases": [
+        "--max-total-tokens"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "max_total_tokens",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "max_total_tokens: args.max_total_tokens"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/coordinator.rs",
+          "symbol": "Limits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "token_budget_blocks_after_real_usage_settlement"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves conservative reservation plus real-usage settlement; no USD claim is made."
+    },
+    {
+      "name": "--shared-limits-dir",
+      "aliases": [
+        "--shared-limits-dir"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "shared_limits_dir",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "shared_limits_dir"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/shared_limits.rs",
+          "symbol": "SharedLimits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/scheduling.rs",
+          "name": "shared_root_enforces_cross_process_model_quota"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves cross-process shared quota for a chosen root; the CLI path resolution is only statically mapped."
+    },
+    {
+      "name": "--no-shared-limits",
+      "aliases": [
+        "--no-shared-limits"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "no_shared_limits",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if args.no_shared_limits"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/shared_limits.rs",
+          "symbol": "SharedLimits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/rpc.rs",
+          "name": "rpc_exposes_live_admission_and_enforces_cli_budget_before_network"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. The RPC test disables shared limits to keep admission in-process; a dedicated in-process-only assertion is not claimed."
+    },
+    {
+      "name": "--sandbox",
+      "aliases": [
+        "--sandbox"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "sandbox",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.execution_policy()"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "ExecutionPolicy"
+        },
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "BubblewrapPolicy"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sandbox_cli.rs",
+          "name": "invalid_backend_or_unapplied_resource_limit_is_refused"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves invalid backend/limit refusal through the CLI; real sandbox enforcement is covered by the bwrap-gated targets, not claimed here."
+    },
+    {
+      "name": "--sandbox-read-only",
+      "aliases": [
+        "--sandbox-read-only"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "sandbox_read_only",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "let execution_policy = args.execution_policy"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "FilesystemPolicy"
+        },
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "linux_runtime_mounts"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sandbox_cli.rs",
+          "name": "read_mounts_require_isolation_absolute_paths_and_exclude_the_host_root"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves mount validation rules; actual confinement is tested only where bwrap is available."
+    },
+    {
+      "name": "--sandbox-cpu-seconds",
+      "aliases": [
+        "--sandbox-cpu-seconds"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "sandbox_cpu_seconds",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/args.rs",
+          "contains": "cpu_seconds: self.sandbox_cpu_seconds"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "ResourceLimits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sandbox_cli.rs",
+          "name": "invalid_backend_or_unapplied_resource_limit_is_refused"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves limit refusal without isolation; the real CPU cap test requires bwrap and is not claimed here."
+    },
+    {
+      "name": "--sandbox-memory-mib",
+      "aliases": [
+        "--sandbox-memory-mib"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "sandbox_memory_mib",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/args.rs",
+          "contains": ".sandbox_memory_mib"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "ResourceLimits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sandbox_cli.rs",
+          "name": "invalid_backend_or_unapplied_resource_limit_is_refused"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Same refusal path; address-space enforcement itself is bwrap-gated."
+    },
+    {
+      "name": "--sandbox-open-files",
+      "aliases": [
+        "--sandbox-open-files"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "sandbox_open_files",
+      "wiring": [
+        {
+          "file": "src/bin/mio_cli/args.rs",
+          "contains": "self.sandbox_open_files"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "ResourceLimits"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/sandbox_cli.rs",
+          "name": "invalid_backend_or_unapplied_resource_limit_is_refused"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Same refusal path; file-descriptor enforcement itself is bwrap-gated."
+    },
+    {
+      "name": "--subagents",
+      "aliases": [
+        "--subagents"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "subagents",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if args.subagents"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/subagent.rs",
+          "symbol": "SubagentManager"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "task_lifecycle"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        },
+        {
+          "file": "src/task_lifecycle.rs",
+          "symbol": "TaskHandle"
+        },
+        {
+          "file": "src/task_lifecycle.rs",
+          "symbol": "TaskLifecycleTracker"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/subagent_protocol.rs",
+          "name": "writable_child_can_edit_and_parent_receives_result"
+        },
+        {
+          "file": "tests/task_lifecycle.rs",
+          "name": "running_requires_a_real_held_lease"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declarations and test definitions exist on the current tree. It does NOT prove the tests run or pass in this round; behavioral evidence still requires the real loopback/integration gate. The DES-04 unified task-state authority is now public on the crate root (`pub mod task_lifecycle`, `RunOptions.task: Option<TaskHandle>`), so the CLI child-task flag maps to real shared public entries instead of a crate-private #[path] compile. This does not by itself prove child-task scheduling, cancellation or settlement behavior."
+    },
+    {
+      "name": "--auto-compact",
+      "aliases": [
+        "--auto-compact"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "auto_compact",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "if args.auto_compact"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/compact.rs",
+          "symbol": "DEFAULT_AUTO_COMPACT_BYTES"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "RunOptions"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/compaction_observation.rs",
+          "name": "run_auto_compaction_reports_session_before_and_after"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves auto-compaction emits before/after observations; the CLI threshold wiring is only statically mapped."
+    },
+    {
+      "name": "--output-schema",
+      "aliases": [
+        "--output-schema"
+      ],
+      "classification": "engine_mapping",
+      "status": "complete",
+      "argsField": "output_schema",
+      "wiring": [
+        {
+          "file": "src/bin/mio.rs",
+          "contains": "args.output_schema"
+        },
+        {
+          "file": "src/bin/mio_cli/runner.rs",
+          "contains": "fn output_schema(&self) -> Option<mio_coding_agent::OutputSchema>"
+        }
+      ],
+      "publicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "Host"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "run_with_tools"
+        }
+      ],
+      "behaviorTests": [
+        {
+          "file": "tests/output_schema_cli.rs",
+          "name": "cli_output_schema_reaches_the_model_request"
+        }
+      ],
+      "evidenceBoundary": "Static only: this records that the named declaration and test definition exist on the current tree. It does NOT prove the test runs or passes in this round; behavioral evidence still requires the real loopback/integration gate. Proves CLI --output-schema loads/validates the schema and feeds Host::output_schema into the shared structured-output run loop."
+    },
+    {
+      "name": "--model",
+      "aliases": [
+        "--model"
+      ],
+      "classification": "allowed_difference",
+      "reason": "host_configuration",
+      "reasonNote": "Explicit host model selection written into Config.model; the engine routes it identically regardless of source (CLI flag, MIO_MODEL, or a Ravomi host). No CLI-only engine branch.",
+      "relatedPublicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "Config"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "parse_model_spec"
+        }
+      ],
+      "evidenceBoundary": "Static + the provider preset/routing tests. Model routing behavior is not re-run here."
+    },
+    {
+      "name": "--provider",
+      "aliases": [
+        "--provider"
+      ],
+      "classification": "allowed_difference",
+      "reason": "host_configuration",
+      "reasonNote": "Explicit host provider preset resolved through the public resolve_provider_endpoint; value selection only.",
+      "relatedPublicApi": [
+        {
+          "file": "src/rpc.rs",
+          "symbol": "resolve_provider_endpoint"
+        },
+        {
+          "file": "src/lib.rs",
+          "symbol": "Config"
+        }
+      ],
+      "evidenceBoundary": "Static + provider_routes tests exist on the tree; not re-run here."
+    },
+    {
+      "name": "--base-url",
+      "aliases": [
+        "--base-url"
+      ],
+      "classification": "allowed_difference",
+      "reason": "host_configuration",
+      "reasonNote": "Explicit host endpoint value written into Config.base_url; the engine receives the same Config from any host.",
+      "relatedPublicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "Config"
+        }
+      ],
+      "evidenceBoundary": "Static + provider_routes tests exist on the tree; not re-run here."
+    },
+    {
+      "name": "--mode",
+      "aliases": [
+        "--mode"
+      ],
+      "classification": "allowed_difference",
+      "reason": "terminal_rendering",
+      "reasonNote": "Selects the CLI transport/rendering mode (text/json/rpc). It changes how the shared event stream is rendered, not admission, budgets, state machine, or recovery."
+    },
+    {
+      "name": "--json",
+      "aliases": [
+        "--json"
+      ],
+      "classification": "allowed_difference",
+      "reason": "terminal_rendering",
+      "reasonNote": "Alias that selects JSON Lines rendering (sets OutputMode::Json). Presentation only; the event/schema contract is unchanged."
+    },
+    {
+      "name": "--approve",
+      "aliases": [
+        "--approve"
+      ],
+      "classification": "allowed_difference",
+      "reason": "approval_interaction",
+      "reasonNote": "Selects the interactive approval form of the CLI Host (TTY, non-TTY, or RPC broker). The admission decision and param binding stay in the public ToolPolicy; the flag does not widen what is admitted.",
+      "relatedPublicApi": [
+        {
+          "file": "src/policy.rs",
+          "symbol": "ToolPolicy"
+        }
+      ],
+      "evidenceBoundary": "Policy-side approval behavior is covered by tool_policy/tool_policy_extensions targets; the CLI interaction form is not re-run here."
+    },
+    {
+      "name": "--session",
+      "aliases": [
+        "--session"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Selects which saved session file to load/save. The engine receives the same history/Host; the choice is a persistence default, not an execution-semantic branch."
+    },
+    {
+      "name": "-n",
+      "aliases": [
+        "-n",
+        "--name"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Sets a human-readable session display name stored in the session file. Presentation/persistence metadata only."
+    },
+    {
+      "name": "--no-session",
+      "aliases": [
+        "--no-session"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Runs ephemerally without writing a session file (and disables journal/checkpoints). Persistence default only; the in-memory run semantics are unchanged."
+    },
+    {
+      "name": "-c",
+      "aliases": [
+        "-c",
+        "--continue"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Selects the most recently saved workspace session as the starting history. Persistence default."
+    },
+    {
+      "name": "-r",
+      "aliases": [
+        "-r",
+        "--resume"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Resumes a selected/most-recent session (optionally consuming a selector). Persistence default."
+    },
+    {
+      "name": "--fork",
+      "aliases": [
+        "--fork"
+      ],
+      "classification": "allowed_difference",
+      "reason": "persistence_defaults",
+      "reasonNote": "Forks a selected session into a new session id before running. Persistence default; the engine sees a normal history."
+    },
+    {
+      "name": "--list-models",
+      "aliases": [
+        "--list-models"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Lists catalog models and exits without contacting a model.",
+      "relatedPublicApi": [
+        {
+          "file": "src/lib.rs",
+          "symbol": "parse_model_spec"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--import-antigravity",
+      "aliases": [
+        "--import-antigravity"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Imports an existing Antigravity account into the Mio profile directory and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/profile.rs",
+          "symbol": "import_antigravity"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--export",
+      "aliases": [
+        "--export"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Exports a selected/latest saved session to standalone HTML and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/session.rs",
+          "symbol": "Session"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--list-sessions",
+      "aliases": [
+        "--list-sessions"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Lists local sessions without contacting a model.",
+      "relatedPublicApi": [
+        {
+          "file": "src/session.rs",
+          "symbol": "Session"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--list-checkpoints",
+      "aliases": [
+        "--list-checkpoints"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Lists workspace file checkpoints and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/checkpoint.rs",
+          "symbol": "CheckpointStore"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--sandbox-status",
+      "aliases": [
+        "--sandbox-status"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Prints the selected subprocess backend status without a model.",
+      "relatedPublicApi": [
+        {
+          "file": "src/execution_backend.rs",
+          "symbol": "ExecutionPolicy"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--list-unresolved-effects",
+      "aliases": [
+        "--list-unresolved-effects"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Read-only standalone maintenance: lists the exact durable unresolved-effect records with their real (scope, call_index) key, state and snapshot digest, then exits before any model/provider run. It is not a model-callable tool and never deletes evidence.",
+      "relatedPublicApi": [
+        {
+          "file": "src/unresolved_effect.rs",
+          "symbol": "UnresolvedEffectLedger"
+        },
+        {
+          "file": "src/unresolved_effect.rs",
+          "symbol": "snapshot"
+        }
+      ],
+      "evidenceBoundary": "Standalone maintenance command outside the shared run loop. The standalone branch lives in src/bin/mio.rs and the real snapshot semantics are defined by tests/unresolved_effect.rs (`read_only_queries_and_recovery_create_nothing`, `snapshot_is_sorted_and_reports_blocking_counts`); this ledger never claims the CLI path was executed here."
+    },
+    {
+      "name": "--ack-unresolved-effect",
+      "aliases": [
+        "--ack-unresolved-effect"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Standalone maintenance: acknowledges exactly one durable unresolved-effect record by its exact (scope, call_index) key plus the current snapshot digest, then exits before any run. It is not a model-callable tool, never deletes evidence and refuses stale or incomplete snapshots.",
+      "relatedPublicApi": [
+        {
+          "file": "src/unresolved_effect.rs",
+          "symbol": "UnresolvedEffectLedger"
+        },
+        {
+          "file": "src/unresolved_effect.rs",
+          "symbol": "acknowledge"
+        },
+        {
+          "file": "src/unresolved_effect.rs",
+          "symbol": "UnresolvedSnapshotKey"
+        }
+      ],
+      "evidenceBoundary": "Standalone maintenance command outside the shared run loop. The standalone branch lives in src/bin/mio.rs and exact-key+snapshot acknowledgement plus stale-digest refusal are defined by tests/unresolved_effect.rs (`unknown_can_only_leave_via_the_exact_acknowledgement`, `stale_snapshot_key_is_rejected_after_a_new_process_adds_evidence`); this ledger never claims the CLI path was executed here."
+    },
+    {
+      "name": "--plugin-install",
+      "aliases": [
+        "--plugin-install"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Installs a plugin from a registry/git/path into the workspace and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "install_plugin"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--plugin-remove",
+      "aliases": [
+        "--plugin-remove"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Removes an installed workspace plugin and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "remove_plugin"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--plugin-list",
+      "aliases": [
+        "--plugin-list",
+        "--list-plugins"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Lists installed workspace plugins and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "discover_plugins"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--plugin-search",
+      "aliases": [
+        "--plugin-search"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Searches the official community plugin registry and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "search_community_plugins"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--plugin-init",
+      "aliases": [
+        "--plugin-init"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Scaffolds a new standard-compliant plugin directory and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "scaffold_plugin"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "--plugin-validate",
+      "aliases": [
+        "--plugin-validate"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Validates a plugin directory or registry.json and exits.",
+      "relatedPublicApi": [
+        {
+          "file": "src/plugin.rs",
+          "symbol": "validate_plugin_dir"
+        }
+      ],
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "-h",
+      "aliases": [
+        "-h",
+        "--help"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Prints the CLI help text and exits before the engine is constructed.",
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    },
+    {
+      "name": "-V",
+      "aliases": [
+        "-V",
+        "--version"
+      ],
+      "classification": "allowed_difference",
+      "reason": "maintenance",
+      "reasonNote": "Prints the crate version and exits before the engine is constructed.",
+      "evidenceBoundary": "Standalone command outside the shared run loop. relatedPublicApi (when present) is checked only for a public declaration; no behavior is claimed here."
+    }
+  ]
+}

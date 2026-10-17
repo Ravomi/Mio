@@ -9,10 +9,15 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Rig's transport contracts: the HTTP client and websocket traits a transport implements, and the wasm-compatible bounds they are written with."
+description = "Mio HTTP and WebSocket transport contracts and portable runtime bounds."
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/Ravomi/Mio"
+
+exclude = [
+    "/Cargo.toml.orig",
+    "/.cargo_vcs_info.json",
+]
 
 [package.metadata.docs.rs]
 all-features = true

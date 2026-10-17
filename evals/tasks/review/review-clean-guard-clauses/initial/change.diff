@@ -1,0 +1,18 @@
+diff --git a/shipping.py b/shipping.py
+--- a/shipping.py
++++ b/shipping.py
+@@ -4,11 +4,8 @@
+ def shipping_fee_cents(order_cents, weight_grams, is_member=False):
+     if order_cents < 0 or weight_grams <= 0:
+         raise ValueError("invalid order")
+-    if is_member:
+-        return 0
+-    if order_cents >= 5000:
++    if is_member or order_cents >= 5000:
+         return 0
+-    extra_grams = max(0, weight_grams - 1000)
+-    if extra_grams == 0:
++    if weight_grams <= 1000:
+         return 499
+-    return 499 + ((extra_grams + 499) // 500) * 150
++    return 499 + ((weight_grams - 1000 + 499) // 500) * 150

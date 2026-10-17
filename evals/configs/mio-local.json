@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "label": "mio",
-  "agent_command": "target/debug/mio --cwd {cwd} --no-session --no-context --no-mcp -p {prompt}",
+  "agent_command": "target/debug/mio --cwd {cwd} --shared-limits-dir {cwd}/../coordination --no-session --no-context --no-mcp -p {prompt}",
   "timeout_seconds": 180,
   "tasks_dir": "../tasks/coding",
   "output": "../../target/evals/mio.json",

@@ -56,8 +56,12 @@ def main():
         if result.returncode: errors.append(result.stderr)
     result = subprocess.run([sys.executable, str(ROOT / "scripts/generate-model-catalog.py"), "--check"], capture_output=True, text=True)
     if result.returncode: errors.append(result.stdout + result.stderr)
-    source = (ROOT / "src/bin/mio.rs").read_text()
-    parser = source.split("fn parse(", 1)[1].split("struct CliHost", 1)[0]
+    argument_module = ROOT / "src/bin/mio_cli/args.rs"
+    source = (argument_module if argument_module.exists() else ROOT / "src/bin/mio.rs").read_text()
+    if "fn parse(" not in source:
+        print("FAIL: CLI parser not found; cannot verify flag coverage", file=sys.stderr)
+        return 1
+    parser = source.split("fn parse(", 1)[1].split("#[cfg(test)]", 1)[0]
     flags = set()
     for line in parser.splitlines():
         if re.match(r'\s*"-', line) and "=>" in line:

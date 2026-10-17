@@ -1,0 +1,18 @@
+{
+  "id": "resume-cache-build",
+  "task_set": "mio-workflows-v1",
+  "task_set_version": 2,
+  "title": "Recover a failing build fixture",
+  "language": "python",
+  "covers": [
+    "run the fixture and read the real traceback",
+    "fix the root cause in the build library",
+    "resume from persisted state",
+    "journal evidence of failure before success",
+    "pinned fixture script"
+  ],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 30
+}

@@ -5,6 +5,8 @@ name = "mio-reqwest"
 version = "0.1.0"
 build = false
 exclude = [
+    "/Cargo.toml.orig",
+    "/.cargo_vcs_info.json",
     "tests/middleware_features.rs",
     "tests/fixtures/middleware_features",
 ]
@@ -13,7 +15,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "The bundled reqwest HTTP transport for Rig."
+description = "The bundled reqwest HTTP transport for Mio."
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/Ravomi/Mio"
@@ -102,6 +104,7 @@ default-features = false
 
 [dependencies.mio-http]
 path = "../mio-http"
+version = "=0.1.0"
 
 [dependencies.thiserror]
 version = "2"

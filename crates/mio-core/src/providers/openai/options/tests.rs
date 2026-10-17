@@ -1001,8 +1001,19 @@ fn sent_with_warnings<W>(wire: &W, request: CompletionRequest) -> (Value, Vec<St
 where
     W: Wire<Op = crate::operation::Completion, Payload = crate::wire::Encoded>,
 {
+    let _isolation = crate::test_utils::scoped_tracing_subscriber_guard_blocking();
     let capture = crate::test_utils::TraceCapture::default();
     let body = tracing::subscriber::with_default(capture.subscriber(), || {
+        // This path only prepares/encodes a request; it performs no network I/O.
+        // Follow the shared tracing isolation contract: register the callsites
+        // under this subscriber before rebuilding the global interest cache.
+        let _ = crate::test_utils::provider_extensions::encoded_body(
+            wire,
+            request.clone(),
+            Mode::Unary,
+        );
+        tracing::callsite::rebuild_interest_cache();
+        capture.clear();
         crate::test_utils::provider_extensions::encoded_body(wire, request, Mode::Unary)
     })
     .unwrap_or_else(|error| panic!("{error}"));

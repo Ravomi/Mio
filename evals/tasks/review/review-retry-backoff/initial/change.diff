@@ -1,0 +1,11 @@
+diff --git a/retry.py b/retry.py
+--- a/retry.py
++++ b/retry.py
+@@ -6,6 +6,6 @@
+ def next_backoff_ms(attempt, status_code, max_attempts=3, base_ms=100):
+     if status_code not in RETRYABLE_STATUSES:
+         return None
+-    if attempt >= max_attempts:
++    if attempt > max_attempts:
+         return None
+     return base_ms * (2 ** attempt)

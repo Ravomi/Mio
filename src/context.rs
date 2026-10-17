@@ -1,3 +1,4 @@
+use crate::workspace::workspace_capability::{NodeKind, Root, StatKind};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
@@ -75,7 +76,7 @@ impl ProjectContext {
             let system_md = canonical_cwd.join(".mio").join("SYSTEM.md");
             if system_md.try_exists().map_err(|e| e.to_string())? {
                 let system_md = crate::checked_path(&canonical_cwd, ".mio/SYSTEM.md", false)?;
-                let content = read_bounded_utf8(&system_md, MAX_FILE_READ)?;
+                let content = read_workspace_bounded(&canonical_cwd, &system_md, MAX_FILE_READ)?;
                 append_preamble(
                     &mut preamble,
                     &mut total_preamble_bytes,
@@ -88,7 +89,9 @@ impl ProjectContext {
                 for ctx_rel in &plugin.manifest.context_files {
                     let ctx_path =
                         crate::plugin::validate_relative_subpath(&plugin.root_dir, ctx_rel)?;
-                    if let Some(content) = read_optional(&ctx_path)? {
+                    if ctx_path.try_exists().map_err(|e| e.to_string())? {
+                        let content =
+                            read_workspace_bounded(&canonical_cwd, &ctx_path, MAX_FILE_READ)?;
                         append_preamble(
                             &mut preamble,
                             &mut total_preamble_bytes,
@@ -159,9 +162,9 @@ impl ProjectContext {
             .iter()
             .find(|s| s.name == name)
             .ok_or_else(|| format!("Skill not found: {name}"))?;
-        let canonical_skill =
-            crate::checked_path(&self.cwd, &summary.relative_path.to_string_lossy(), false)?;
-        read_bounded_utf8(&canonical_skill, MAX_FILE_READ)
+        let skill_file = self.cwd.join(&summary.relative_path);
+        let file = open_workspace_file(&self.cwd, &summary.relative_path)?;
+        read_bounded_file(file, &skill_file, MAX_FILE_READ)
     }
 
     pub fn template(&self, name: &str, args: &str) -> Result<String, String> {
@@ -184,7 +187,7 @@ impl ProjectContext {
             }
         }
         let canonical_tmpl = crate::checked_path(&self.cwd, &candidate_rel, false)?;
-        let content = read_bounded_utf8(&canonical_tmpl, MAX_FILE_READ)?;
+        let content = read_workspace_bounded(&self.cwd, &canonical_tmpl, MAX_FILE_READ)?;
         let count = content.matches("$ARGUMENTS").count();
         let expanded_len = content
             .len()
@@ -204,7 +207,7 @@ fn resolve_prompt_input(canonical_cwd: &Path, input: &str) -> Result<String, Str
         && let Ok(path) = crate::checked_path(canonical_cwd, trimmed, false)
         && path.is_file()
     {
-        return read_bounded_utf8(&path, MAX_FILE_READ);
+        return read_workspace_bounded(canonical_cwd, &path, MAX_FILE_READ);
     }
     Ok(input.to_owned())
 }
@@ -243,7 +246,7 @@ pub fn expand_at_files(cwd: &Path, prompt: &str) -> Result<String, String> {
         if !meta.is_file() {
             continue;
         }
-        let content = read_bounded_utf8(&resolved, MAX_FILE_READ)?;
+        let content = read_workspace_bounded(&canonical_cwd, &resolved, MAX_FILE_READ)?;
         let selected = if let Some((start, end)) = line_range {
             let lines: Vec<&str> = content.lines().collect();
             if start == 0 || start > end || start > lines.len().max(1) {
@@ -308,6 +311,23 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
+pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| format!("File {} has no parent directory", canonical.display()))?;
+    let name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("File {} has no UTF-8 name", canonical.display()))?;
+    let file = Root::open(parent)?.target(name)?.open_read()?;
+    read_bounded_file(file, path, max_bytes)
+}
+
+#[cfg(not(unix))]
 pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String, String> {
     if !std::fs::metadata(path)
         .map_err(|e| e.to_string())?
@@ -315,8 +335,15 @@ pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String,
     {
         return Err(format!("Not a regular file: {}", path.display()));
     }
-    let mut file =
-        File::open(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    let file = File::open(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    read_bounded_file(file, path, max_bytes)
+}
+
+pub(crate) fn read_bounded_file(
+    mut file: File,
+    path: &Path,
+    max_bytes: usize,
+) -> Result<String, String> {
     let mut buf = Vec::new();
     let read_bytes = file
         .by_ref()
@@ -334,6 +361,41 @@ pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: usize) -> Result<String,
         .map_err(|e| format!("File {} contains invalid UTF-8: {e}", path.display()))
 }
 
+pub(crate) fn read_workspace_bounded(
+    cwd: &Path,
+    path: &Path,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let relative = path.strip_prefix(cwd).map_err(|_| {
+        format!(
+            "File {} is outside workspace {}",
+            path.display(),
+            cwd.display()
+        )
+    })?;
+    let file = open_workspace_file(cwd, relative)?;
+    read_bounded_file(file, path, max_bytes)
+}
+
+#[cfg(unix)]
+fn read_optional(path: &Path) -> Result<Option<String>, String> {
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| format!("File {} has no parent directory", canonical.display()))?;
+    let name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("File {} has no UTF-8 name", canonical.display()))?;
+    let file = Root::open(parent)?.target(name)?.open_read()?;
+    read_bounded_file(file, path, MAX_FILE_READ).map(Some)
+}
+
+#[cfg(not(unix))]
 fn read_optional(path: &Path) -> Result<Option<String>, String> {
     match std::fs::metadata(path) {
         Ok(_) => read_bounded_utf8(path, MAX_FILE_READ).map(Some),
@@ -364,6 +426,7 @@ fn append_preamble(
 }
 
 fn scan_skills(cwd: &Path) -> Result<Vec<SkillSummary>, String> {
+    let root = Root::open(cwd)?;
     let mut scan_dirs = vec![
         PathBuf::from(".agents").join("skills"),
         PathBuf::from(".mio").join("skills"),
@@ -390,39 +453,36 @@ fn scan_skills(cwd: &Path) -> Result<Vec<SkillSummary>, String> {
         if !full_base.try_exists().map_err(|e| e.to_string())? {
             continue;
         }
-        let base = crate::checked_path(cwd, &rel_base.to_string_lossy(), false)?;
-        let read_dir = std::fs::read_dir(base).map_err(|e| e.to_string())?;
+        let base = root.dir(&rel_base.to_string_lossy())?;
+        let read_dir = base.children()?;
 
         for entry in read_dir {
             visited += 1;
             if visited > 1000 {
                 return Err("Skill discovery exceeds 1000 directory entries".into());
             }
-            let entry = entry.map_err(|e| e.to_string())?;
-            let file_type = entry.file_type().map_err(|e| e.to_string())?;
-            if !file_type.is_dir() {
+            let entry = entry?;
+            if entry.kind() != NodeKind::Dir {
                 continue;
             }
-
-            let skill_file = entry.path().join("SKILL.md");
-            let metadata = match std::fs::symlink_metadata(&skill_file) {
-                Ok(metadata) => metadata,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.to_string()),
-            };
-            if !metadata.is_file() {
+            let skill_dir = entry.open_dir()?;
+            let skill_file = entry.display_path().join("SKILL.md");
+            let target = skill_dir.target("SKILL.md")?;
+            if target.stat()?.kind != StatKind::File {
                 continue;
             }
+            let file = target.open_read()?;
 
-            let skill_content = read_bounded_utf8(&skill_file, MAX_FILE_READ)?;
-            let (name, description) =
-                parse_frontmatter(&skill_content, &entry.file_name().to_string_lossy())?;
-            validate_name(&name)?;
-
+            // Discovery only needs the frontmatter. The full file is read, with
+            // its own size check, only when the user selects this skill.
             let rel_path = skill_file
                 .strip_prefix(cwd)
                 .map_err(|e| format!("Failed strip cwd: {e}"))?
                 .to_path_buf();
+            let skill_content = read_skill_index(file, &skill_file)?;
+            let (name, description) = parse_frontmatter(&skill_content, entry.name())?;
+            validate_name(&name)?;
+
             if skill_map.contains_key(&name) {
                 return Err(format!("Duplicate skill name detected: '{name}'"));
             }
@@ -441,6 +501,46 @@ fn scan_skills(cwd: &Path) -> Result<Vec<SkillSummary>, String> {
         }
     }
     Ok(skill_map.into_values().collect())
+}
+
+fn read_skill_index(mut file: File, path: &Path) -> Result<String, String> {
+    let mut buf = Vec::new();
+    file.by_ref()
+        .take(MAX_FILE_READ as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    // The byte cap can land inside a multibyte character in the body. Its
+    // incomplete suffix is irrelevant to the frontmatter index.
+    let valid = match std::str::from_utf8(&buf) {
+        Ok(_) => buf.len(),
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(error) => {
+            return Err(format!(
+                "File {} contains invalid UTF-8: {error}",
+                path.display()
+            ));
+        }
+    };
+    String::from_utf8(buf[..valid].to_vec())
+        .map_err(|error| format!("File {} contains invalid UTF-8: {error}", path.display()))
+}
+
+#[cfg(unix)]
+fn open_workspace_file(cwd: &Path, relative: &Path) -> Result<File, String> {
+    let root = Root::open(cwd)
+        .map_err(|e| format!("Failed to open workspace root {}: {e}", cwd.display()))?;
+    let relative = relative
+        .to_str()
+        .ok_or_else(|| format!("Workspace path is not UTF-8: {}", relative.display()))?;
+    root.target(relative)
+        .and_then(|target| target.open_read())
+        .map_err(|e| format!("Failed to open workspace file {relative}: {e}"))
+}
+
+#[cfg(not(unix))]
+fn open_workspace_file(cwd: &Path, relative: &Path) -> Result<File, String> {
+    let path = crate::checked_path(cwd, &relative.to_string_lossy(), false)?;
+    File::open(&path).map_err(|e| format!("Failed to open {}: {e}", path.display()))
 }
 
 fn parse_frontmatter(content: &str, fallback: &str) -> Result<(String, String), String> {
@@ -551,6 +651,34 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_rule_read_keeps_symlink_support_and_rejects_fifo() {
+        use std::ffi::CString;
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+        let (dir, shared) = (tempdir().unwrap(), tempdir().unwrap());
+        let shared_rule = shared.path().join("rules.md");
+        fs::write(&shared_rule, "shared rule").unwrap();
+        let link = dir.path().join("AGENTS.md");
+        symlink(&shared_rule, &link).unwrap();
+        assert_eq!(
+            read_optional(&link).unwrap().as_deref(),
+            Some("shared rule")
+        );
+        assert_eq!(
+            read_bounded_utf8(&link, MAX_FILE_READ).unwrap(),
+            "shared rule"
+        );
+
+        fs::remove_file(&link).unwrap();
+        let path = CString::new(link.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `path` is a valid NUL-terminated filename and mkfifo only creates it.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert!(read_optional(&link).is_err());
+        assert!(read_bounded_utf8(&link, MAX_FILE_READ).is_err());
+    }
+
     #[test]
     fn test_skills_and_symlink_escape() {
         let (dir, outside) = (tempdir().unwrap(), tempdir().unwrap());
@@ -578,6 +706,87 @@ mod tests {
         assert!(ctx.select_skill("calc").unwrap().contains("body"));
         assert!(ctx.preamble.contains(".mio/skills/calc/SKILL.md"));
         assert!(!ctx.preamble.contains("---\nbody"));
+    }
+
+    #[test]
+    fn large_skill_body_does_not_block_discovery() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join(".mio/skills/large");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mut content = "---\nname: large\ndescription: Large body\n---\n".to_string();
+        content.push_str(&"x".repeat(MAX_FILE_READ));
+        fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let context = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(context.skills[0].name, "large");
+        assert!(context.preamble.contains("Large body"));
+        assert!(
+            context
+                .select_skill("large")
+                .unwrap_err()
+                .contains("exceeds maximum allowed limit")
+        );
+    }
+
+    #[test]
+    fn unrelated_files_inside_skill_directory_do_not_block_discovery() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join(".mio/skills/calc");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: calc\n---\nbody").unwrap();
+        for index in 0..1001 {
+            fs::write(skill_dir.join(format!("unrelated-{index}")), "").unwrap();
+        }
+
+        let context = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(context.skills.len(), 1);
+        assert!(context.select_skill("calc").unwrap().contains("body"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_skill_rejects_replaced_file_and_directory_links() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, outside) = (tempdir().unwrap(), tempdir().unwrap());
+        let skill_dir = dir.path().join(".mio/skills/calc");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        fs::write(&skill_file, "---\nname: calc\n---\ninside").unwrap();
+        let outside_file = outside.path().join("SKILL.md");
+        fs::write(&outside_file, "outside secret").unwrap();
+        let context = ProjectContext::load(dir.path()).unwrap();
+
+        fs::remove_file(&skill_file).unwrap();
+        symlink(&outside_file, &skill_file).unwrap();
+        assert!(context.select_skill("calc").is_err());
+
+        fs::remove_file(&skill_file).unwrap();
+        fs::remove_dir(&skill_dir).unwrap();
+        symlink(outside.path(), &skill_dir).unwrap();
+        assert!(context.select_skill("calc").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_context_read_rejects_replaced_parent_directory() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, outside) = (tempdir().unwrap(), tempdir().unwrap());
+        let mio_dir = dir.path().join(".mio");
+        fs::create_dir(&mio_dir).unwrap();
+        fs::write(mio_dir.join("SYSTEM.md"), "inside").unwrap();
+        fs::write(outside.path().join("SYSTEM.md"), "outside secret").unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let file = cwd.join(".mio/SYSTEM.md");
+        assert_eq!(
+            read_workspace_bounded(&cwd, &file, MAX_FILE_READ).unwrap(),
+            "inside"
+        );
+
+        fs::rename(&mio_dir, dir.path().join("old-mio")).unwrap();
+        symlink(outside.path(), &mio_dir).unwrap();
+        assert!(read_workspace_bounded(&cwd, &file, MAX_FILE_READ).is_err());
     }
 
     #[test]

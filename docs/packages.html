@@ -2,10 +2,11 @@
 <html lang="zh-CN" data-theme="dark" data-theme-mode="dark">
 <head>
   <meta charset="UTF-8">
+<meta name="color-scheme" content="dark light">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>插件目录 · Mio</title>
   <meta name="description" content="Mio 官方插件目录与扩展社区 (Ravomi/mio-plugins)。探索并安装遵循 mio-plugin.json 标准的 Skills、提示词模板、声明式工具与 MCP 服务。">
-  <meta name="theme-color" content="#1b1d20">
+  <meta name="theme-color" content="#0d0c16">
 
   <meta property="og:title" content="插件目录 · Mio">
   <meta property="og:description" content="Skills, prompt templates, declarative tools, and MCP servers for Mio Coding Agent. Install with mio --plugin-install <plugin>.">
@@ -19,12 +20,13 @@
 
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="diffuse.css">
 
   <script>
     document.documentElement.classList.add('js');
     (function () {
       try {
-        var stored = localStorage.getItem('mio:theme');
+        var stored = localStorage.getItem('mio:theme-v2');
         var mode = (stored === 'light' || stored === 'dark') ? stored : 'dark';
         document.documentElement.dataset.theme = mode;
         document.documentElement.dataset.themeMode = mode;
@@ -49,7 +51,7 @@
         <a href="packages.html" aria-current="page" style="color: var(--ink);" data-zh="插件目录" data-en="Packages">插件目录</a>
         <a href="https://github.com/Ravomi/mio-plugins" target="_blank" rel="noopener noreferrer">Ravomi/mio-plugins</a>
         <button type="button" id="langToggleBtn" aria-label="切换语言">EN</button>
-        <button type="button" id="themeToggleBtn" aria-label="切换深浅外观" data-zh="浅灰台面" data-en="Light slate">浅灰台面</button>
+        <button type="button" id="themeToggleBtn" aria-label="切换深浅外观" data-zh="浅色" data-en="Light">浅色</button>
       </nav>
     </div>
   </header>

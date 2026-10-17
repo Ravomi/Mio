@@ -1,0 +1,12 @@
+diff --git a/labels.py b/labels.py
+--- a/labels.py
++++ b/labels.py
+@@ -2,7 +2,4 @@
+ 
+ 
+ def labels(items):
+-    result = []
+-    for item in items:
+-        result.append(item.name.strip().lower())
+-    return result
++    return [item.name.strip().lower() for item in items]

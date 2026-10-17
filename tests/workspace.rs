@@ -1,6 +1,10 @@
 use mio_coding_agent::{
-    Arguments, Host, HostFuture, Workspace, checked_path, workspace::MAX_READ_OUTPUT_BYTES,
+    Arguments, EditTool, Host, HostFuture, ReadTool, Workspace, checked_path,
+    checkpoint::CheckpointStore,
+    workspace::{EditArgs, MAX_READ_OUTPUT_BYTES},
 };
+use mio_core::tool::PortableTool;
+use sha2::{Digest, Sha256};
 use std::{fs::File, io::Write, path::Path, sync::Arc};
 
 struct DummyHost;
@@ -9,6 +13,17 @@ impl Host for DummyHost {
         Box::pin(async { Ok(String::new()) })
     }
     fn on_event(&self, _event: mio_coding_agent::AgentEvent) {}
+}
+
+struct SteeringHost;
+impl Host for SteeringHost {
+    fn shell(&self, _cmd: &str, _cwd: &Path) -> HostFuture<Result<String, String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+    fn on_event(&self, _event: mio_coding_agent::AgentEvent) {}
+    fn poll_steering(&self) -> Option<String> {
+        Some("请先检查预览".into())
+    }
 }
 
 #[tokio::test]
@@ -60,6 +75,360 @@ async fn test_legacy_json_argument_parsing() {
     assert_eq!(parsed.operation, "read");
     assert_eq!(parsed.path.as_deref(), Some("foo.txt"));
     assert_eq!(parsed.value.as_deref(), Some("bar"));
+}
+
+#[tokio::test]
+async fn edit_hash_anchor_rejects_stale_content_even_when_old_text_still_matches() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("source.txt");
+    let original = "before\ntarget\nafter\n";
+    std::fs::write(&path, original).unwrap();
+    let original_hash = format!("{:x}", Sha256::digest(original.as_bytes()));
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost)).unwrap();
+    let page = ws
+        .execute(Arguments {
+            include_sha256: Some(true),
+            ..Arguments::read_paged("source.txt", 2, 1)
+        })
+        .await
+        .unwrap();
+    assert!(page.starts_with(&format!("[sha256: {original_hash}]\n")));
+    assert!(page.contains("target"));
+
+    let response = ws
+        .execute(Arguments::edit_with_hash(
+            "source.txt",
+            "target",
+            "changed",
+            original_hash.to_uppercase(),
+        ))
+        .await
+        .unwrap();
+    assert!(response.contains("文件已成功编辑"));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "before\nchanged\nafter\n"
+    );
+
+    // The old text still matches uniquely after an external edit. The hash
+    // guards the entire file version, not merely the selected substring.
+    std::fs::write(&path, "external\nchanged\nafter\n").unwrap();
+    let stale = ws
+        .execute(Arguments::edit_with_hash(
+            "source.txt",
+            "changed",
+            "replacement",
+            original_hash,
+        ))
+        .await
+        .unwrap_err();
+    assert!(stale.contains("expected_sha256"), "{stale}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "external\nchanged\nafter\n"
+    );
+
+    let invalid = ws
+        .execute(Arguments::edit_with_hash(
+            "source.txt",
+            "changed",
+            "x",
+            "bad",
+        ))
+        .await
+        .unwrap_err();
+    assert!(invalid.contains("64 位"), "{invalid}");
+    let mut wrong_operation = Arguments::read("source.txt");
+    wrong_operation.expected_sha256 = Some("0".repeat(64));
+    assert!(
+        ws.execute(wrong_operation)
+            .await
+            .unwrap_err()
+            .contains("仅适用于 edit")
+    );
+    let mut wrong_operation = Arguments::read("source.txt");
+    wrong_operation.expected_after_sha256 = Some("0".repeat(64));
+    assert!(
+        ws.execute(wrong_operation)
+            .await
+            .unwrap_err()
+            .contains("仅适用于 edit")
+    );
+    let mut byte_page = Arguments::read("source.txt");
+    byte_page.byte_offset = Some(0);
+    byte_page.include_sha256 = Some(true);
+    let byte_page: serde_json::Value =
+        serde_json::from_str(&ws.execute(byte_page).await.unwrap()).unwrap();
+    assert_eq!(
+        byte_page["sha256"],
+        format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()))
+    );
+}
+
+#[tokio::test]
+async fn read_hash_header_stays_within_the_existing_output_budget() {
+    let folder = tempfile::tempdir().unwrap();
+    let body = "line\n".repeat(1000);
+    std::fs::write(folder.path().join("many.txt"), &body).unwrap();
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost))
+        .unwrap()
+        .with_read_output_limit_bytes(256);
+    let page = ws
+        .execute(Arguments {
+            include_sha256: Some(true),
+            ..Arguments::read("many.txt")
+        })
+        .await
+        .unwrap();
+    assert!(page.starts_with("[sha256: "));
+    assert!(page.contains("[TRUNCATED:"));
+    assert!(page.len() <= 256, "{}", page.len());
+}
+
+#[tokio::test]
+async fn standalone_edit_tool_passes_the_hash_anchor_to_workspace() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("source.txt");
+    std::fs::write(&path, "target").unwrap();
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost)).unwrap();
+    assert!(
+        PortableTool::parameters(&ReadTool(ws.clone()))["properties"]["include_sha256"].is_object()
+    );
+    let tool = EditTool(ws);
+    assert!(PortableTool::parameters(&tool)["properties"]["expected_sha256"].is_object());
+    assert!(PortableTool::parameters(&tool)["properties"]["expected_after_sha256"].is_object());
+    assert!(PortableTool::parameters(&tool)["properties"]["preview"].is_object());
+    let args = EditArgs {
+        path: "source.txt".into(),
+        old_text: "target".into(),
+        new_text: "changed".into(),
+        expected_sha256: Some("0".repeat(64)),
+        expected_after_sha256: None,
+        preview: None,
+    };
+    let result = PortableTool::call(&tool, args).await.unwrap();
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected_sha256")
+    );
+    let mismatch = PortableTool::call(
+        &tool,
+        EditArgs {
+            path: "source.txt".into(),
+            old_text: "target".into(),
+            new_text: "changed".into(),
+            expected_sha256: Some(format!("{:x}", Sha256::digest(b"target"))),
+            expected_after_sha256: Some("0".repeat(64)),
+            preview: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        mismatch["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected_after_sha256")
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "target");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "target");
+
+    let preview = PortableTool::call(
+        &tool,
+        EditArgs {
+            path: "source.txt".into(),
+            old_text: "target".into(),
+            new_text: "changed".into(),
+            expected_sha256: Some(format!("{:x}", Sha256::digest(b"target"))),
+            expected_after_sha256: None,
+            preview: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(preview["output"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["status"], "preview");
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("source.txt")).unwrap(),
+        "target"
+    );
+}
+
+#[tokio::test]
+async fn edit_preview_reports_hashes_without_writing_or_recording_a_checkpoint() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("source.txt");
+    let original = "one\ntarget\nthree\n";
+    let modified = "one\nchanged\nthree\n";
+    std::fs::write(&path, original).unwrap();
+    let before_sha256 = format!("{:x}", Sha256::digest(original.as_bytes()));
+    let checkpoints = Arc::new(CheckpointStore::open(folder.path()).unwrap());
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost))
+        .unwrap()
+        .with_checkpoints(checkpoints.clone());
+    let mut args = Arguments::preview_edit("source.txt", "target", "changed");
+    args.expected_sha256 = Some(before_sha256.clone());
+    let preview: serde_json::Value =
+        serde_json::from_str(&ws.execute(args).await.unwrap()).unwrap();
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["path"], "source.txt");
+    assert_eq!(preview["start_line"], 2);
+    assert_eq!(preview["before_sha256"], before_sha256);
+    assert_eq!(
+        preview["after_sha256"],
+        format!("{:x}", Sha256::digest(modified.as_bytes()))
+    );
+    assert_eq!(preview["before_bytes"], original.len());
+    assert_eq!(preview["after_bytes"], modified.len());
+    assert_eq!(preview["diff_truncated"], false);
+    assert!(preview["diff"].as_str().unwrap().contains("+changed"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert!(checkpoints.list().unwrap().is_empty());
+
+    std::fs::write(&path, "external\ntarget\nthree\n").unwrap();
+    let mut stale = Arguments::preview_edit("source.txt", "target", "changed");
+    stale.expected_sha256 = Some(before_sha256);
+    assert!(
+        ws.execute(stale)
+            .await
+            .unwrap_err()
+            .contains("expected_sha256")
+    );
+    assert!(checkpoints.list().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn edit_from_preview_requires_the_same_input_and_exact_previewed_output() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("source.txt");
+    let original = "one\ntarget\nthree\n";
+    let modified = "one\nchanged\nthree\n";
+    std::fs::write(&path, original).unwrap();
+    let checkpoints = Arc::new(CheckpointStore::open(folder.path()).unwrap());
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost))
+        .unwrap()
+        .with_checkpoints(checkpoints.clone());
+    let preview: serde_json::Value = serde_json::from_str(
+        &ws.execute(Arguments::preview_edit("source.txt", "target", "changed"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let before = preview["before_sha256"].as_str().unwrap();
+    let after = preview["after_sha256"].as_str().unwrap();
+
+    let changed_output =
+        Arguments::edit_from_preview("source.txt", "target", "different", before, after);
+    assert!(
+        ws.execute(changed_output)
+            .await
+            .unwrap_err()
+            .contains("expected_after_sha256")
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert!(checkpoints.list().unwrap().is_empty());
+
+    let mut no_input_hash = Arguments::edit("source.txt", "target", "changed");
+    no_input_hash.expected_after_sha256 = Some(after.to_owned());
+    assert!(
+        ws.execute(no_input_hash)
+            .await
+            .unwrap_err()
+            .contains("expected_sha256")
+    );
+    assert!(
+        ws.execute(Arguments::edit_from_preview(
+            "source.txt",
+            "target",
+            "changed",
+            before,
+            "short",
+        ))
+        .await
+        .unwrap_err()
+        .contains("64 位")
+    );
+
+    std::fs::write(&path, "external\ntarget\nthree\n").unwrap();
+    assert!(
+        ws.execute(Arguments::edit_from_preview(
+            "source.txt",
+            "target",
+            "changed",
+            before,
+            after,
+        ))
+        .await
+        .unwrap_err()
+        .contains("expected_sha256")
+    );
+    assert!(checkpoints.list().unwrap().is_empty());
+
+    std::fs::write(&path, original).unwrap();
+    ws.execute(Arguments::edit_from_preview(
+        "source.txt",
+        "target",
+        "changed",
+        before.to_uppercase(),
+        after.to_uppercase(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), modified);
+    assert_eq!(checkpoints.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn edit_preview_bounds_a_long_single_line_diff_and_rejects_other_operations() {
+    let folder = tempfile::tempdir().unwrap();
+    let original = "界".repeat(50_000);
+    std::fs::write(folder.path().join("long.txt"), &original).unwrap();
+    let ws = Workspace::new(folder.path(), Arc::new(DummyHost)).unwrap();
+    let output = ws
+        .execute(Arguments::preview_edit(
+            "long.txt",
+            &original,
+            "海".repeat(50_000),
+        ))
+        .await
+        .unwrap();
+    let preview: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(output.len() <= 16 * 1024);
+    assert_eq!(preview["diff_truncated"], true);
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("long.txt")).unwrap(),
+        original
+    );
+
+    let mut invalid = Arguments::read("long.txt");
+    invalid.preview = Some(true);
+    assert!(
+        ws.execute(invalid)
+            .await
+            .unwrap_err()
+            .contains("仅适用于 edit")
+    );
+}
+
+#[tokio::test]
+async fn edit_preview_keeps_a_concurrent_steering_message_in_valid_json() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("source.txt"), "target").unwrap();
+    let ws = Workspace::new(folder.path(), Arc::new(SteeringHost)).unwrap();
+    let output = ws
+        .execute(Arguments::preview_edit("source.txt", "target", "changed"))
+        .await
+        .unwrap();
+    let preview: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["user_steering_message"], "请先检查预览");
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("source.txt")).unwrap(),
+        "target"
+    );
 }
 
 #[tokio::test]
@@ -547,6 +916,13 @@ async fn test_sync_approve_tool_deny_blocks_write() {
     assert!(res.is_err());
     assert_eq!(res.unwrap_err(), "sync denial");
     assert!(!file_path.exists());
+
+    std::fs::write(&file_path, "target").unwrap();
+    let preview = workspace
+        .execute(Arguments::preview_edit("deny.txt", "target", "changed"))
+        .await;
+    assert_eq!(preview.unwrap_err(), "sync denial");
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "target");
 }
 
 #[tokio::test]

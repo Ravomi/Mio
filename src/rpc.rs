@@ -11,6 +11,66 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 /// Hard limit for one JSONL input line in `--mode rpc`.
 pub const MAX_RPC_LINE_BYTES: usize = 1024 * 1024;
 
+/// Highest event envelope schema version this server can emit.
+///
+/// A client selects a version through the `initialize` command; a client that
+/// never sends `initialize` keeps the legacy envelope (no correlation fields),
+/// but every emitted document still carries `schemaVersion`.
+pub const RPC_SCHEMA_VERSION: u64 = 1;
+
+/// Envelope versions the server supports, in ascending order.
+pub const RPC_ENVELOPE_VERSIONS: [u64; 1] = [1];
+
+/// Discover the current RPC contract without starting a model request.
+///
+/// This versions the discovery document, not every legacy event payload.
+/// Missing discovery on an older server means capabilities are unknown.
+/// `schemaVersion` / `envelopeVersions` are additive; `eventEnvelope` stays
+/// `legacy` until a client negotiates a newer envelope with `initialize`.
+pub fn protocol_info() -> Value {
+    json!({
+        "name": "mio-jsonl-rpc",
+        "discoveryVersion": 1,
+        "eventEnvelope": "legacy",
+        "schemaVersion": RPC_SCHEMA_VERSION,
+        "envelopeVersions": RPC_ENVELOPE_VERSIONS,
+        "capabilities": {
+            "steering": true,
+            "followUp": true,
+            "asyncApproval": true,
+            "dedupKey": true,
+            "recoveryView": true,
+            "pinnedContext": true,
+            "contextCompactionAudit": true,
+            "eventReplay": false,
+            "automaticSideEffectReplay": false,
+            "toolLifecycle": true,
+            "imageInput": true,
+            "imageSteering": false,
+            "reasoningEvents": true,
+            "initialize": true,
+        },
+        "correlation": {
+            "sessionId": true,
+            "runId": true,
+            "turnId": true,
+            "toolCallId": true,
+            "subagentId": true,
+            "parentRunId": true,
+            "note": "Envelope v1 fills these fields from real run observations: sessionId from the host's persisted session, runId/turnId from the run's own UUID and engine turn, toolCallId from the model's own tool-call id (never the approval callId), and subagentId/parentRunId from the delegated child's stamped identity. A field the engine cannot truthfully supply stays null.",
+        },
+        "limits": {
+            "inputLineBytes": MAX_RPC_LINE_BYTES,
+            "messageBytes": 65536,
+            "steeringQueue": 64,
+            "followUpQueue": 64,
+            "eventQueue": 256,
+            "eventBytes": 1048576,
+            "eventQueueBytes": 8388608,
+        },
+    })
+}
+
 /// Failure while reading a bounded input line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineReadError {
@@ -183,7 +243,18 @@ pub struct ModelCatalogEntry {
     pub base_url: String,
     pub env_var: String,
     pub supports_thinking: bool,
+    /// Legacy credential/local-preset hint; never a reachability/auth verdict.
     pub configured: bool,
+    /// Credential presence only; local unauthenticated presets use None.
+    pub credential_present: Option<bool>,
+    /// Live states are unknown until explicitly probed.
+    pub reachable: Option<bool>,
+    pub authenticated: Option<bool>,
+    pub protocol_supported: Option<bool>,
+    #[serde(default)]
+    pub capability_source: String,
+    #[serde(default)]
+    pub capability_snapshot_sha256: String,
 }
 
 struct ProviderPreset {
@@ -239,7 +310,12 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
         name: "deepseek",
         base_url: "https://api.deepseek.com/v1",
         env_vars: &["DEEPSEEK_API_KEY", "MIO_API_KEY"],
-        models: &[("deepseek-chat", false), ("deepseek-reasoner", true)],
+        models: &[
+            ("deepseek-chat", false),
+            ("deepseek-reasoner", true),
+            ("deepseek-flash", true),
+            ("deepseek-v4-pro", true),
+        ],
     },
     ProviderPreset {
         name: "openrouter",
@@ -286,6 +362,11 @@ pub fn list_catalog_models(search: Option<&str>) -> Vec<ModelCatalogEntry> {
         .and_then(|dir| crate::profile::summary(&dir).ok().flatten())
         .is_some();
 
+    use sha2::{Digest, Sha256};
+    let snapshot = format!(
+        "{:x}",
+        Sha256::digest(mio_core::catalog::Catalog::builtin_source().as_bytes())
+    );
     let mut out = Vec::new();
     for preset in PROVIDER_PRESETS {
         let configured = if preset.name == "antigravity" {
@@ -299,7 +380,21 @@ pub fn list_catalog_models(search: Option<&str>) -> Vec<ModelCatalogEntry> {
                 .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
         };
         let primary_env = preset.env_vars.first().copied().unwrap_or("MIO_API_KEY");
-        for &(model, supports_thinking) in preset.models {
+        for &(model, adapter_thinking) in preset.models {
+            let vendor = if preset.name == "google" {
+                "gcp.gemini"
+            } else {
+                preset.name
+            };
+            let spec = mio_core::providers::registry::ProviderId::catalog(vendor)
+                .and_then(|provider| mio_core::catalog::Catalog::builtin().get(provider, model));
+            let supports_thinking =
+                spec.map_or(adapter_thinking, |model| model.reasoning.supported);
+            let capability_source = if spec.is_some() {
+                "mio-core/catalog/models.json"
+            } else {
+                "provider-preset (not live verified)"
+            };
             if let Some(ref q) = query
                 && !q.is_empty()
                 && !preset.name.to_ascii_lowercase().contains(q)
@@ -314,6 +409,16 @@ pub fn list_catalog_models(search: Option<&str>) -> Vec<ModelCatalogEntry> {
                 env_var: primary_env.to_owned(),
                 supports_thinking,
                 configured,
+                credential_present: if preset.name == "ollama" {
+                    None
+                } else {
+                    Some(configured)
+                },
+                reachable: None,
+                authenticated: None,
+                protocol_supported: None,
+                capability_source: capability_source.into(),
+                capability_snapshot_sha256: snapshot.clone(),
             });
         }
     }
@@ -345,10 +450,19 @@ pub fn resolve_provider_endpoint(
             let key = read_first_env(&["DEEPSEEK_API_KEY", "MIO_API_KEY"]);
             Ok((Provider::Deepseek, base, key))
         }
-        "custom" => {
+        "custom" | "custom-responses" => {
             let base = explicit_base.unwrap_or_else(|| "https://api.openai.com/v1".into());
-            let key = read_first_env(&["MIO_API_KEY", "OPENAI_API_KEY"]);
-            Ok((Provider::Custom, base, key))
+            let provider = if normalized == "custom-responses" {
+                Provider::CustomResponses
+            } else {
+                Provider::Custom
+            };
+            let key = if provider == Provider::CustomResponses {
+                read_first_env(&["SUB2API_API_KEY", "MIO_API_KEY", "OPENAI_API_KEY"])
+            } else {
+                read_first_env(&["MIO_API_KEY", "OPENAI_API_KEY"])
+            };
+            Ok((provider, base, key))
         }
         other => {
             if let Some(preset) = PROVIDER_PRESETS.iter().find(|p| p.name == other) {
@@ -368,7 +482,7 @@ pub fn resolve_provider_endpoint(
                 Ok((provider, base, key))
             } else {
                 Err(format!(
-                    "CLI provider must be custom, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, or ollama (got '{provider_name}')"
+                    "CLI provider must be custom, custom-responses, deepseek, antigravity, openai, anthropic, google, openrouter, groq, xai, mistral, or ollama (got '{provider_name}')"
                 ))
             }
         }
@@ -388,22 +502,73 @@ fn read_first_env(keys: &[&str]) -> String {
 
 /// Incoming JSONL command in `--mode rpc`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RpcImage {
+    pub mime_type: String,
+    pub data_base64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl RpcImage {
+    pub fn to_image(&self) -> Result<mio_core::message::Image, String> {
+        use mio_core::message::{DocumentSourceKind, Image, ImageDetail, ImageMediaType};
+        let media_type =
+            match self.mime_type.as_str() {
+                "image/png" => ImageMediaType::PNG,
+                "image/jpeg" => ImageMediaType::JPEG,
+                "image/gif" => ImageMediaType::GIF,
+                "image/webp" => ImageMediaType::WEBP,
+                _ => return Err(
+                    "Image input MIME type must be image/png, image/jpeg, image/gif or image/webp"
+                        .into(),
+                ),
+            };
+        let detail = match self.detail.as_deref() {
+            None => None,
+            Some("auto") => Some(ImageDetail::Auto),
+            Some("low") => Some(ImageDetail::Low),
+            Some("high") => Some(ImageDetail::High),
+            Some(_) => return Err("Image detail must be auto, low or high".into()),
+        };
+        Ok(Image {
+            data: DocumentSourceKind::Base64(self.data_base64.clone()),
+            media_type: Some(media_type),
+            detail,
+            native: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RpcCommand {
     Prompt {
         #[serde(default)]
         id: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<RpcImage>,
+        /// 显式任务 key：相同 key（活动/排队/终态）不重复执行，返回已有任务标识。
+        #[serde(default)]
+        dedup_key: Option<String>,
     },
     Steer {
         #[serde(default)]
         id: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<RpcImage>,
     },
     FollowUp {
         #[serde(default)]
         id: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<RpcImage>,
+        /// 显式任务 key，语义与 [`RpcCommand::Prompt`] 相同。
+        #[serde(default)]
+        dedup_key: Option<String>,
     },
     Abort {
         #[serde(default)]
@@ -418,6 +583,12 @@ pub enum RpcCommand {
     GetState {
         #[serde(default)]
         id: Option<String>,
+    },
+    /// Atomically replace the host-owned pinned registry while idle.
+    SetPinnedContext {
+        #[serde(default)]
+        id: Option<String>,
+        context: crate::context_memory::PinnedContext,
     },
     SetModel {
         #[serde(default)]
@@ -451,6 +622,21 @@ pub enum RpcCommand {
         request_id: String,
         approved: bool,
     },
+    /// One-shot capability negotiation.
+    ///
+    /// `schema_versions` lists the envelope versions the client accepts.
+    /// `protocol_versions` is accepted as an alias. The server selects the
+    /// highest common version, or rejects the negotiation when the sets are
+    /// disjoint. A rejected negotiation never silently falls back to a newer
+    /// envelope and blocks new task starts until a supported version is offered.
+    Initialize {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default, alias = "protocol_versions")]
+        schema_versions: Vec<u64>,
+        #[serde(default)]
+        capabilities: Vec<String>,
+    },
 }
 
 pub fn rpc_response(command: &str, id: Option<&str>, success: bool, data: Value) -> Value {
@@ -478,7 +664,35 @@ mod tests {
             cmd,
             RpcCommand::Prompt {
                 id: Some("req-1".into()),
-                message: "fix bug".into()
+                message: "fix bug".into(),
+                images: vec![],
+                dedup_key: None,
+            }
+        );
+
+        let keyed: RpcCommand = serde_json::from_str(
+            r#"{"type":"prompt","id":"req-2","message":"fix bug","dedup_key":"job-1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            keyed,
+            RpcCommand::Prompt {
+                id: Some("req-2".into()),
+                message: "fix bug".into(),
+                images: vec![],
+                dedup_key: Some("job-1".into()),
+            }
+        );
+        let keyed_follow_up: RpcCommand =
+            serde_json::from_str(r#"{"type":"follow_up","message":"next","dedup_key":"job-2"}"#)
+                .unwrap();
+        assert_eq!(
+            keyed_follow_up,
+            RpcCommand::FollowUp {
+                id: None,
+                message: "next".into(),
+                images: vec![],
+                dedup_key: Some("job-2".into()),
             }
         );
 
@@ -488,9 +702,50 @@ mod tests {
             steer,
             RpcCommand::Steer {
                 id: None,
-                message: "use BTreeMap instead".into()
+                message: "use BTreeMap instead".into(),
+                images: vec![],
             }
         );
+
+        let initialize: RpcCommand = serde_json::from_str(
+            r#"{"type":"initialize","id":"i1","schema_versions":[1],"capabilities":["steering"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            initialize,
+            RpcCommand::Initialize {
+                id: Some("i1".into()),
+                schema_versions: vec![1],
+                capabilities: vec!["steering".into()],
+            }
+        );
+        // `protocol_versions` is an accepted alias for the same field.
+        let aliased: RpcCommand =
+            serde_json::from_str(r#"{"type":"initialize","protocol_versions":[1,2]}"#).unwrap();
+        assert_eq!(
+            aliased,
+            RpcCommand::Initialize {
+                id: None,
+                schema_versions: vec![1, 2],
+                capabilities: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn discovery_advertises_schema_version_and_negotiation() {
+        let info = protocol_info();
+        assert_eq!(info["discoveryVersion"], 1);
+        assert_eq!(info["eventEnvelope"], "legacy");
+        assert_eq!(info["schemaVersion"], RPC_SCHEMA_VERSION);
+        assert_eq!(info["envelopeVersions"], json!(RPC_ENVELOPE_VERSIONS));
+        assert_eq!(info["capabilities"]["initialize"], true);
+        assert_eq!(info["correlation"]["sessionId"], true);
+        assert_eq!(info["correlation"]["runId"], true);
+        assert_eq!(info["correlation"]["turnId"], true);
+        assert_eq!(info["correlation"]["toolCallId"], true);
+        assert_eq!(info["correlation"]["subagentId"], true);
+        assert_eq!(info["correlation"]["parentRunId"], true);
     }
 
     #[test]

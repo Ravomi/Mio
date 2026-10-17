@@ -1,0 +1,17 @@
+diff --git a/service.py b/service.py
+--- a/service.py
++++ b/service.py
+@@ -4,11 +4,11 @@ _cache = {}
+ 
+ 
+ def load_account(store, tenant_id, account_id):
+-    key = (tenant_id, account_id)
++    key = account_id
+     if key not in _cache:
+         _cache[key] = store[(tenant_id, account_id)]
+     return _cache[key]
+ 
+ 
+ def can_enter(account):
+-    return account.status in ("active", "trial")
++    return account.status == "active" or "trial"

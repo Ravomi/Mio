@@ -25,6 +25,15 @@ pub struct Session {
     pub created: u64,
     pub updated: u64,
     pub history: Vec<crate::Message>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::context_memory::PinnedContext::is_empty"
+    )]
+    pub pinned_context: crate::context_memory::PinnedContext,
+    /// Most recent explicit session compaction. Request-level audits belong to
+    /// the Host observation/journal channel instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compaction_loss: Option<crate::compact::CompactionLossReport>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -62,6 +71,8 @@ impl Session {
             created: now,
             updated: now,
             history: Vec::new(),
+            pinned_context: crate::context_memory::PinnedContext::default(),
+            last_compaction_loss: None,
         })
     }
 
@@ -90,13 +101,51 @@ impl Session {
             created: now,
             updated: now,
             history: self.history.clone(),
+            pinned_context: self.pinned_context.clone(),
+            last_compaction_loss: self.last_compaction_loss.clone(),
         }
+    }
+
+    /// Prepare a compacted candidate in memory; callers still save atomically
+    /// before replacing their live session.
+    pub fn compact(
+        &mut self,
+        keep_recent: usize,
+        focus: Option<&str>,
+    ) -> crate::compact::CompactionStats {
+        let (history, mut stats) = crate::compact::compact_history_with_pinned(
+            &self.history,
+            keep_recent,
+            focus,
+            Some(&self.pinned_context),
+        );
+        if let Some(report) = stats.loss_report.as_mut() {
+            report.pinned_items_preserved = (!self.pinned_context.is_empty()).then_some(true);
+            self.last_compaction_loss = Some(report.clone());
+        }
+        self.history = history;
+        stats
     }
 
     pub fn save(&mut self, path: &Path) -> Result<(), String> {
         let mut snapshot = self.clone();
         snapshot.updated = now_secs().max(snapshot.created);
         snapshot.validate()?;
+        // Hold the shared workspace activity + output leases for the whole
+        // snapshot-to-disk interval. When `.mio/outputs` does not exist this is a
+        // no-op that creates nothing; when an exclusive cleanup lease is active the
+        // save is refused before any temp file is created, keeping the previous
+        // file intact. The same lease set is used for the external source
+        // registration below.
+        let output_guard =
+            match crate::shell::output_store::OutputStore::guard_existing(self.cwd.as_path()) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    return Err(format!(
+                        "Session save refused: the workspace output lease is unavailable: {error}"
+                    ));
+                }
+            };
         let parent_dir = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -132,6 +181,28 @@ impl Session {
         temp.as_file()
             .sync_all()
             .map_err(|e| format!("Failed to sync: {e}"))?;
+        // A session saved outside `.mio/sessions` can hold output references that
+        // the standard cleanup scan cannot see. Register the source *before*
+        // publishing the new file, while still holding the shared activity lease:
+        // a registration failure (for example a full bounded registry) must leave
+        // the previous session snapshot intact instead of publishing an update
+        // whose references cannot be enumerated. The pending path resolves to the
+        // same canonical target the published file will have.
+        if output_guard.is_some() {
+            let store = crate::shell::output_store::OutputStore::open(self.cwd.as_path())
+                .map_err(|error| {
+                    format!(
+                        "Session save refused: its output reference source could not be registered: {error}"
+                    )
+                })?;
+            store
+                .register_pending_reference_source(path)
+                .map_err(|error| {
+                    format!(
+                        "Session save refused: its output reference source could not be registered: {error}"
+                    )
+                })?;
+        }
         temp.persist(path)
             .map_err(|e| format!("Failed to persist to {}: {e}", path.display()))?;
         self.updated = snapshot.updated;
@@ -185,6 +256,7 @@ impl Session {
 
     /// List at most `limit` sessions, newest file first.
     ///
+    /// An incomplete scan fails rather than presenting a partial set as newest.
     /// Every directory entry is inspected and ordered by modification time
     /// *before* the limit is applied, so the newest session is always a
     /// candidate even in directories larger than the limit. This replaces the
@@ -194,7 +266,12 @@ impl Session {
         directory: &Path,
         limit: usize,
     ) -> Result<(Vec<SessionMetadata>, Vec<String>), String> {
-        let (candidates, mut warnings, _truncated) = Self::scan(directory)?;
+        let (candidates, mut warnings, truncated) = Self::scan(directory)?;
+        if truncated {
+            return Err(format!(
+                "Cannot list or select the latest session: directory exceeds {MAX_SESSION_SCAN} entries; use an explicit session path"
+            ));
+        }
         let total = candidates.len();
         let mut list = Vec::new();
         for (_, path) in candidates.iter().take(limit) {
@@ -598,5 +675,19 @@ mod tests {
 
         // Keep s1 alive as an explicit reference to the parsed session.
         assert_ne!(s1.id, s2.id);
+    }
+
+    #[test]
+    fn oversized_scan_refuses_latest_and_preserves_explicit_path_access() {
+        let dir = tempdir().unwrap();
+        let saved = save_named(dir.path(), "selected.json", "selected", 10);
+        for index in 0..MAX_SESSION_SCAN {
+            fs::write(dir.path().join(format!("entry-{index}")), b"").unwrap();
+        }
+        let error = Session::list_with_limit(dir.path(), 1).unwrap_err();
+        assert!(error.contains("explicit session path"), "{error}");
+        assert!(Session::resolve(dir.path(), dir.path(), "selected").is_err());
+        let path = Session::resolve(dir.path(), dir.path(), "selected.json").unwrap();
+        assert_eq!(Session::load(&path).unwrap().id, saved.id);
     }
 }

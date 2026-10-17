@@ -7,8 +7,7 @@
 //! 子进程模式复用同一个测试二进制：父进程以 `--exact shared_limits_child_entrypoint`
 //! 重新执行自身，并通过环境变量下发动作；不使用任何真实模型服务。
 
-#[path = "../src/shared_limits.rs"]
-mod shared_limits;
+use mio_coding_agent::shared_limits;
 
 use shared_limits::{SharedLimits, SharedLimitsConfig, SharedLimitsError};
 use std::{
@@ -1471,4 +1470,125 @@ async fn workspace_registry_does_not_leak_raw_path() {
         !registry.contains("SECRET"),
         "registry leaked raw path text"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 跨进程预算账本（共享 root）
+// ---------------------------------------------------------------------------
+
+/// 预算账本的基本语义：原子预留、真实 / 未知 usage 结算与 pre-dispatch 归还。
+/// 这些断言同时保证新增的公开预算 API 始终被该 `#[path]` 编译目标引用。
+#[tokio::test]
+async fn budget_ledger_reserves_settles_and_abandons() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("limits");
+    let config = SharedLimitsConfig {
+        max_total_tokens: Some(1_000),
+        max_model_calls: Some(4),
+        ..SharedLimitsConfig::default()
+    };
+    let limits = SharedLimits::new(&root, config).unwrap();
+    assert_eq!(limits.config().max_total_tokens, Some(1_000));
+    assert_eq!(limits.config().max_model_calls, Some(4));
+
+    // 请求尚未发出的失败路径归还预留与调用次数。
+    let permit = limits.reserve_budget(300).await.unwrap().unwrap();
+    assert_eq!(permit.reservation(), 300);
+    permit.abandon().await.unwrap();
+    let budget = limits.budget_snapshot().unwrap();
+    assert_eq!(budget.max_total_tokens, Some(1_000));
+    assert_eq!(budget.max_model_calls, Some(4));
+    assert_eq!(budget.calls_started, 0);
+    assert_eq!(budget.tokens_reserved_active, 0);
+    assert_eq!(budget.tokens_used, 0);
+    assert_eq!(budget.tokens_over_reservation, 0);
+    assert_eq!(budget.tokens_overage, 0);
+    assert!(!budget.blocked);
+
+    // 真实 usage 结算，并且在 `SharedLimits::snapshot` 中也可见。
+    let permit = limits.reserve_budget(300).await.unwrap().unwrap();
+    permit.settle(Some(120)).await.unwrap();
+    let shared = limits.snapshot().unwrap();
+    assert_eq!(shared.budget.tokens_used, 120);
+    assert_eq!(shared.budget.calls_started, 1);
+
+    // 未知 usage 按预留额保守计费，绝不按 0 计。
+    let permit = limits.reserve_budget(200).await.unwrap().unwrap();
+    permit.settle(None).await.unwrap();
+    assert_eq!(limits.budget_snapshot().unwrap().tokens_used, 320);
+
+    // 单次预留超过 token 上限 fail-closed。
+    assert!(matches!(
+        limits.reserve_budget(10_000).await,
+        Err(SharedLimitsError::BudgetReservationTooLarge { .. })
+    ));
+    for _ in 0..2 {
+        let permit = limits.reserve_budget(10).await.unwrap().unwrap();
+        permit.settle(Some(1)).await.unwrap();
+    }
+    assert_eq!(limits.budget_snapshot().unwrap().tokens_used, 322);
+    assert!(matches!(
+        limits.reserve_budget(700).await,
+        Err(SharedLimitsError::BudgetExhausted { .. })
+    ));
+    assert!(matches!(
+        limits.reserve_budget(10).await,
+        Err(SharedLimitsError::ModelCallBudgetExceeded { .. })
+    ));
+}
+
+/// 未设置预算的 root 保持兼容；更宽的请求 fail-closed；损坏的账本 fail-closed。
+#[tokio::test]
+async fn budget_ledger_is_optional_narrow_only_and_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let plain = temp.path().join("plain");
+    let limits = SharedLimits::new(&plain, SharedLimitsConfig::default()).unwrap();
+    assert!(limits.reserve_budget(10).await.unwrap().is_none());
+    assert!(!plain.join("budget.json").exists());
+    assert_eq!(limits.snapshot().unwrap().budget.max_total_tokens, None);
+
+    let root = temp.path().join("budgeted");
+    SharedLimits::new(
+        &root,
+        SharedLimitsConfig {
+            max_total_tokens: Some(1_000),
+            ..SharedLimitsConfig::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        SharedLimits::new(
+            &root,
+            SharedLimitsConfig {
+                max_total_tokens: Some(4_000),
+                ..SharedLimitsConfig::default()
+            }
+        ),
+        Err(SharedLimitsError::BudgetPolicyMismatch(_))
+    ));
+    let narrowed = SharedLimits::new(
+        &root,
+        SharedLimitsConfig {
+            max_total_tokens: Some(500),
+            ..SharedLimitsConfig::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        narrowed.budget_snapshot().unwrap().max_total_tokens,
+        Some(500)
+    );
+
+    std::fs::write(root.join("budget.json"), b"not-json").unwrap();
+    assert!(matches!(
+        SharedLimits::new(
+            &root,
+            SharedLimitsConfig {
+                max_total_tokens: Some(500),
+                ..SharedLimitsConfig::default()
+            }
+        ),
+        Err(SharedLimitsError::CorruptBudget(_))
+    ));
 }

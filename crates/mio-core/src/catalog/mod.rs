@@ -88,6 +88,12 @@ const KEYS: [(&str, &str); 9] = [
 ];
 
 impl Catalog {
+    /// Exact checked-in data used by the built-in catalog, for provenance and
+    /// snapshot hashing. This does not query live provider capabilities.
+    pub fn builtin_source() -> &'static str {
+        BUILTIN
+    }
+
     /// The catalog this build ships.
     pub fn builtin() -> &'static Catalog {
         static BUILTIN_CATALOG: OnceLock<Catalog> = OnceLock::new();

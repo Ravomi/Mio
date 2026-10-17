@@ -1,2443 +1,167 @@
 use mio_coding_agent::{
-    AgentEvent, BlockedKind, Config, Host, HostFuture, ProgramState, Provider, RunOptions,
-    RunTools, Services, ThinkingLevel, ToolFilter,
-    compact::{DEFAULT_AUTO_COMPACT_BYTES, DEFAULT_KEEP_RECENT_MESSAGES, compact_history},
-    context::{ContextOptions, ProjectContext, expand_at_files},
-    format_osc7501,
-    mcp::{PROJECT_MCP_APPROVAL_OP, load_dynamic_tools},
+    Config, ProgramState, Provider, RunOptions, ToolFilter,
+    compact::DEFAULT_AUTO_COMPACT_BYTES,
+    context::{ContextOptions, ProjectContext},
+    dedup::TaskKeyLedger,
     parse_model_spec,
-    rpc::{
-        LineReadError, RpcCommand, RpcInput, list_catalog_models, resolve_provider_endpoint,
-        rpc_response,
-    },
-    run_with_tools,
+    rpc::resolve_provider_endpoint,
     session::Session,
     subagent::SubagentManager,
 };
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    io::{self, IsTerminal, Write},
-    path::{Path, PathBuf},
+    io::{self, IsTerminal},
+    path::Path,
     process::ExitCode,
-    str::FromStr,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
 };
 use tokio::io::AsyncReadExt;
-use tokio::sync::oneshot;
-use uuid::Uuid;
 
-// 执行证据 journal（AUD-13）。通过 bin 路径引用，避免与并行修改的 `lib.rs` 冲突。
-#[path = "../journal.rs"]
-mod journal;
-use journal::{Journal, RecoveryReport, RunState};
+use journal::{Journal, RecoveryReport};
+use mio_coding_agent::journal;
 
-const HELP: &str = "Mio — Rust coding agent
+#[path = "mio_cli/approval.rs"]
+mod approval;
+#[path = "mio_cli/args.rs"]
+mod args;
+#[path = "mio_cli/json_output.rs"]
+mod json_output;
+#[path = "mio_cli/output_cleanup.rs"]
+mod output_cleanup;
+#[path = "mio_cli/rpc.rs"]
+mod rpc;
+#[path = "mio_cli/runner.rs"]
+mod runner;
+#[path = "mio_cli/terminal.rs"]
+mod terminal;
+#[path = "mio_cli/tui/mod.rs"]
+mod tui;
 
-Usage: mio [OPTIONS] [-p PROMPT] [@FILE...]
-Without a prompt, starts an interactive conversation in a terminal or reads stdin.
+use approval::{RpcApprovals, StatusReporter};
+use args::{Args, OutputMode, parse, print_help};
+use json_output::{JsonOutput, emit_or_print};
+use rpc::{run_one_shot, run_rpc_loop};
+use runner::{
+    CliHost, Runner, open_checkpoints, open_journal, print_models, print_recovered_calls,
+    print_recovered_ops, print_sessions, print_sessions_json, session_list,
+};
+use terminal::run_interactive;
 
-  -p, --print TEXT       Run one task and exit
-  --json                Emit JSON Lines events on stdout (alias for --mode json)
-  --mode MODE           Output/protocol mode: text, json, or rpc
-  --cwd PATH            Working directory (default: current directory)
-  --model NAME          Model name or [provider/]model[:thinking] (or MIO_MODEL)
-  --provider NAME       Provider preset: custom, deepseek, antigravity, openai, anthropic,
-                        google, openrouter, groq, xai, mistral, ollama (or MIO_PROVIDER)
-  --thinking LEVEL      Thinking level: off, minimal, low, medium, high, xhigh, max
-  --max-model-concurrency N  Concurrent model requests in this process (default: 2)
-  --max-provider-concurrency N  Concurrent requests per provider (default: 2)
-  --max-heavy-tasks N    Concurrent shell/external tool calls (default: 2)
-  --max-subagents N      Concurrent admitted child tasks (default: 4)
-  --max-model-calls N    Shared model-call budget for this process
-  --max-total-tokens N   Shared conservative token budget for this process
-  --shared-limits-dir PATH  Shared cross-process quota directory
-  --no-shared-limits    Use only in-process admission limits
-  --list-models [QUERY] List available models across provider presets and exit
-  --import-antigravity PATH  Import existing local auth.json/settings.json into Mio
-  --base-url URL        OpenAI-compatible base URL (or MIO_BASE_URL)
-  -t, --tools LIST      Comma-separated tools or +tool/-tool deltas (read,write,edit,bash,grep,find,ls)
-  -xt, --exclude-tools LIST  Exclude tools or glob patterns (e.g. bash,mcp__*)
-  -nt, --no-tools       Disable all tools
-  --no-mcp              Disable MCP server discovery (.mio/mcp.json)
-  --trust-project-mcp   Authorize starting project MCP servers without per-start approval
-  --recovery            Print persisted execution evidence for the selected session and exit
-  --approve             Require interactive confirmation before write/edit/bash/MCP tools
-  --session SELECTOR    Load/save a session by path, short UUID prefix, or session name
-  -c, --continue, -r, --resume  Continue the most recently saved session in this workspace
-  --fork [SELECTOR]     Fork the selected --session or --resume into a new session
-  -n, --name TITLE      Set a human-readable display name for the session
-  --no-session          Run ephemerally in memory without saving a session file
-  --export PATH         Export the selected or latest session to a standalone HTML file
-  --list-sessions       List local sessions without contacting a model
-  --skill NAME          Include a project skill (repeatable)
-  --template NAME       Use .mio/prompts/NAME.md; prompt replaces $ARGUMENTS
-  --system-prompt TEXT  Custom system prompt string or file path
-  --append-system-prompt TEXT  Append text or file path to system prompt
-  --no-context          Do not load project instructions or skills
-  --no-context-files    Do not load AGENTS.md / CLAUDE.md / SYSTEM.md
-  --no-skills           Do not scan or advertise project skills
-  --no-prompt-templates Disable prompt template expansion
-  --no-shell            Disable shell execution (file tools remain available)
-  --subagents           Enable native child sessions (4 concurrent; memory only)
-  --auto-compact        Automatically compact history when exceeding 512 KiB
-  --context-window N    Override deployment context capacity (tokens; >= 1024)
-  --max-output-tokens N Output token cap and reserve within the context window
-  --max-turns N         Tool-loop budget, 1–256 (default: 32)
-  --plugin-install SPEC Install plugin from community registry, github:owner/repo, or path
-  --plugin-remove NAME  Remove an installed plugin from .mio/plugins/NAME
-  --plugin-list         List installed plugins in this workspace
-  --plugin-search [Q]   Search official community plugins (Ravomi/mio-plugins)
-  --plugin-init DIR     Scaffold a new standard-compliant Mio plugin (mio-plugin.json)
-  --plugin-validate P   Validate a plugin directory or registry.json file
-  -h, --help            Show help
-  -V, --version         Show version
-
-Credentials: MIO_API_KEY (or provider-specific OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
-DEEPSEEK_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, XAI_API_KEY, MISTRAL_API_KEY).
-Sessions: .mio/sessions/*.json, saved after successful turns (unless --no-session).
-Interactive commands: /help, /new, /fork, /sessions, /name, /compact, /export, /model,
-/thinking, /plugins, /plugin, /subagents, /status, /clear, /exit.
-Tab completes commands, models, plugins, and @file paths; Up/Down browses history; Ctrl-C exits.
-Shell is noninteractive and runs with your user permissions, not in a sandbox.
-";
-
-const INTERACTIVE_SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help", "显示帮助与命令说明"),
-    ("/status", "查看当前会话、模型与消息统计"),
-    (
-        "/model ",
-        "查看或切换模型 (如 /model antigravity/claude-sonnet-4-5)",
-    ),
-    (
-        "/thinking ",
-        "设置思考深度 (off, minimal, low, medium, high, xhigh, max)",
-    ),
-    ("/new", "创建新会话"),
-    ("/fork", "从当前会话分叉新分支"),
-    ("/sessions", "列出当前工作区已保存的会话"),
-    ("/name ", "设置或查看当前会话名称"),
-    ("/compact", "归纳压缩早期对话历史"),
-    ("/export ", "导出当前会话为独立 HTML 报告"),
-    ("/plugins", "列出当前工作区已安装的插件"),
-    (
-        "/plugin ",
-        "管理插件 (list, search, install, remove, init, validate)",
-    ),
-    ("/subagents", "查看当前会话中的子代理运行状态"),
-    ("/clear", "清空终端屏幕"),
-    ("/exit", "退出 Mio"),
-    ("/quit", "退出 Mio"),
-];
-
-const INTERACTIVE_THINKING_LEVELS: &[(&str, &str)] = &[
-    ("off", "关闭扩展思考"),
-    ("minimal", "极简思考预算"),
-    ("low", "低思考深度"),
-    ("medium", "中等思考深度"),
-    ("high", "高思考深度"),
-    ("xhigh", "超高思考深度"),
-    ("max", "最大思考深度"),
-];
-
-const INTERACTIVE_PLUGIN_SUBCOMMANDS: &[(&str, &str)] = &[
-    ("list", "列出当前工作区已安装插件"),
-    ("search ", "搜索官方社区插件注册表"),
-    ("install ", "安装社区插件、GitHub 仓库或本地插件"),
-    ("remove ", "卸载当前工作区中的已安装插件"),
-    ("init ", "在指定目录初始化新插件脚手架"),
-    ("validate ", "校验插件目录或注册表格式"),
-];
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CompletionItem {
-    replacement: String,
-    display: String,
-    description: String,
-}
-
-fn char_display_width(c: char) -> usize {
-    let u = c as u32;
-    if u < 0x20
-        || (0x7f..0xa0).contains(&u)
-        || (0x0300..=0x036f).contains(&u)
-        || (0x1ab0..=0x1aff).contains(&u)
-        || (0x1dc0..=0x1dff).contains(&u)
-        || (0x20d0..=0x20ff).contains(&u)
-        || (0xfe20..=0xfe2f).contains(&u)
-    {
-        0
-    } else if (0x1100..=0x115f).contains(&u)
-        || u == 0x2329
-        || u == 0x232a
-        || (0x2e80..=0x303e).contains(&u)
-        || (0x3040..=0xa4cf).contains(&u)
-        || (0xac00..=0xd7a3).contains(&u)
-        || (0xf900..=0xfaff).contains(&u)
-        || (0xfe10..=0xfe19).contains(&u)
-        || (0xfe30..=0xfe6f).contains(&u)
-        || (0xff00..=0xff60).contains(&u)
-        || (0xffe0..=0xffe6).contains(&u)
-        || (0x1f300..=0x1faff).contains(&u)
-        || (0x20000..=0x3fffd).contains(&u)
-    {
-        2
-    } else {
-        1
-    }
-}
-
-fn str_display_width(s: &str) -> usize {
-    s.chars().map(char_display_width).sum()
-}
-
-fn truncate_to_width(s: &str, max_width: usize) -> String {
-    let mut width = 0;
-    let mut out = String::new();
-    for ch in s.chars() {
-        let w = char_display_width(ch);
-        if width + w > max_width {
-            break;
-        }
-        width += w;
-        out.push(ch);
-    }
-    out
-}
-
-#[cfg(unix)]
-fn terminal_columns() -> usize {
-    unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 20 {
-            ws.ws_col as usize
-        } else {
-            80
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn terminal_columns() -> usize {
-    80
-}
-
-fn workspace_path_candidates(cwd: &Path, partial: &str) -> Vec<CompletionItem> {
-    let (dir_rel, file_prefix) = match partial.rfind('/') {
-        Some(idx) => (&partial[..=idx], &partial[idx + 1..]),
-        None => ("", partial),
-    };
-    let search_dir = if dir_rel.is_empty() {
-        cwd.to_path_buf()
-    } else {
-        cwd.join(dir_rel)
-    };
-    let Ok(entries) = std::fs::read_dir(search_dir) else {
-        return Vec::new();
-    };
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()) {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if name.starts_with('.') && !file_prefix.starts_with('.') {
-            continue;
-        }
-        if matches!(name.as_str(), "target" | "node_modules" | ".git")
-            && !file_prefix.starts_with(&name)
-        {
-            continue;
-        }
-        if name.starts_with(file_prefix) {
-            let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
-            if is_dir {
-                let rel = format!("{dir_rel}{name}/");
-                dirs.push(CompletionItem {
-                    display: rel.clone(),
-                    replacement: rel,
-                    description: "目录".to_owned(),
-                });
-            } else {
-                let rel = format!("{dir_rel}{name}");
-                files.push(CompletionItem {
-                    display: rel.clone(),
-                    replacement: rel,
-                    description: "文件".to_owned(),
-                });
-            }
-        }
-    }
-    dirs.sort_by(|a, b| a.replacement.cmp(&b.replacement));
-    files.sort_by(|a, b| a.replacement.cmp(&b.replacement));
-    dirs.extend(files);
-    dirs
-}
-
-fn completion_candidates(prefix_line: &str, cwd: &Path) -> (usize, Vec<CompletionItem>) {
-    // 1. Slash command argument completion
-    if let Some(rest) = prefix_line.strip_prefix("/thinking ")
-        && !rest.contains(' ')
-    {
-        let start = "/thinking ".len();
-        let list = INTERACTIVE_THINKING_LEVELS
-            .iter()
-            .filter(|(lvl, _)| lvl.starts_with(rest))
-            .map(|(lvl, desc)| CompletionItem {
-                replacement: (*lvl).to_owned(),
-                display: (*lvl).to_owned(),
-                description: (*desc).to_owned(),
-            })
-            .collect();
-        return (start, list);
-    }
-    if let Some(rest) = prefix_line.strip_prefix("/model ")
-        && !rest.contains(' ')
-    {
-        let start = "/model ".len();
-        let catalog = list_catalog_models(None);
-        let mut ready_matches = Vec::new();
-        let mut other_matches = Vec::new();
-        for entry in catalog {
-            let full = format!("{}/{}", entry.provider, entry.model);
-            let matched = full.starts_with(rest) || entry.model.starts_with(rest);
-            if matched {
-                let item = CompletionItem {
-                    replacement: full.clone(),
-                    display: full,
-                    description: format!(
-                        "[{}] {} · {}",
-                        if entry.configured { "ready" } else { "unset" },
-                        if entry.supports_thinking {
-                            "thinking"
-                        } else {
-                            "standard"
-                        },
-                        entry.env_var
-                    ),
-                };
-                if entry.configured {
-                    ready_matches.push(item);
-                } else {
-                    other_matches.push(item);
-                }
-            }
-        }
-        ready_matches.extend(other_matches);
-        return (start, ready_matches);
-    }
-    if let Some(rest) = prefix_line.strip_prefix("/plugin ") {
-        if !rest.contains(' ') {
-            let start = "/plugin ".len();
-            let list = INTERACTIVE_PLUGIN_SUBCOMMANDS
-                .iter()
-                .filter(|(sub, _)| sub.starts_with(rest))
-                .map(|(sub, desc)| CompletionItem {
-                    replacement: (*sub).to_owned(),
-                    display: sub.trim().to_owned(),
-                    description: (*desc).to_owned(),
-                })
-                .collect();
-            return (start, list);
-        }
-        if let Some(arg) = rest.strip_prefix("install ")
-            && !arg.contains(' ')
-        {
-            let start = "/plugin install ".len();
-            if arg.starts_with('.') || arg.starts_with('/') {
-                return (start, workspace_path_candidates(cwd, arg));
-            }
-            let mut list: Vec<CompletionItem> =
-                mio_coding_agent::plugin::search_community_plugins(None)
-                    .into_iter()
-                    .filter(|p| p.name.starts_with(arg))
-                    .map(|p| CompletionItem {
-                        replacement: p.name.clone(),
-                        display: p.name,
-                        description: format!("v{} · {}", p.version, p.description),
-                    })
-                    .collect();
-            list.extend(workspace_path_candidates(cwd, arg));
-            return (start, list);
-        }
-        if let Some(arg) = rest.strip_prefix("remove ")
-            && !arg.contains(' ')
-        {
-            let start = "/plugin remove ".len();
-            let list = mio_coding_agent::plugin::discover_plugins(cwd)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|p| p.manifest.name.starts_with(arg))
-                .map(|p| CompletionItem {
-                    replacement: p.manifest.name.clone(),
-                    display: p.manifest.name,
-                    description: format!("v{} · {}", p.manifest.version, p.manifest.description),
-                })
-                .collect();
-            return (start, list);
-        }
-        for sub in ["init ", "validate "] {
-            if let Some(arg) = rest.strip_prefix(sub)
-                && !arg.contains(' ')
-            {
-                let start = "/plugin ".len() + sub.len();
-                return (start, workspace_path_candidates(cwd, arg));
-            }
-        }
-    }
-    if let Some(rest) = prefix_line.strip_prefix("/export ")
-        && !rest.contains(' ')
-    {
-        let start = "/export ".len();
-        return (start, workspace_path_candidates(cwd, rest));
-    }
-
-    // 2. Slash command name completion
-    if prefix_line.starts_with('/') && !prefix_line.contains(char::is_whitespace) {
-        let list = INTERACTIVE_SLASH_COMMANDS
-            .iter()
-            .filter(|(cmd, _)| {
-                cmd.starts_with(prefix_line) || cmd.trim_end().starts_with(prefix_line)
-            })
-            .map(|(cmd, desc)| CompletionItem {
-                replacement: (*cmd).to_owned(),
-                display: cmd.trim_end().to_owned(),
-                description: (*desc).to_owned(),
-            })
-            .collect();
-        return (0, list);
-    }
-
-    // 3. @file workspace path completion on current token
-    let token_start = prefix_line
-        .rfind(char::is_whitespace)
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let token = &prefix_line[token_start..];
-    if let Some(partial) = token.strip_prefix('@')
-        && !partial.contains(':')
-    {
-        let start = token_start + 1;
-        return (
-            start,
-            workspace_path_candidates(cwd, partial)
-                .into_iter()
-                .map(|mut item| {
-                    item.display = format!("@{}", item.display);
-                    item
-                })
-                .collect(),
-        );
-    }
-    if token.starts_with("./") || token.starts_with("../") || token.contains('/') {
-        return (token_start, workspace_path_candidates(cwd, token));
-    }
-
-    (prefix_line.len(), Vec::new())
-}
-
-fn compute_ghost_suggestion(
-    buf: &str,
-    cursor: usize,
-    history: &[String],
-    cwd: &Path,
-) -> Option<String> {
-    if cursor != buf.len() || buf.is_empty() {
-        return None;
-    }
-    let (start, candidates) = completion_candidates(buf, cwd);
-    let current_part = &buf[start..];
-    if !current_part.is_empty() {
-        for cand in candidates {
-            if cand.replacement.starts_with(current_part)
-                && cand.replacement.len() > current_part.len()
-            {
-                return Some(cand.replacement[current_part.len()..].to_owned());
-            }
-        }
-    }
-    for item in history.iter().rev() {
-        if item.starts_with(buf) && item.len() > buf.len() {
-            return Some(item[buf.len()..].to_owned());
-        }
-    }
-    None
-}
-
-enum ReadOutcome {
-    Line(String),
-    Interrupted,
-    Exit,
-}
-
-#[derive(Default)]
-enum EscState {
-    #[default]
-    None,
-    Esc,
-    Csi(Vec<u8>),
-}
-
-struct TabCycleState {
-    replace_start: usize,
-    candidates: Vec<CompletionItem>,
-    index: usize,
-}
-
-struct InteractiveEditor {
-    buf: Vec<u8>,
-    cursor: usize,
-    history: Vec<String>,
-    history_index: Option<usize>,
-    saved_line: String,
-    ghost_dismissed: bool,
-    had_ghost: bool,
-    esc: EscState,
-    tab_cycle: Option<TabCycleState>,
-}
-
-#[cfg(unix)]
-struct RawTerminalGuard {
-    fd: libc::c_int,
-    original: Option<libc::termios>,
-}
-
-#[cfg(unix)]
-impl RawTerminalGuard {
-    fn acquire() -> Self {
-        let fd = libc::STDIN_FILENO;
-        unsafe {
-            let mut orig: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(fd, &mut orig) != 0 {
-                return Self { fd, original: None };
-            }
-            let mut raw = orig;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
-            raw.c_iflag &= !(libc::IXON | libc::ICRNL);
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(fd, libc::TCSADRAIN, &raw) != 0 {
-                return Self { fd, original: None };
-            }
-            Self {
-                fd,
-                original: Some(orig),
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for RawTerminalGuard {
-    fn drop(&mut self) {
-        if let Some(orig) = self.original.take() {
-            unsafe {
-                let _ = libc::tcsetattr(self.fd, libc::TCSADRAIN, &orig);
-            }
-        }
-    }
-}
-
-impl InteractiveEditor {
-    fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            cursor: 0,
-            history: Vec::new(),
-            history_index: None,
-            saved_line: String::new(),
-            ghost_dismissed: false,
-            had_ghost: false,
-            esc: EscState::None,
-            tab_cycle: None,
-        }
-    }
-
-    fn as_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.buf).ok()
-    }
-
-    fn set_str(&mut self, s: &str) {
-        self.buf.clear();
-        self.buf.extend_from_slice(s.as_bytes());
-        self.cursor = self.buf.len();
-    }
-
-    fn reset_line(&mut self) {
-        self.buf.clear();
-        self.cursor = 0;
-        self.history_index = None;
-        self.ghost_dismissed = false;
-        self.had_ghost = false;
-        self.esc = EscState::None;
-        self.tab_cycle = None;
-    }
-
-    fn push_history(&mut self, entry: &str) {
-        let trimmed = entry.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        if self.history.last().is_none_or(|last| last != trimmed) {
-            self.history.push(trimmed.to_owned());
-        }
-    }
-
-    fn prev_char_boundary(&self) -> usize {
-        let mut idx = self.cursor.min(self.buf.len());
-        while idx > 0 {
-            idx -= 1;
-            if (self.buf[idx] & 0xc0) != 0x80 {
-                break;
-            }
-        }
-        idx
-    }
-
-    fn next_char_boundary(&self) -> usize {
-        let mut idx = (self.cursor + 1).min(self.buf.len());
-        while idx < self.buf.len() && (self.buf[idx] & 0xc0) == 0x80 {
-            idx += 1;
-        }
-        idx
-    }
-
-    fn current_ghost(&self, cwd: &Path) -> Option<String> {
-        if self.ghost_dismissed {
-            None
-        } else {
-            let s = self.as_str()?;
-            compute_ghost_suggestion(s, self.cursor, &self.history, cwd)
-        }
-    }
-
-    fn handle_tab(&mut self, cwd: &Path) {
-        self.step_completion(cwd, true);
-    }
-
-    fn step_completion(&mut self, cwd: &Path, forward: bool) -> bool {
-        if let Some(cycle) = &mut self.tab_cycle {
-            if forward {
-                cycle.index = (cycle.index + 1) % cycle.candidates.len();
-            } else {
-                cycle.index = (cycle.index + cycle.candidates.len() - 1) % cycle.candidates.len();
-            }
-            let chosen = cycle.candidates[cycle.index].replacement.clone();
-            let start = cycle.replace_start.min(self.buf.len());
-            self.buf.truncate(start);
-            self.buf.extend_from_slice(chosen.as_bytes());
-            self.cursor = self.buf.len();
-            self.ghost_dismissed = true;
-            return true;
-        }
-        let Some(s) = self.as_str().map(str::to_owned) else {
-            return false;
-        };
-        let prefix = &s[..self.cursor.min(s.len())];
-        let (replace_start, candidates) = completion_candidates(prefix, cwd);
-        if !candidates.is_empty() {
-            let idx = if forward { 0 } else { candidates.len() - 1 };
-            let chosen = candidates[idx].replacement.clone();
-            let tail = &s[self.cursor.min(s.len())..];
-            let mut next = String::with_capacity(replace_start + chosen.len() + tail.len());
-            next.push_str(&s[..replace_start]);
-            next.push_str(&chosen);
-            let new_cursor = next.len();
-            next.push_str(tail);
-            self.buf = next.into_bytes();
-            self.cursor = new_cursor;
-            if candidates.len() > 1 && tail.is_empty() {
-                self.tab_cycle = Some(TabCycleState {
-                    replace_start,
-                    candidates,
-                    index: idx,
-                });
-                self.ghost_dismissed = true;
-            } else {
-                self.ghost_dismissed = false;
-            }
-            return true;
-        }
-        if let Some(ghost) = self.current_ghost(cwd) {
-            self.buf.extend_from_slice(ghost.as_bytes());
-            self.cursor = self.buf.len();
-            return true;
-        }
-        false
-    }
-
-    fn render(&mut self, cwd: &Path) -> io::Result<()> {
-        let Some(s) = self.as_str().map(str::to_owned) else {
-            return Ok(());
-        };
-        let ghost = self.current_ghost(cwd);
-        let mut out = String::from("\r\x1b[2K\x1b[Jmio> ");
-        out.push_str(&s);
-        if let Some(ref g) = ghost {
-            out.push_str("\x1b[38;2;130;180;220m");
-            out.push_str(g);
-            out.push_str("\x1b[0m");
-            self.had_ghost = true;
-        } else {
-            self.had_ghost = false;
-        }
-
-        let live_candidates = if self.tab_cycle.is_none() && !self.ghost_dismissed && !s.is_empty()
-        {
-            let prefix = &s[..self.cursor.min(s.len())];
-            let (_, list) = completion_candidates(prefix, cwd);
-            list
-        } else {
-            Vec::new()
-        };
-
-        let menu_view: Option<(&[CompletionItem], usize)> = if let Some(cycle) = &self.tab_cycle {
-            Some((&cycle.candidates, cycle.index))
-        } else if !live_candidates.is_empty() {
-            Some((&live_candidates, 0))
-        } else {
-            None
-        };
-
-        let mut menu_lines = 0usize;
-        if let Some((items, selected_idx)) = menu_view {
-            let cols = terminal_columns();
-            let max_line_width = cols.saturating_sub(2);
-            let total = items.len();
-            let win_len = total.min(6);
-            let win_start = if selected_idx >= win_len {
-                selected_idx + 1 - win_len
-            } else {
-                0
-            };
-            let pad_col = items[win_start..win_start + win_len]
-                .iter()
-                .map(|it| str_display_width(&it.display))
-                .max()
-                .unwrap_or(10)
-                .clamp(12, 34);
-
-            for (offset, item) in items[win_start..win_start + win_len].iter().enumerate() {
-                let idx = win_start + offset;
-                let disp_w = str_display_width(&item.display);
-                let pad_spaces = " ".repeat(pad_col.saturating_sub(disp_w) + 2);
-                let prefix_w = 4 + disp_w + pad_spaces.len();
-                let desc_budget = max_line_width.saturating_sub(prefix_w);
-                let desc = truncate_to_width(&item.description, desc_budget);
-
-                out.push_str("\r\n");
-                if idx == selected_idx {
-                    out.push_str("\x1b[1;38;2;149;205;247m  ▸ ");
-                    out.push_str(&item.display);
-                    out.push_str(&pad_spaces);
-                    out.push_str("\x1b[0m\x1b[38;2;195;210;225m");
-                    out.push_str(&desc);
-                    out.push_str("\x1b[0m");
-                } else {
-                    out.push_str("\x1b[38;2;155;170;185m    ");
-                    out.push_str(&item.display);
-                    out.push_str(&pad_spaces);
-                    out.push_str("\x1b[0m\x1b[38;2;115;130;145m");
-                    out.push_str(&desc);
-                    out.push_str("\x1b[0m");
-                }
-                menu_lines += 1;
-            }
-            if total > win_len {
-                let footer = format!("    … ({}/{total} · Tab/↑↓ 切换补全)", selected_idx + 1);
-                let footer_clipped = truncate_to_width(&footer, max_line_width);
-                out.push_str("\r\n\x1b[38;2;115;130;145m");
-                out.push_str(&footer_clipped);
-                out.push_str("\x1b[0m");
-                menu_lines += 1;
-            }
-            self.had_ghost = true;
-        }
-
-        if menu_lines > 0 {
-            out.push_str(&format!("\x1b[{menu_lines}A"));
-        }
-        let cursor_col = 5 + str_display_width(&s[..self.cursor.min(s.len())]);
-        out.push_str(&format!("\r\x1b[{cursor_col}C"));
-
-        let mut stderr = io::stderr().lock();
-        stderr.write_all(out.as_bytes())?;
-        stderr.flush()
-    }
-
-    #[cfg(unix)]
-    fn read_line(&mut self, cwd: &Path) -> Result<ReadOutcome, String> {
-        self.reset_line();
-        let guard = RawTerminalGuard::acquire();
-        if guard.original.is_none() {
-            drop(guard);
-            eprint!("mio> ");
-            io::stderr().flush().map_err(|e| e.to_string())?;
-            let mut line = String::new();
-            let n = io::stdin()
-                .read_line(&mut line)
-                .map_err(|e| e.to_string())?;
-            if n == 0 {
-                return Ok(ReadOutcome::Exit);
-            }
-            return Ok(ReadOutcome::Line(line));
-        }
-        self.render(cwd).map_err(|e| e.to_string())?;
-        let mut buf = [0u8; 64];
-        loop {
-            let n = unsafe {
-                libc::read(
-                    libc::STDIN_FILENO,
-                    buf.as_mut_ptr().cast::<libc::c_void>(),
-                    buf.len(),
-                )
-            };
-            if n < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::Interrupted {
-                    eprint!("^C\r\n");
-                    let _ = io::stderr().flush();
-                    return Ok(ReadOutcome::Exit);
-                }
-                return Err(err.to_string());
-            }
-            if n == 0 {
-                eprint!("\r\n");
-                let _ = io::stderr().flush();
-                return Ok(ReadOutcome::Exit);
-            }
-            for &byte in &buf[..n as usize] {
-                match &mut self.esc {
-                    EscState::None => {
-                        if byte == 0x1b {
-                            self.esc = EscState::Esc;
-                            continue;
-                        }
-                    }
-                    EscState::Esc => {
-                        if byte == b'[' || byte == b'O' {
-                            self.esc = EscState::Csi(Vec::new());
-                        } else {
-                            self.esc = EscState::None;
-                            self.tab_cycle = None;
-                            self.ghost_dismissed = true;
-                            self.render(cwd).map_err(|e| e.to_string())?;
-                        }
-                        continue;
-                    }
-                    EscState::Csi(seq) => {
-                        seq.push(byte);
-                        if (0x40..=0x7e).contains(&byte) {
-                            let params = seq.clone();
-                            self.esc = EscState::None;
-                            match params.as_slice() {
-                                b"Z" => {
-                                    // Shift+Tab: step completion backward
-                                    self.step_completion(cwd, false);
-                                    self.render(cwd).map_err(|e| e.to_string())?;
-                                }
-                                b"A" => {
-                                    if self.tab_cycle.is_some() {
-                                        self.step_completion(cwd, false);
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    } else if !self.history.is_empty() {
-                                        self.tab_cycle = None;
-                                        let next_idx = match self.history_index {
-                                            None => {
-                                                self.saved_line =
-                                                    String::from_utf8_lossy(&self.buf).into_owned();
-                                                self.history.len() - 1
-                                            }
-                                            Some(i) => i.saturating_sub(1),
-                                        };
-                                        self.history_index = Some(next_idx);
-                                        let entry = self.history[next_idx].clone();
-                                        self.set_str(&entry);
-                                        self.ghost_dismissed = true;
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    }
-                                }
-                                b"B" => {
-                                    if self.tab_cycle.is_some() {
-                                        self.step_completion(cwd, true);
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    } else if let Some(i) = self.history_index {
-                                        self.tab_cycle = None;
-                                        let entry = if i + 1 < self.history.len() {
-                                            self.history_index = Some(i + 1);
-                                            self.history[i + 1].clone()
-                                        } else {
-                                            self.history_index = None;
-                                            self.saved_line.clone()
-                                        };
-                                        self.set_str(&entry);
-                                        self.ghost_dismissed = true;
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    } else if self.buf.starts_with(b"/") {
-                                        self.step_completion(cwd, true);
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    }
-                                }
-                                b"C" => {
-                                    self.tab_cycle = None;
-                                    if self.cursor < self.buf.len() {
-                                        self.cursor = self.next_char_boundary();
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    } else if let Some(ghost) = self.current_ghost(cwd) {
-                                        self.buf.extend_from_slice(ghost.as_bytes());
-                                        self.cursor = self.buf.len();
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    }
-                                }
-                                b"D" => {
-                                    self.tab_cycle = None;
-                                    if self.cursor > 0 {
-                                        self.cursor = self.prev_char_boundary();
-                                        self.render(cwd).map_err(|e| e.to_string())?;
-                                    }
-                                }
-                                b"H" | b"1~" => {
-                                    self.tab_cycle = None;
-                                    self.cursor = 0;
-                                    self.render(cwd).map_err(|e| e.to_string())?;
-                                }
-                                b"F" | b"4~" => {
-                                    self.tab_cycle = None;
-                                    self.cursor = self.buf.len();
-                                    self.render(cwd).map_err(|e| e.to_string())?;
-                                }
-                                b"3~" if self.cursor < self.buf.len() => {
-                                    self.tab_cycle = None;
-                                    let next = self.next_char_boundary();
-                                    self.buf.drain(self.cursor..next);
-                                    self.render(cwd).map_err(|e| e.to_string())?;
-                                }
-                                _ => {
-                                    self.tab_cycle = None;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                }
-
-                if byte != b'\t' {
-                    self.tab_cycle = None;
-                }
-
-                match byte {
-                    3 => {
-                        // Ctrl-C: clear completion menu/ghost and immediately exit interactive session
-                        let current = String::from_utf8_lossy(&self.buf);
-                        eprint!("\r\x1b[2K\x1b[Jmio> {current}^C\r\n");
-                        let _ = io::stderr().flush();
-                        return Ok(ReadOutcome::Interrupted);
-                    }
-                    4 => {
-                        // Ctrl-D: exit when empty, otherwise delete char under cursor
-                        if self.buf.is_empty() {
-                            eprint!("\r\x1b[2K\x1b[J\r\n");
-                            let _ = io::stderr().flush();
-                            return Ok(ReadOutcome::Exit);
-                        } else if self.cursor < self.buf.len() {
-                            let next = self.next_char_boundary();
-                            self.buf.drain(self.cursor..next);
-                            self.render(cwd).map_err(|e| e.to_string())?;
-                        }
-                    }
-                    1 => {
-                        // Ctrl-A: Home
-                        self.cursor = 0;
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    5 => {
-                        // Ctrl-E: End or accept ghost
-                        if self.cursor < self.buf.len() {
-                            self.cursor = self.buf.len();
-                        } else if let Some(ghost) = self.current_ghost(cwd) {
-                            self.buf.extend_from_slice(ghost.as_bytes());
-                            self.cursor = self.buf.len();
-                        }
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    9 => {
-                        // Tab: complete command, argument, or @file path (cycles on repeated Tab)
-                        self.handle_tab(cwd);
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    11 if self.cursor < self.buf.len() => {
-                        // Ctrl-K: delete from cursor to end of line
-                        self.buf.truncate(self.cursor);
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    12 => {
-                        // Ctrl-L: clear screen
-                        eprint!("\x1b[2J\x1b[H");
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    21 if self.cursor > 0 => {
-                        // Ctrl-U: delete from cursor to start of line
-                        self.buf.drain(..self.cursor);
-                        self.cursor = 0;
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    23 if self.cursor > 0 => {
-                        // Ctrl-W: delete previous word
-                        let mut i = self.cursor;
-                        while i > 0 && self.buf[i - 1].is_ascii_whitespace() {
-                            i -= 1;
-                        }
-                        while i > 0 && !self.buf[i - 1].is_ascii_whitespace() {
-                            i -= 1;
-                        }
-                        self.buf.drain(i..self.cursor);
-                        self.cursor = i;
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    8 | 127 if self.cursor > 0 => {
-                        let prev = self.prev_char_boundary();
-                        self.buf.drain(prev..self.cursor);
-                        self.cursor = prev;
-                        self.ghost_dismissed = false;
-                        self.render(cwd).map_err(|e| e.to_string())?;
-                    }
-                    8 | 127 => {}
-                    b'\r' | b'\n' => {
-                        let mut submitted = String::from_utf8_lossy(&self.buf).into_owned();
-                        let trimmed_sub = submitted.trim();
-                        if trimmed_sub.starts_with('/')
-                            && !trimmed_sub.contains(char::is_whitespace)
-                        {
-                            let (_, cands) = completion_candidates(trimmed_sub, cwd);
-                            if cands.len() == 1 && !cands[0].replacement.ends_with(' ') {
-                                submitted = cands[0].replacement.clone();
-                            }
-                        }
-                        eprint!("\r\x1b[2K\x1b[Jmio> {submitted}\r\n");
-                        let _ = io::stderr().flush();
-                        self.push_history(&submitted);
-                        return Ok(ReadOutcome::Line(submitted));
-                    }
-                    b if b >= 0x20 => {
-                        self.buf.insert(self.cursor, b);
-                        self.cursor += 1;
-                        self.ghost_dismissed = false;
-                        if self.as_str().is_some() {
-                            self.render(cwd).map_err(|e| e.to_string())?;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn read_line(&mut self, _cwd: &Path) -> Result<ReadOutcome, String> {
-        eprint!("mio> ");
-        io::stderr().flush().map_err(|e| e.to_string())?;
-        let mut line = String::new();
-        let n = io::stdin()
-            .read_line(&mut line)
-            .map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Ok(ReadOutcome::Exit);
-        }
-        Ok(ReadOutcome::Line(line))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum OutputMode {
-    #[default]
-    Text,
-    Json,
-    Rpc,
-}
-
-#[derive(Default)]
-struct Args {
-    cwd: Option<PathBuf>,
-    model: Option<String>,
-    provider: Option<String>,
-    thinking: Option<ThinkingLevel>,
-    list_models: bool,
-    list_models_query: Option<String>,
-    import_antigravity: Option<PathBuf>,
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserCliSettings {
+    default_model: Option<String>,
+    default_provider: Option<String>,
     base_url: Option<String>,
-    prompt: Option<String>,
-    mode: OutputMode,
-    json: bool,
-    tools: Option<String>,
-    exclude_tools: Option<String>,
-    no_tools: bool,
-    no_mcp: bool,
-    trust_project_mcp: bool,
-    recovery: bool,
-    approve: bool,
-    session: Option<String>,
-    session_name: Option<String>,
-    no_session: bool,
-    export: Option<PathBuf>,
-    resume: bool,
-    fork: bool,
-    list: bool,
-    skills: Vec<String>,
-    template: Option<String>,
-    system_prompt: Option<String>,
-    append_system_prompt: Option<String>,
-    no_context: bool,
-    no_context_files: bool,
-    no_skills: bool,
-    no_prompt_templates: bool,
-    no_shell: bool,
-    subagents: bool,
-    auto_compact: bool,
-    context_window: Option<u32>,
-    max_output_tokens: Option<u32>,
-    max_turns: Option<usize>,
-    max_model_concurrency: Option<usize>,
-    max_provider_concurrency: Option<usize>,
-    max_heavy_tasks: Option<usize>,
-    max_subagents: Option<usize>,
-    max_model_calls: Option<u64>,
-    max_total_tokens: Option<u64>,
-    shared_limits_dir: Option<PathBuf>,
-    no_shared_limits: bool,
-    plugin_install: Option<String>,
-    plugin_remove: Option<String>,
-    plugin_list: bool,
-    plugin_search: bool,
-    plugin_search_query: Option<String>,
-    plugin_init: Option<PathBuf>,
-    plugin_validate: Option<PathBuf>,
+    api_key: Option<String>,
 }
 
-fn parse(args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut parsed = Args::default();
-    let mut args = args.peekable();
-    let mut extra_parts: Vec<String> = Vec::new();
-    while let Some(arg) = args.next() {
-        let mut value = || args.next().ok_or_else(|| format!("{arg} requires a value"));
-        match arg.as_str() {
-            "--cwd" => parsed.cwd = Some(value()?.into()),
-            "--model" => parsed.model = Some(value()?),
-            "--provider" => parsed.provider = Some(value()?),
-            "--thinking" => parsed.thinking = Some(ThinkingLevel::from_str(&value()?)?),
-            "--context-window" => {
-                parsed.context_window =
-                    Some(value()?.parse().map_err(|_| "Invalid --context-window")?)
-            }
-            "--max-output-tokens" => {
-                parsed.max_output_tokens = Some(
-                    value()?
-                        .parse()
-                        .map_err(|_| "Invalid --max-output-tokens")?,
-                )
-            }
-            "--list-models" => {
-                parsed.list_models = true;
-                if let Some(next) = args.peek()
-                    && !next.starts_with('-')
-                {
-                    parsed.list_models_query = args.next();
-                }
-            }
-            "--import-antigravity" => parsed.import_antigravity = Some(value()?.into()),
-            "--base-url" => parsed.base_url = Some(value()?),
-            "-p" | "--print" => parsed.prompt = Some(value()?),
-            "--mode" => {
-                let m = value()?;
-                parsed.mode = match m.as_str() {
-                    "text" => OutputMode::Text,
-                    "json" => {
-                        parsed.json = true;
-                        OutputMode::Json
-                    }
-                    "rpc" => {
-                        parsed.json = true;
-                        OutputMode::Rpc
-                    }
-                    _ => return Err(format!("Invalid --mode '{m}'; expected text, json, or rpc")),
-                };
-            }
-            "-t" | "--tools" => parsed.tools = Some(value()?),
-            "-xt" | "--exclude-tools" => parsed.exclude_tools = Some(value()?),
-            "-nt" | "--no-tools" => parsed.no_tools = true,
-            "--no-mcp" => parsed.no_mcp = true,
-            "--trust-project-mcp" => parsed.trust_project_mcp = true,
-            "--recovery" => parsed.recovery = true,
-            "--approve" => parsed.approve = true,
-            "--session" => parsed.session = Some(value()?),
-            "-n" | "--name" => parsed.session_name = Some(value()?),
-            "--no-session" => parsed.no_session = true,
-            "--export" => parsed.export = Some(value()?.into()),
-            "--skill" => parsed.skills.push(value()?),
-            "--template" => parsed.template = Some(value()?),
-            "--system-prompt" => parsed.system_prompt = Some(value()?),
-            "--append-system-prompt" => parsed.append_system_prompt = Some(value()?),
-            "--max-turns" => {
-                parsed.max_turns = Some(value()?.parse().map_err(|_| "Invalid --max-turns")?)
-            }
-            "--max-model-concurrency" => {
-                parsed.max_model_concurrency = Some(
-                    value()?
-                        .parse()
-                        .map_err(|_| "Invalid --max-model-concurrency")?,
-                )
-            }
-            "--max-provider-concurrency" => {
-                parsed.max_provider_concurrency = Some(
-                    value()?
-                        .parse()
-                        .map_err(|_| "Invalid --max-provider-concurrency")?,
-                )
-            }
-            "--max-heavy-tasks" => {
-                parsed.max_heavy_tasks =
-                    Some(value()?.parse().map_err(|_| "Invalid --max-heavy-tasks")?)
-            }
-            "--max-subagents" => {
-                parsed.max_subagents =
-                    Some(value()?.parse().map_err(|_| "Invalid --max-subagents")?)
-            }
-            "--max-model-calls" => {
-                parsed.max_model_calls =
-                    Some(value()?.parse().map_err(|_| "Invalid --max-model-calls")?)
-            }
-            "--max-total-tokens" => {
-                parsed.max_total_tokens =
-                    Some(value()?.parse().map_err(|_| "Invalid --max-total-tokens")?)
-            }
-            "--shared-limits-dir" => parsed.shared_limits_dir = Some(value()?.into()),
-            "--no-shared-limits" => parsed.no_shared_limits = true,
-            "--json" => {
-                parsed.json = true;
-                if parsed.mode == OutputMode::Text {
-                    parsed.mode = OutputMode::Json;
-                }
-            }
-            "-c" | "--continue" => parsed.resume = true,
-            "-r" | "--resume" => {
-                if let Some(next) = args.peek()
-                    && !next.starts_with('-')
-                    && parsed.session.is_none()
-                {
-                    parsed.session = args.next();
-                } else {
-                    parsed.resume = true;
-                }
-            }
-            "--fork" => {
-                parsed.fork = true;
-                if let Some(next) = args.peek()
-                    && !next.starts_with('-')
-                    && parsed.session.is_none()
-                    && !parsed.resume
-                {
-                    parsed.session = args.next();
-                }
-            }
-            "--list-sessions" => parsed.list = true,
-            "--no-context" => parsed.no_context = true,
-            "--no-context-files" => parsed.no_context_files = true,
-            "--no-skills" => parsed.no_skills = true,
-            "--no-prompt-templates" => parsed.no_prompt_templates = true,
-            "--no-shell" => parsed.no_shell = true,
-            "--subagents" => parsed.subagents = true,
-            "--auto-compact" => parsed.auto_compact = true,
-            "--plugin-install" => parsed.plugin_install = Some(value()?),
-            "--plugin-remove" => parsed.plugin_remove = Some(value()?),
-            "--plugin-list" | "--list-plugins" => parsed.plugin_list = true,
-            "--plugin-search" => {
-                parsed.plugin_search = true;
-                if let Some(next) = args.peek()
-                    && !next.starts_with('-')
-                {
-                    parsed.plugin_search_query = args.next();
-                }
-            }
-            "--plugin-init" => parsed.plugin_init = Some(value()?.into()),
-            "--plugin-validate" => parsed.plugin_validate = Some(value()?.into()),
-            "--" => {
-                if parsed.prompt.is_some() {
-                    return Err("Prompt already provided".into());
-                }
-                parsed.prompt = Some(args.collect::<Vec<_>>().join(" "));
-                break;
-            }
-            other if other.starts_with('@') => {
-                extra_parts.push(other.to_owned());
-            }
-            _ => return Err(format!("Unknown option {arg}; use --help")),
-        }
+fn read_user_cli_settings(directory: &Path) -> Result<UserCliSettings, String> {
+    let path = directory.join("settings.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map_err(|error| format!("Invalid Mio settings at {}: {error}", path.display())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(UserCliSettings::default()),
+        Err(error) => Err(format!(
+            "Cannot read Mio settings at {}: {error}",
+            path.display()
+        )),
     }
-    if !extra_parts.is_empty() {
-        let joined = extra_parts.join(" ");
-        parsed.prompt = Some(match parsed.prompt.take() {
-            Some(existing) => format!("{joined} {existing}"),
-            None => joined,
+}
+
+/// DES-09 维护通道：列出或精确确认工作区未决副作用账本。
+///
+/// 它不是模型可自动调用的工具：必须由操作者在命令行显式给出精确
+/// `(scope, call_index, snapshot)`。它只确认现场、绝不删除证据，也不改写 journal。
+fn run_unresolved_effects_maintenance(
+    args: &Args,
+    cwd: &Path,
+    output: &Option<JsonOutput>,
+) -> Result<(), String> {
+    use mio_coding_agent::unresolved_effect::UnresolvedEffectLedger;
+    if let Some(raw) = args.ack_unresolved_effect.as_deref() {
+        let request: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|error| format!("--ack-unresolved-effect requires a JSON object: {error}"))?;
+        let scope = request
+            .get("scope")
+            .and_then(|value| value.as_str())
+            .ok_or("--ack-unresolved-effect requires a string \"scope\"")?;
+        let call_index = request
+            .get("call_index")
+            .and_then(|value| value.as_u64())
+            .ok_or("--ack-unresolved-effect requires a positive integer \"call_index\"")?;
+        let snapshot = request
+            .get("snapshot")
+            .and_then(|value| value.as_str())
+            .ok_or("--ack-unresolved-effect requires a sha256 \"snapshot\"")?;
+        let note = request.get("note").and_then(|value| value.as_str());
+        let ledger = UnresolvedEffectLedger::persistent(cwd);
+        let observation =
+            runner::acknowledge_unresolved_exact(&ledger, scope, call_index, snapshot, note)?;
+        let value = json!({
+            "scope": observation.record.scope,
+            "callIndex": observation.record.call_index,
+            "state": observation.record.state.as_str(),
+            "snapshot": observation.snapshot_key.as_str(),
+            "note": observation.record.acknowledgement.as_ref().map(|ack| ack.note.clone()),
         });
-    }
-    if parsed.resume && parsed.session.is_some() {
-        return Err("Use either --resume or --session".into());
-    }
-    if parsed.fork && !parsed.resume && parsed.session.is_none() {
-        return Err("--fork requires --resume or --session".into());
-    }
-    if parsed.no_context && (!parsed.skills.is_empty() || parsed.template.is_some()) {
-        return Err("--no-context cannot be combined with --skill or --template".into());
-    }
-    if parsed.no_skills && !parsed.skills.is_empty() {
-        return Err("--no-skills cannot be combined with --skill".into());
-    }
-    if parsed.no_prompt_templates && parsed.template.is_some() {
-        return Err("--no-prompt-templates cannot be combined with --template".into());
-    }
-    if !(1..=256).contains(&parsed.max_turns.unwrap_or(32)) {
-        return Err("--max-turns must be 1–256".into());
-    }
-    for (flag, value) in [
-        ("--max-model-concurrency", parsed.max_model_concurrency),
-        (
-            "--max-provider-concurrency",
-            parsed.max_provider_concurrency,
-        ),
-        ("--max-heavy-tasks", parsed.max_heavy_tasks),
-    ] {
-        if value.is_some_and(|value| !(1..=64).contains(&value)) {
-            return Err(format!("{flag} must be 1–64"));
-        }
-    }
-    if parsed
-        .max_subagents
-        .is_some_and(|value| !(1..=16).contains(&value))
-    {
-        return Err("--max-subagents must be 1–16".into());
-    }
-    if parsed.max_model_calls == Some(0) || parsed.max_total_tokens == Some(0) {
-        return Err("Model-call and token budgets must be positive".into());
-    }
-    if parsed.no_shared_limits && parsed.shared_limits_dir.is_some() {
-        return Err("--no-shared-limits conflicts with --shared-limits-dir".into());
-    }
-    if std::env::var("MIO_TRUST_PROJECT_MCP").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes"
-        )
-    }) {
-        parsed.trust_project_mcp = true;
-    }
-    Ok(parsed)
-}
-
-struct StatusReporter {
-    enabled: bool,
-    cancelled: AtomicBool,
-    last_seq: Mutex<Option<String>>,
-}
-
-impl StatusReporter {
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            cancelled: AtomicBool::new(false),
-            last_seq: Mutex::new(None),
-        }
-    }
-
-    fn report(&self, state: ProgramState, msg: Option<&str>) {
-        if !self.enabled {
-            return;
-        }
-        let seq = format_osc7501(&state, msg);
-        let mut guard = self.last_seq.lock().unwrap();
-        if guard.as_ref() == Some(&seq) {
-            return;
-        }
-        *guard = Some(seq.clone());
-        let mut stderr = io::stderr().lock();
-        let _ = stderr.write_all(seq.as_bytes());
-        let _ = stderr.flush();
-    }
-}
-
-struct PendingGuard {
-    broker: Arc<RpcApprovals>,
-    request_id: String,
-}
-
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        let mut pending = self.broker.pending.lock().unwrap();
-        pending.remove(&self.request_id);
-    }
-}
-
-struct PendingApproval {
-    sender: oneshot::Sender<bool>,
-    expires_at: tokio::time::Instant,
-}
-
-struct RpcApprovals {
-    pending: Mutex<BTreeMap<String, PendingApproval>>,
-    timeout: std::time::Duration,
-}
-
-impl RpcApprovals {
-    fn new(timeout: std::time::Duration) -> Self {
-        Self {
-            pending: Mutex::new(BTreeMap::new()),
-            timeout,
-        }
-    }
-
-    fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
-    }
-
-    fn resolve(&self, request_id: &str, approved: bool) -> Result<(), String> {
-        let entry = {
-            let mut pending = self.pending.lock().unwrap();
-            pending.remove(request_id)
-        };
-        match entry {
-            Some(pending) => {
-                if tokio::time::Instant::now() >= pending.expires_at {
-                    return Err(format!(
-                        "Unknown, expired, or already resolved approval request: '{request_id}'"
-                    ));
-                }
-                pending
-                    .sender
-                    .send(approved)
-                    .map_err(|_| "Approval receiver dropped".to_string())
-            }
-            None => Err(format!(
-                "Unknown, expired, or already resolved approval request: '{request_id}'"
-            )),
-        }
-    }
-
-    fn request(self: &Arc<Self>, operation: &str, target: &str) -> HostFuture<Result<(), String>> {
-        let (tx, rx) = oneshot::channel();
-        let request_id = Uuid::new_v4().to_string();
-        let timeout_ms = self.timeout.as_millis().min(u64::MAX as u128) as u64;
-        let expires_at = tokio::time::Instant::now() + self.timeout;
-
-        {
-            let mut pending = self.pending.lock().unwrap();
-            if pending.len() >= RPC_QUEUE_LIMIT {
-                return Box::pin(std::future::ready(Err(
-                    "Too many pending approval requests".to_string(),
-                )));
-            }
-            pending.insert(
-                request_id.clone(),
-                PendingApproval {
-                    sender: tx,
-                    expires_at,
-                },
+        if args.json {
+            emit_or_print(
+                output,
+                json!({"type": "unresolved_effect_acknowledged", "data": value}),
+                false,
+            )?;
+        } else {
+            println!(
+                "Acknowledged {}#{} ({})",
+                scope,
+                call_index,
+                observation.record.state.as_str()
             );
         }
-
+        return Ok(());
+    }
+    let ledger = UnresolvedEffectLedger::read_only(cwd);
+    let view = runner::unresolved_effects_view(&ledger);
+    if args.json {
+        emit_or_print(
+            output,
+            json!({"type": "unresolved_effects", "data": view}),
+            false,
+        )?;
+    } else {
         println!(
             "{}",
-            json!({
-                "type": "approval_request",
-                "request_id": request_id,
-                "operation": operation,
-                "target": target,
-                "timeout_ms": timeout_ms,
-            })
+            serde_json::to_string_pretty(&view).unwrap_or_else(|_| view.to_string())
         );
-
-        let broker = self.clone();
-        let op = operation.to_string();
-        let guard = PendingGuard { broker, request_id };
-
-        Box::pin(async move {
-            let _guard = guard;
-
-            let res = tokio::time::timeout_at(expires_at, rx).await;
-            match res {
-                Ok(Ok(true)) => Ok(()),
-                Ok(Ok(false)) => Err(format!("User rejected tool operation '{op}'")),
-                Ok(Err(_)) => Err("Approval request was canceled or receiver dropped".to_string()),
-                Err(_) => Err(format!("Approval request timed out for tool '{op}'")),
-            }
-        })
     }
+    Ok(())
 }
 
-struct CliHost {
-    json: bool,
-    no_shell: bool,
-    approve: bool,
-    trust_project_mcp: bool,
-    approved_project_mcp: Arc<Mutex<BTreeSet<String>>>,
+async fn execute(
+    args: Args,
     reporter: Arc<StatusReporter>,
-    steering_queue: Mutex<VecDeque<String>>,
-    rpc_approvals: Option<Arc<RpcApprovals>>,
-    journal: Arc<Journal>,
-}
-
-impl CliHost {
-    /// 始终交互式确认（不受 `--approve` 影响），用于项目 MCP 启动授权。
-    fn interactive_approval(
-        &self,
-        operation: &str,
-        target: &str,
-        prompt: &str,
-    ) -> Result<(), String> {
-        let msg = format!("{operation} {target}");
-        self.reporter.report(
-            ProgramState::Blocked {
-                kind: BlockedKind::Permission,
-            },
-            Some(msg.trim()),
-        );
-        eprint!("{prompt}");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        let res = io::stdin()
-            .read_line(&mut answer)
-            .map_err(|e| format!("Failed to read approval input: {e}"));
-        self.reporter.report(ProgramState::Working, None);
-        res?;
-        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            Ok(())
+    output: Option<JsonOutput>,
+) -> Result<(), String> {
+    let execution_policy = args.execution_policy()?;
+    if args.sandbox_status {
+        let status = runner::execution_status(&execution_policy);
+        if args.json {
+            emit_or_print(
+                &output,
+                json!({"type":"backend_status", "data":status}),
+                false,
+            )?;
         } else {
-            Err(format!("User rejected tool operation '{operation}'"))
+            println!("Backend: {}", execution_policy.name());
+            println!("{}", status);
         }
+        return Ok(());
     }
-
-    /// 项目 MCP 配置启动授权（AUD-03）：fail-closed，与工具审批分离。
-    ///
-    /// 授权绑定具体服务器指纹（命令、参数、环境变量），配置变化会重新请求；
-    /// 不会只凭 cwd 布尔值长期信任。`--trust-project-mcp` 或 RPC 审批代理可放行，
-    /// 否则必须交互确认；非交互环境直接拒绝。
-    fn approve_project_mcp(&self, target: &str) -> HostFuture<Result<(), String>> {
-        if self.trust_project_mcp {
-            return Box::pin(std::future::ready(Ok(())));
-        }
-        if self.approved_project_mcp.lock().unwrap().contains(target) {
-            return Box::pin(std::future::ready(Ok(())));
-        }
-        if let Some(broker) = self.rpc_approvals.clone() {
-            let cache = self.approved_project_mcp.clone();
-            let target_owned = target.to_owned();
-            return Box::pin(async move {
-                broker
-                    .request(PROJECT_MCP_APPROVAL_OP, &target_owned)
-                    .await
-                    .map(|()| {
-                        cache.lock().unwrap().insert(target_owned);
-                    })
-            });
-        }
-        if self.json || !io::stdin().is_terminal() {
-            return Box::pin(std::future::ready(Err(format!(
-                "Project MCP server start requires authorization; no interactive terminal or RPC approval broker is available. Re-run with --trust-project-mcp to authorize: {target}"
-            ))));
-        }
-        let res = self.interactive_approval(
-            PROJECT_MCP_APPROVAL_OP,
-            target,
-            &format!("\nStart project MCP server? {target} [y/N]: "),
-        );
-        Box::pin(std::future::ready(match res {
-            Ok(()) => {
-                self.approved_project_mcp
-                    .lock()
-                    .unwrap()
-                    .insert(target.to_owned());
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }))
-    }
-}
-
-impl Host for CliHost {
-    fn on_tool_result(&self, operation: &str, target: &str, result: &Result<String, String>) {
-        if let Err(error) = self.journal.record_result(operation, target, result) {
-            eprintln!("Warning: failed to record execution evidence for {operation}: {error}");
-        }
-    }
-
-    fn on_completion_call(&self, call: &mio_coding_agent::CompletionCallObservation) {
-        if self.json {
-            println!("{}", json!({"type": "completion_call", "data": call}));
-        }
-    }
-
-    fn on_diagnostic(&self, diagnostic: &mio_coding_agent::RunDiagnostic) {
-        if self.json {
-            println!("{}", json!({"type": "diagnostic", "data": diagnostic}));
-        }
-    }
-
-    fn shell(&self, command: &str, cwd: &Path) -> HostFuture<Result<String, String>> {
-        let (command, cwd, disabled) = (command.to_owned(), cwd.to_owned(), self.no_shell);
-        Box::pin(async move {
-            if disabled {
-                return Err("Shell disabled by --no-shell".into());
-            }
-            mio_coding_agent::shell::execute(&command, &cwd).await
-        })
-    }
-
-    fn on_event(&self, event: AgentEvent) {
-        // 证据记录与输出模式无关：json/rpc 模式也必须落盘。
-        if let AgentEvent::ToolFinished {
-            operation,
-            target,
-            result,
-        } = &event
-        {
-            self.on_tool_result(operation, target, result);
-        }
-        if self.json {
-            println!(
-                "{}",
-                serde_json::to_string(&event).expect("event serialization")
-            );
-        } else {
-            match event {
-                AgentEvent::Text(text) => {
-                    self.reporter
-                        .report(ProgramState::Working, Some("Responding"));
-                    print!("{text}");
-                    if let Err(e) = io::stdout().flush() {
-                        eprintln!("Output error: {e}");
-                    }
-                }
-                AgentEvent::ToolStarted { operation, target } => {
-                    let msg = format!("{operation} {target}");
-                    self.reporter
-                        .report(ProgramState::Working, Some(msg.trim()));
-                    eprintln!("\n[{operation}] {target}")
-                }
-                AgentEvent::ToolFinished {
-                    operation, result, ..
-                } => {
-                    self.reporter
-                        .report(ProgramState::Working, Some("Waiting for model"));
-                    if let Err(error) = result {
-                        eprintln!("[{operation} failed] {error}");
-                    }
-                }
-            }
-        }
-    }
-
-    fn poll_steering(&self) -> Option<String> {
-        let mut guard = self.steering_queue.lock().unwrap();
-        guard.pop_front()
-    }
-
-    fn approve_tool(&self, operation: &str, target: &str) -> Result<(), String> {
-        if !self.approve {
-            return Ok(());
-        }
-        if self.json || !io::stdin().is_terminal() {
-            return Err(format!(
-                "Tool '{operation}' ({target}) requires interactive approval (--approve)"
-            ));
-        }
-        self.interactive_approval(
-            operation,
-            target,
-            &format!("\nApprove [{operation}] {target}? [y/N]: "),
-        )
-    }
-
-    fn approve_tool_async(&self, operation: &str, target: &str) -> HostFuture<Result<(), String>> {
-        if operation == PROJECT_MCP_APPROVAL_OP {
-            return self.approve_project_mcp(target);
-        }
-        // 副作用之前持久化 intent；journal 写入失败必须阻止该操作。
-        if let Err(error) = self.journal.record_intent(operation, target) {
-            return Box::pin(std::future::ready(Err(format!(
-                "Execution journal unavailable; refusing '{operation}' ({target}): {error}"
-            ))));
-        }
-        if let Some(broker) = &self.rpc_approvals {
-            broker.request(operation, target)
-        } else {
-            let res = self.approve_tool(operation, target);
-            Box::pin(std::future::ready(res))
-        }
-    }
-}
-
-fn session_list(
-    directory: &Path,
-) -> Result<Vec<mio_coding_agent::session::SessionMetadata>, String> {
-    if !directory.try_exists().map_err(|e| e.to_string())? {
-        return Ok(Vec::new());
-    }
-    let (list, warnings) = Session::list(directory)?;
-    for warning in warnings {
-        eprintln!("Warning: {warning}");
-    }
-    // Session timestamps use seconds. File timestamps distinguish saves made
-    // within the same second, so a freshly forked task is selected reliably.
-    let mut dated = list
-        .into_iter()
-        .map(|session| {
-            let modified = std::fs::metadata(&session.file_path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(|e| e.to_string())?;
-            Ok((modified, session))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    dated.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
-    Ok(dated.into_iter().map(|(_, session)| session).collect())
-}
-
-fn print_sessions(directory: &Path, json: bool) -> Result<(), String> {
-    for session in session_list(directory)? {
-        if json {
-            println!("{}", serde_json::json!({"type":"session", "data":session}));
-        } else if let Some(name) = &session.name {
-            println!(
-                "{}  [{}]  {} messages  {}",
-                session.id,
-                name,
-                session.message_count,
-                session.file_path.display()
-            );
-        } else {
-            println!(
-                "{}  {} messages  {}",
-                session.id,
-                session.message_count,
-                session.file_path.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-fn print_models(query: Option<&str>, json: bool) {
-    let entries = list_catalog_models(query);
-    if json {
-        for entry in entries {
-            println!("{}", json!({"type": "model", "data": entry}));
-        }
-    } else {
-        for entry in entries {
-            let status = if entry.configured { "ready" } else { "unset" };
-            let thinking = if entry.supports_thinking {
-                "thinking"
-            } else {
-                "standard"
-            };
-            println!(
-                "{}/{}  [{}] ({}, {})",
-                entry.provider, entry.model, status, thinking, entry.env_var
-            );
-        }
-    }
-}
-
-struct Runner {
-    config: Config,
-    provider_name: String,
-    connections: BTreeMap<String, Config>,
-    options: RunOptions,
-    tool_filter: ToolFilter,
-    no_mcp: bool,
-    no_session: bool,
-    host: Arc<CliHost>,
-    session: Session,
-    path: PathBuf,
-    subagents: Option<Arc<SubagentManager>>,
-    antigravity: Option<mio_coding_agent::antigravity::Antigravity>,
-    journal: Arc<Journal>,
-}
-
-impl Runner {
-    fn set_model(&mut self, spec: &str, thinking: Option<ThinkingLevel>) -> Result<(), String> {
-        let (provider, model, inline_thinking) = parse_model_spec(spec);
-        if model.trim().is_empty() || model.len() > 1024 || model.ends_with('/') {
-            return Err("Model must be nonempty and at most 1024 bytes".into());
-        }
-        let name = provider.unwrap_or_else(|| self.provider_name.clone());
-        let name = if name == "gemini" {
-            "google".to_owned()
-        } else {
-            name
-        };
-        let mut config = if name == self.provider_name {
-            self.config.clone()
-        } else if let Some(saved) = self.connections.get(&name) {
-            saved.clone()
-        } else {
-            let explicit_base = if name == "custom" {
-                std::env::var("MIO_BASE_URL").ok()
-            } else {
-                None
-            };
-            let (provider, base_url, api_key) = resolve_provider_endpoint(&name, explicit_base)?;
-            Config {
-                provider,
-                base_url,
-                api_key,
-                model: model.clone(),
-            }
-        };
-        config.model = model;
-        let account = if config.provider == Provider::Antigravity {
-            Some(match self.antigravity.clone() {
-                Some(account) => account,
-                None => mio_coding_agent::antigravity::Antigravity::from_profile(
-                    mio_coding_agent::profile::config_directory()?,
-                )?,
-            })
-        } else {
-            None
-        };
-        let mut options = self.options.clone();
-        if let Some(level) = thinking.or(inline_thinking) {
-            options.thinking = Some(level);
-        }
-        mio_coding_agent::validate_model_thinking(&config, options.thinking)?;
-        options.catalog_provider = Some(name.clone());
-        mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
-        if let Some(manager) = self.subagents.as_mut() {
-            Arc::get_mut(manager)
-                .ok_or("Cannot switch a shared or active subagent manager")?
-                .reconfigure(config.clone(), options.clone(), account.clone())?;
-        }
-        // Commit the entire connection only after all validation succeeds.
-        self.connections.insert(name.clone(), config.clone());
-        self.config = config;
-        self.provider_name = name;
-        self.options = options;
-        self.antigravity = account;
-        Ok(())
-    }
-
-    fn commit_session(&mut self, mut candidate: Session, path: PathBuf) -> Result<(), String> {
-        if !self.no_session {
-            let parent = path.parent().ok_or("Invalid session path")?;
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create session directory: {e}"))?;
-            candidate.save(&path)?;
-        }
-        let session_changed = candidate.id != self.session.id;
-        self.session = candidate;
-        self.path = path;
-        if session_changed {
-            self.journal
-                .rebind(&self.session.cwd, &self.session.id.to_string());
-        }
-        Ok(())
-    }
-
-    async fn turn(&mut self, prompt: &str) -> Result<(), String> {
-        self.host.reporter.cancelled.store(false, Ordering::SeqCst);
-        self.host
-            .reporter
-            .report(ProgramState::Working, Some("Waiting for model"));
-        if let Err(error) = self.journal.begin_run() {
-            eprintln!(
-                "Warning: execution evidence journal unavailable ({error}); side-effecting tools will be refused."
-            );
-        }
-        let mut cancelled = false;
-        let res = tokio::select! {
-            res = self.turn_inner(prompt) => res,
-            signal = tokio::signal::ctrl_c() => {
-                cancelled = true;
-                if let Err(e) = signal {
-                    Err(e.to_string())
-                } else if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
-                    self.host.reporter.report(ProgramState::Error, Some(&cleanup_err));
-                    Err(cleanup_err)
-                } else {
-                    self.host.reporter.cancelled.store(true, Ordering::SeqCst);
-                    self.host.reporter.report(ProgramState::Idle, None);
-                    Err(
-                        "Cancelled; previous session retained. File changes are not rolled back."
-                            .into(),
-                    )
-                }
-            }
-        };
-        // AUD-13: 回合结束时保留证据。已执行操作保持 Executed，未记录结果的 intent 标记为 Unknown。
-        let run_state = if cancelled {
-            RunState::Cancelled
-        } else if res.is_ok() {
-            RunState::Completed
-        } else {
-            RunState::Failed
-        };
-        if let Err(error) = self.journal.finish_run(run_state) {
-            eprintln!("Warning: failed to finalize execution evidence: {error}");
-        }
-        if cancelled {
-            // 取消分支已处理清理与状态上报。
-            return res;
-        }
-        match res {
-            Ok(()) => {
-                self.host.reporter.report(ProgramState::Done, None);
-                Ok(())
-            }
-            Err(e) => {
-                if let Err(cleanup_err) = cancel_children(self.subagents.as_ref()).await {
-                    self.host
-                        .reporter
-                        .report(ProgramState::Error, Some(&cleanup_err));
-                    return Err(cleanup_err);
-                }
-                self.host.reporter.report(ProgramState::Error, Some(&e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn turn_inner(&mut self, prompt: &str) -> Result<(), String> {
-        let expanded_prompt = expand_at_files(&self.session.cwd, prompt)?;
-        let extra_tools = if self.no_mcp {
-            Vec::new()
-        } else {
-            load_dynamic_tools(&self.session.cwd, self.host.clone(), &self.tool_filter).await?
-        };
-        let history = run_with_tools(
-            self.config.clone(),
-            self.session.history.clone(),
-            &expanded_prompt,
-            &self.session.cwd,
-            self.host.clone(),
-            Services {
-                antigravity: self.antigravity.as_ref(),
-                ..Services::default()
-            },
-            RunTools {
-                options: self.options.clone(),
-                read_only: false,
-                subagents: self.subagents.clone(),
-                tool_filter: self.tool_filter.clone(),
-                extra_tools,
-            },
-        )
-        .await?;
-        if let Some(manager) = &self.subagents {
-            let active: Vec<_> = manager
-                .list()
-                .into_iter()
-                .filter(|run| run.status.is_active())
-                .collect();
-            if !active.is_empty() {
-                for run in active {
-                    manager.kill(run.run_id).await?;
-                }
-                return Err("Parent ended before collecting child tasks; unfinished children cancelled. File changes are not rolled back.".into());
-            }
-        }
-        let mut candidate = self.session.clone();
-        candidate.history = history;
-        self.commit_session(candidate, self.path.clone())?;
-        if self.host.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "type": "done",
-                    "session": if self.no_session { serde_json::Value::Null } else { json!(self.path) },
-                    "messages": self.session.history.len()
-                })
-            );
-        } else {
-            println!();
-            if !self.no_session {
-                eprintln!("Session: {}", self.path.display());
-            }
-        }
-        Ok(())
-    }
-}
-
-const RPC_QUEUE_LIMIT: usize = 64;
-
-fn rpc_state(runner: &Runner, running: bool, queued: usize) -> serde_json::Value {
-    json!({
-        "sessionId": runner.session.id,
-        "sessionName": runner.session.name,
-        "session_name": runner.session.name,
-        "sessionFile": if runner.no_session { serde_json::Value::Null } else { json!(runner.path) },
-        "model": runner.config.model,
-        "provider": runner.provider_name,
-        "thinkingLevel": runner.options.thinking,
-        "contextBudget": mio_coding_agent::context_budget::ContextBudget::resolve(&runner.config, &runner.options).ok(),
-        "scheduler": runner.options.scheduler.as_ref().map(|scheduler| scheduler.snapshot()),
-        "childTasks": runner.subagents.as_ref().map(|manager| manager.activity()),
-        "messageCount": runner.session.history.len(),
-        "isStreaming": running,
-        "followUpCount": queued,
-        "pendingApprovalCount": runner.host.rpc_approvals.as_ref().map_or(0, |a| a.pending_count()),
-        "journalEnabled": runner.journal.is_enabled(),
-        "journalPath": runner.journal.path(),
-        "recovery": runner.journal.recovery_report(),
-    })
-}
-
-/// 打开会话 journal，并将上次进程遗留的 Active 运行标记为 Interrupted。
-fn open_journal(no_session: bool, cwd: &Path, session_id: &str) -> Arc<Journal> {
-    if no_session {
-        return Arc::new(Journal::disabled());
-    }
-    let journal = Arc::new(Journal::open(cwd, session_id));
-    journal.mark_interrupted();
-    journal
-}
-
-/// 以人类可读形式打印恢复证据中的操作列表。
-fn print_recovered_ops(label: &str, operations: &[journal::RecoveredOperation]) {
-    for op in operations {
-        let detail = op
-            .detail
-            .as_deref()
-            .map(|detail| format!(", {detail}"))
-            .unwrap_or_default();
-        println!(
-            "  {label}: {} {} (turn {}, run {}{detail})",
-            op.operation, op.target, op.turn, op.run_id
-        );
-    }
-}
-
-fn rpc_message_valid(message: &str) -> bool {
-    !message.trim().is_empty() && message.len() <= 65536
-}
-
-fn rpc_parse(line: &str) -> Option<RpcCommand> {
-    if line.trim().is_empty() {
-        return None;
-    }
-    match serde_json::from_str(line) {
-        Ok(command) => Some(command),
-        Err(error) => {
-            println!(
-                "{}",
-                rpc_response("parse", None, false, json!({"error": error.to_string()}))
-            );
-            None
-        }
-    }
-}
-
-async fn cancel_children(manager: Option<&Arc<SubagentManager>>) -> Result<(), String> {
-    if let Some(manager) = manager {
-        for run in manager
-            .list()
-            .into_iter()
-            .filter(|run| run.status.is_active())
-        {
-            manager.kill(run.run_id).await?;
-        }
-    }
-    Ok(())
-}
-
-enum RpcTurnEnd {
-    Finished(Result<(), String>),
-    Abort(Option<String>),
-    Closed,
-    InputError(String),
-}
-
-// The turn future borrows Runner exclusively; control input uses an immutable
-// state snapshot and the shared host. Dropping the future cancels model I/O and
-// the shell process guard before cancellation is acknowledged.
-async fn run_rpc_tasks(
-    runner: &mut Runner,
-    lines: &mut RpcInput,
-    initial: String,
-) -> Result<bool, String> {
-    let mut follow_ups = VecDeque::new();
-    let mut message = initial;
-    loop {
-        let host = runner.host.clone();
-        let scheduler = runner.options.scheduler.clone();
-        let child_manager = runner.subagents.clone();
-        let mut state = rpc_state(runner, true, follow_ups.len());
-        let end = {
-            let turn = runner.turn(&message);
-            tokio::pin!(turn);
-            loop {
-                tokio::select! {
-                    line = lines.next_line() => {
-                        let line = match line {
-                            Ok(Some(line)) => line,
-                            Ok(None) => break RpcTurnEnd::Closed,
-                            Err(LineReadError::TooLong { max_bytes }) => {
-                                println!("{}", json!({"type":"error","error":format!("RPC input line exceeds {max_bytes} bytes; line discarded")}));
-                                continue;
-                            }
-                            Err(error) => break RpcTurnEnd::InputError(error.to_string()),
-                        };
-                        let Some(command) = rpc_parse(&line) else { continue };
-                        match command {
-                            RpcCommand::Abort { id } => break RpcTurnEnd::Abort(id),
-                            RpcCommand::Steer { id, message } => {
-                                let mut queue = host.steering_queue.lock().unwrap();
-                                if !rpc_message_valid(&message) || queue.len() >= RPC_QUEUE_LIMIT {
-                                    println!("{}", rpc_response("steer", id.as_deref(), false, json!({"error":"Message must be 1–65536 bytes and steering queue must have space"})));
-                                } else {
-                                    queue.push_back(message);
-                                    println!("{}", rpc_response("steer", id.as_deref(), true, json!({"queued":true})));
-                                }
-                            }
-                            RpcCommand::FollowUp { id, message } => {
-                                if !rpc_message_valid(&message) || follow_ups.len() >= RPC_QUEUE_LIMIT {
-                                    println!("{}", rpc_response("follow_up", id.as_deref(), false, json!({"error":"Message must be 1–65536 bytes and follow-up queue must have space"})));
-                                } else {
-                                    follow_ups.push_back(message);
-                                    println!("{}", rpc_response("follow_up", id.as_deref(), true, json!({"queued":follow_ups.len()})));
-                                }
-                            }
-                            RpcCommand::GetState { id } => {
-                                state["followUpCount"] = json!(follow_ups.len());
-                                state["steeringCount"] = json!(host.steering_queue.lock().unwrap().len());
-                                state["pendingApprovalCount"] = json!(host.rpc_approvals.as_ref().map_or(0, |a| a.pending_count()));
-                                state["scheduler"] = scheduler.as_ref().map_or(Value::Null, |scheduler| scheduler.snapshot());
-                                state["childTasks"] = child_manager.as_ref().map_or(Value::Null, |manager| json!(manager.activity()));
-                                println!("{}", rpc_response("get_state", id.as_deref(), true, state.clone()));
-                            }
-                            RpcCommand::ApproveResponse { request_id, approved } => {
-                                let res = match &host.rpc_approvals {
-                                    Some(broker) => broker.resolve(&request_id, approved),
-                                    None => Err("Approval broker is not enabled".to_string()),
-                                };
-                                match res {
-                                    Ok(()) => println!("{}", rpc_response("approve_response", Some(&request_id), true, json!({"approved": approved}))),
-                                    Err(err) => println!("{}", rpc_response("approve_response", Some(&request_id), false, json!({"error": err}))),
-                                }
-                            }
-                            other => {
-                                let value = serde_json::to_value(other).expect("RPC serialization");
-                                println!("{}", rpc_response(value["type"].as_str().unwrap_or("unknown"), value["id"].as_str().or(value["request_id"].as_str()), false, json!({"error":"Agent is running; use steer, follow_up, abort, approve_response or get_state"})));
-                            }
-                        }
-                    }
-                    result = &mut turn => break RpcTurnEnd::Finished(result),
-                }
-            }
-        };
-        match end {
-            RpcTurnEnd::Finished(Ok(())) => {
-                // Tool-free responses (and failed tools) may leave steering
-                // unconsumed. Continue with it before normal follow-up work.
-                if let Some(next) = host.poll_steering().or_else(|| follow_ups.pop_front()) {
-                    message = next;
-                    continue;
-                }
-                println!("{}", json!({"type":"agent_settled", "status":"completed"}));
-                return Ok(true);
-            }
-            other => {
-                host.steering_queue.lock().unwrap().clear();
-                follow_ups.clear();
-                cancel_children(runner.subagents.as_ref()).await?;
-                // Abort/EOF drop Runner::turn before its normal finalizer runs.
-                // Persist the terminal state here; pending effects remain unknown.
-                let terminal_state = match &other {
-                    RpcTurnEnd::Abort(_) | RpcTurnEnd::Closed => RunState::Cancelled,
-                    _ => RunState::Failed,
-                };
-                if let Err(error) = runner.journal.finish_run(terminal_state) {
-                    eprintln!("Warning: failed to finalize execution evidence: {error}");
-                }
-                match other {
-                    RpcTurnEnd::Abort(id) => {
-                        host.reporter.cancelled.store(true, Ordering::SeqCst);
-                        runner.host.reporter.report(ProgramState::Idle, None);
-                        println!(
-                            "{}",
-                            rpc_response("abort", id.as_deref(), true, json!({"aborted":true}))
-                        );
-                        println!("{}", json!({"type":"agent_settled", "status":"cancelled"}));
-                        return Ok(true);
-                    }
-                    RpcTurnEnd::Closed => return Ok(false),
-                    RpcTurnEnd::InputError(error) => return Err(error),
-                    RpcTurnEnd::Finished(Err(error)) => {
-                        println!("{}", json!({"type":"error", "error":error}));
-                        println!("{}", json!({"type":"agent_settled", "status":"error"}));
-                        return Ok(true);
-                    }
-                    RpcTurnEnd::Finished(Ok(())) => unreachable!(),
-                }
-            }
-        }
-    }
-}
-
-async fn run_rpc_loop(runner: &mut Runner, directory: &Path, cwd: &Path) -> Result<(), String> {
-    let mut lines = RpcInput::new();
-    loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
-            Err(LineReadError::TooLong { max_bytes }) => {
-                println!(
-                    "{}",
-                    json!({"type":"error","error":format!("RPC input line exceeds {max_bytes} bytes; line discarded")})
-                );
-                continue;
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        let Some(cmd) = rpc_parse(&line) else {
-            continue;
-        };
-        match cmd {
-            RpcCommand::Prompt { id, message }
-            | RpcCommand::Steer { id, message }
-            | RpcCommand::FollowUp { id, message } => {
-                let name = serde_json::from_str::<serde_json::Value>(&line)
-                    .expect("parsed command")["type"]
-                    .as_str()
-                    .unwrap_or("prompt")
-                    .to_owned();
-                if !rpc_message_valid(&message) {
-                    println!(
-                        "{}",
-                        rpc_response(
-                            &name,
-                            id.as_deref(),
-                            false,
-                            json!({"error":"Message must be 1–65536 bytes"})
-                        )
-                    );
-                    continue;
-                }
-                println!(
-                    "{}",
-                    rpc_response(&name, id.as_deref(), true, json!({"status":"started"}))
-                );
-                if !run_rpc_tasks(runner, &mut lines, message).await? {
-                    return Ok(());
-                }
-            }
-            RpcCommand::Abort { id } => {
-                runner.host.steering_queue.lock().unwrap().clear();
-                println!(
-                    "{}",
-                    rpc_response("abort", id.as_deref(), true, json!({"aborted":false}))
-                );
-            }
-            RpcCommand::Compact { id, instructions } => {
-                let (compacted, stats) = compact_history(
-                    &runner.session.history,
-                    DEFAULT_KEEP_RECENT_MESSAGES,
-                    instructions.as_deref(),
-                );
-                let mut candidate = runner.session.clone();
-                candidate.history = compacted;
-                match runner.commit_session(candidate, runner.path.clone()) {
-                    Ok(()) => println!(
-                        "{}",
-                        rpc_response("compact", id.as_deref(), true, json!(stats))
-                    ),
-                    Err(error) => println!(
-                        "{}",
-                        rpc_response("compact", id.as_deref(), false, json!({"error": error}))
-                    ),
-                }
-            }
-            RpcCommand::GetState { id } => {
-                println!(
-                    "{}",
-                    rpc_response(
-                        "get_state",
-                        id.as_deref(),
-                        true,
-                        rpc_state(runner, false, 0)
-                    )
-                );
-            }
-            RpcCommand::SetModel {
-                id,
-                model,
-                thinking,
-            } => match runner.set_model(&model, thinking) {
-                Ok(()) => println!(
-                    "{}",
-                    rpc_response(
-                        "set_model",
-                        id.as_deref(),
-                        true,
-                        json!({"model":runner.config.model,"provider":runner.provider_name,"thinkingLevel":runner.options.thinking})
-                    )
-                ),
-                Err(error) => println!(
-                    "{}",
-                    rpc_response("set_model", id.as_deref(), false, json!({"error":error}))
-                ),
-            },
-
-            RpcCommand::NewSession { id, name } => match Session::new(cwd) {
-                Ok(mut s) => {
-                    s.set_name(name);
-                    let path = directory.join(format!("{}.json", s.id));
-                    match runner.commit_session(s, path) {
-                        Ok(()) => println!(
-                            "{}",
-                            rpc_response(
-                                "new_session",
-                                id.as_deref(),
-                                true,
-                                json!({"sessionId": runner.session.id, "name": runner.session.name})
-                            )
-                        ),
-                        Err(error) => println!(
-                            "{}",
-                            rpc_response(
-                                "new_session",
-                                id.as_deref(),
-                                false,
-                                json!({"error": error})
-                            )
-                        ),
-                    }
-                }
-                Err(error) => println!(
-                    "{}",
-                    rpc_response("new_session", id.as_deref(), false, json!({"error": error}))
-                ),
-            },
-            RpcCommand::ForkSession { id } => {
-                let candidate = runner.session.fork();
-                let path = directory.join(format!("{}.json", candidate.id));
-                match runner.commit_session(candidate, path) {
-                    Ok(()) => println!(
-                        "{}",
-                        rpc_response(
-                            "fork_session",
-                            id.as_deref(),
-                            true,
-                            json!({"sessionId": runner.session.id})
-                        )
-                    ),
-                    Err(error) => println!(
-                        "{}",
-                        rpc_response(
-                            "fork_session",
-                            id.as_deref(),
-                            false,
-                            json!({"error": error})
-                        )
-                    ),
-                }
-            }
-            RpcCommand::SetSessionName { id, name } => {
-                let mut candidate = runner.session.clone();
-                candidate.set_name(Some(name));
-                match runner.commit_session(candidate, runner.path.clone()) {
-                    Ok(()) => println!(
-                        "{}",
-                        rpc_response(
-                            "set_session_name",
-                            id.as_deref(),
-                            true,
-                            json!({
-                                "sessionId": runner.session.id,
-                                "sessionName": runner.session.name,
-                                "session_name": runner.session.name,
-                            })
-                        )
-                    ),
-                    Err(error) => println!(
-                        "{}",
-                        rpc_response(
-                            "set_session_name",
-                            id.as_deref(),
-                            false,
-                            json!({"error": error})
-                        )
-                    ),
-                }
-            }
-            RpcCommand::ExportHtml { id, output_path } => {
-                let out_path = match output_path {
-                    Some(ref p) => {
-                        let pb = PathBuf::from(p);
-                        if pb.is_absolute() { pb } else { cwd.join(pb) }
-                    }
-                    None => cwd.join(format!("mio-session-{}.html", runner.session.id)),
-                };
-                match runner.session.export_html(&out_path) {
-                    Ok(()) => {
-                        println!(
-                            "{}",
-                            rpc_response(
-                                "export_html",
-                                id.as_deref(),
-                                true,
-                                json!({"path": out_path})
-                            )
-                        );
-                    }
-                    Err(err) => {
-                        println!(
-                            "{}",
-                            rpc_response(
-                                "export_html",
-                                id.as_deref(),
-                                false,
-                                json!({"error": err})
-                            )
-                        );
-                    }
-                }
-            }
-            RpcCommand::ApproveResponse {
-                request_id,
-                approved,
-            } => {
-                let res = match &runner.host.rpc_approvals {
-                    Some(broker) => broker.resolve(&request_id, approved),
-                    None => Err("Approval broker is not enabled".to_string()),
-                };
-                match res {
-                    Ok(()) => println!(
-                        "{}",
-                        rpc_response(
-                            "approve_response",
-                            Some(&request_id),
-                            true,
-                            json!({"approved": approved})
-                        )
-                    ),
-                    Err(err) => println!(
-                        "{}",
-                        rpc_response(
-                            "approve_response",
-                            Some(&request_id),
-                            false,
-                            json!({"error": err})
-                        )
-                    ),
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String> {
     if args.list_models {
-        print_models(args.list_models_query.as_deref(), args.json);
+        print_models(args.list_models_query.as_deref(), &output);
         return Ok(());
     }
     if args.plugin_search {
@@ -2445,7 +169,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             mio_coding_agent::plugin::search_community_plugins(args.plugin_search_query.as_deref());
         if args.json {
             for e in entries {
-                println!("{}", json!({"type": "community_plugin", "data": e}));
+                emit_or_print(
+                    &output,
+                    json!({"type": "community_plugin", "data": e}),
+                    false,
+                )?;
             }
         } else {
             for e in entries {
@@ -2467,10 +195,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             .ok_or("Invalid --plugin-init directory name")?;
         let created = mio_coding_agent::plugin::scaffold_plugin(init_dir, name)?;
         if args.json {
-            println!(
-                "{}",
-                json!({"type": "plugin_initialized", "name": name, "path": created})
-            );
+            emit_or_print(
+                &output,
+                json!({"type": "plugin_initialized", "name": name, "path": created}),
+                false,
+            )?;
         } else {
             println!(
                 "Initialized standard Mio plugin '{name}' at {}",
@@ -2483,10 +212,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         if val_path.is_file() {
             let reg = mio_coding_agent::plugin::validate_registry_file(val_path)?;
             if args.json {
-                println!(
-                    "{}",
-                    json!({"type": "registry_valid", "plugins": reg.plugins.len(), "path": val_path})
-                );
+                emit_or_print(
+                    &output,
+                    json!({"type": "registry_valid", "plugins": reg.plugins.len(), "path": val_path}),
+                    false,
+                )?;
             } else {
                 println!(
                     "Valid registry.json ({} plugins) at {}",
@@ -2497,10 +227,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         } else {
             let manifest = mio_coding_agent::plugin::validate_plugin_dir(val_path)?;
             if args.json {
-                println!(
-                    "{}",
-                    json!({"type": "plugin_valid", "data": manifest, "path": val_path})
-                );
+                emit_or_print(
+                    &output,
+                    json!({"type": "plugin_valid", "data": manifest, "path": val_path}),
+                    false,
+                )?;
             } else {
                 println!(
                     "Valid Mio plugin '{} v{}' at {}",
@@ -2521,10 +252,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             &mio_coding_agent::profile::config_directory()?,
         )?;
         if args.json {
-            println!(
-                "{}",
-                serde_json::json!({"type":"profile_imported","provider":"antigravity","data":result})
-            );
+            emit_or_print(
+                &output,
+                serde_json::json!({"type":"profile_imported","provider":"antigravity","data":result}),
+                false,
+            )?;
         } else {
             println!(
                 "Imported Antigravity account and model {} into Mio; source files unchanged.",
@@ -2535,19 +267,52 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     }
     let cwd = args
         .cwd
+        .clone()
         .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?)
         .canonicalize()
         .map_err(|e| format!("Invalid workspace: {e}"))?;
     if !cwd.is_dir() {
         return Err("Workspace must be a directory".into());
     }
+    // DES-17 显式离线输出清理：`--output-cleanup-plan` / `--output-cleanup-confirm`
+    // 是无 Provider、无模型的独立命令，必须在任何 Config/Session/scheduler 初始化之前
+    // 返回；dry-run 永不删除，只有显式 confirm 才会删除。
+    if output_cleanup::selected(&args) {
+        return output_cleanup::run(&args, &cwd, &output);
+    }
+    // DES-09 维护通道：精确列出/确认工作区未决副作用账本。它是无 Provider、无模型的
+    // 独立命令（不是模型可自动调用的工具），用于当运行内闸门溢出、无法普通确认时，
+    // 让操作者按精确 key+snapshot 逐一确认，不删除任何证据。
+    if args.list_unresolved_effects || args.ack_unresolved_effect.is_some() {
+        return run_unresolved_effects_maintenance(&args, &cwd, &output);
+    }
+    // DES-17：离线清理命令已在上面提前返回，因此它永远不会被自己的租约挡住。其余
+    // CLI/RPC/交互生命周期（包括 idle ephemeral 主机）都持有本工作区的 shared
+    // activity 租约，直到 `execute` 返回，从而在另一个进程里跑离线 cleanup 时正确地
+    // 报 `Busy`，而不是删掉本次运行还可能引用的旧输出。锁文件位于项目之外。
+    let _runtime_activity_lease =
+        match mio_coding_agent::shell::workspace_activity::shared_for_workspace(&cwd) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                return Err(
+                    "an offline output cleanup holds this workspace; retry after it finishes"
+                        .into(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "workspace output activity lease is unavailable: {error}"
+                ));
+            }
+        };
     if let Some(ref spec) = args.plugin_install {
         let installed = mio_coding_agent::plugin::install_plugin(&cwd, spec)?;
         if args.json {
-            println!(
-                "{}",
-                json!({"type": "plugin_installed", "data": installed.manifest, "path": installed.root_dir})
-            );
+            emit_or_print(
+                &output,
+                json!({"type": "plugin_installed", "data": installed.manifest, "path": installed.root_dir}),
+                false,
+            )?;
         } else {
             println!(
                 "Installed plugin '{} v{}' into {}",
@@ -2561,7 +326,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     if let Some(ref name) = args.plugin_remove {
         mio_coding_agent::plugin::remove_plugin(&cwd, name)?;
         if args.json {
-            println!("{}", json!({"type": "plugin_removed", "name": name}));
+            emit_or_print(
+                &output,
+                json!({"type": "plugin_removed", "name": name}),
+                false,
+            )?;
         } else {
             println!("Removed plugin '{name}'");
         }
@@ -2571,10 +340,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
         if args.json {
             for p in installed {
-                println!(
-                    "{}",
-                    json!({"type": "plugin", "data": p.manifest, "path": p.root_dir})
-                );
+                emit_or_print(
+                    &output,
+                    json!({"type": "plugin", "data": p.manifest, "path": p.root_dir}),
+                    false,
+                )?;
             }
         } else if installed.is_empty() {
             println!("No plugins installed in {}", cwd.display());
@@ -2591,9 +361,95 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         }
         return Ok(());
     }
+    if args.list_checkpoints || args.rewind.is_some() {
+        let store = Arc::new(mio_coding_agent::checkpoint::CheckpointStore::open(&cwd)?);
+        if args.list_checkpoints {
+            let entries = store.list()?;
+            if args.json {
+                emit_or_print(
+                    &output,
+                    json!({"type":"checkpoints", "data":entries}),
+                    false,
+                )?;
+            } else {
+                for entry in entries {
+                    println!(
+                        "{} {:?} {} {}",
+                        entry.id, entry.state, entry.operation, entry.target
+                    );
+                }
+            }
+            return Ok(());
+        }
+        let host = Arc::new(CliHost {
+            json: args.json,
+            output: output.clone(),
+            no_shell: true,
+            execution_policy: execution_policy.clone(),
+            approve: args.approve,
+            trust_project_mcp: false,
+            approved_project_mcp: Arc::new(Mutex::new(BTreeSet::new())),
+            reporter: reporter.clone(),
+            steering_queue: Mutex::new(VecDeque::new()),
+            rpc_approvals: None,
+            journal: Arc::new(Journal::disabled()),
+            ledger: Arc::new(
+                mio_coding_agent::unresolved_effect::UnresolvedEffectLedger::disabled(),
+            ),
+            workspace: cwd.clone(),
+            unknown_fence: Mutex::new(mio_coding_agent::unknown_effect::UnknownEffectFence::new()),
+            turn_claims: Mutex::new(Vec::new()),
+            dispatched_calls: Mutex::new(BTreeMap::new()),
+            run_states: Mutex::new(BTreeMap::new()),
+            run_tracking_saturated: AtomicBool::new(false),
+            // rewind 是离线文件恢复，不会发起任何模型请求。
+            output_schema: None,
+        });
+        let shared = if args.no_shared_limits {
+            None
+        } else {
+            let root = match &args.shared_limits_dir {
+                Some(path) if path.is_absolute() => path.clone(),
+                Some(path) => cwd.join(path),
+                None => mio_coding_agent::profile::config_directory()?.join("coordination"),
+            };
+            Some(
+                mio_coding_agent::shared_limits::SharedLimits::new(root, Default::default())
+                    .map_err(|error| error.to_string())?,
+            )
+        };
+        let filter = ToolFilter::from_cli(
+            args.tools.as_deref(),
+            args.exclude_tools.as_deref(),
+            args.no_tools,
+        )?;
+        let outcome = runner::rewind_file(
+            &cwd,
+            store,
+            host,
+            filter,
+            shared,
+            None,
+            args.rewind.as_deref().expect("rewind selected"),
+        )
+        .await?;
+        if args.json {
+            emit_or_print(&output, json!({"type":"rewound", "data":outcome}), false)?;
+        } else {
+            println!(
+                "Rewind {}: {:?} {}",
+                outcome.id, outcome.action, outcome.target
+            );
+        }
+        return Ok(());
+    }
     let directory = cwd.join(".mio/sessions");
     if args.list {
-        return print_sessions(&directory, args.json);
+        return if args.json {
+            print_sessions_json(&directory, &output)
+        } else {
+            print_sessions(&directory, false)
+        };
     }
     let selected = if args.resume {
         Some(
@@ -2616,8 +472,10 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             );
         }
         let mut reports: Vec<(String, Option<RecoveryReport>)> = Vec::new();
+        let mut recovery_cwd = cwd.clone();
         if let Some(path) = &selected {
             let session = Session::load(path)?;
+            recovery_cwd = session.cwd.clone();
             let id = session.id.to_string();
             reports.push((
                 id.clone(),
@@ -2656,25 +514,89 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                 return Err("No persisted execution evidence in this workspace".into());
             }
         }
+        let saved_sessions =
+            if selected.is_none() && directory.try_exists().map_err(|error| error.to_string())? {
+                // Recovery must correlate older custom-named files too. The
+                // ordinary listing's 1000-result display cap is not an identity
+                // lookup bound; the directory scan itself remains bounded.
+                let (sessions, warnings) = Session::list_with_limit(&directory, usize::MAX)?;
+                for warning in warnings {
+                    eprintln!("Warning: {}", warning.escape_debug());
+                }
+                sessions
+            } else {
+                Vec::new()
+            };
+        // DES-09: a read-only view of the cross-restart unresolved-effect
+        // ledger. `read_only` creates nothing: no directory, no file, no sweep
+        // and no migration, so `--recovery` never mutates persisted evidence.
+        let unresolved_ledger =
+            mio_coding_agent::unresolved_effect::UnresolvedEffectLedger::read_only(&recovery_cwd);
+        let unresolved_view = runner::ledger_summary(&unresolved_ledger);
         for (session_id, report) in reports {
+            let matching_paths: Vec<_> = saved_sessions
+                .iter()
+                .filter(|saved| saved.id.to_string() == session_id)
+                .map(|saved| saved.file_path.clone())
+                .collect();
+            let ambiguous = selected.is_none() && matching_paths.len() > 1;
+            let session_path = selected
+                .clone()
+                .or_else(|| matching_paths.first().cloned())
+                .unwrap_or_else(|| directory.join(format!("{session_id}.json")));
+            let mut view = runner::recovery_view(
+                &session_id,
+                &recovery_cwd,
+                if ambiguous { None } else { Some(&session_path) },
+                "data",
+            );
+            if ambiguous {
+                view["sessionError"] =
+                    json!("Multiple saved files have this session ID; select one with --session");
+            }
             if args.json {
-                println!(
-                    "{}",
-                    json!({"type": "recovery", "session": session_id, "data": report})
-                );
+                emit_or_print(
+                    &output,
+                    json!({"type": "recovery", "session": session_id, "data": report, "view": view, "unresolvedEffects": unresolved_view.clone()}),
+                    false,
+                )?;
                 continue;
             }
             println!("Session: {session_id}");
+            if view["sessionSaved"] == true {
+                println!("Saved messages: {}", view["savedMessages"]);
+            } else {
+                println!("No matching saved session history");
+            }
+            if let Some(error) = view["sessionError"].as_str() {
+                eprintln!("Session warning: {}", error.escape_debug());
+            }
             match report {
                 Some(report) => {
                     if let Some(error) = &report.journal_error {
                         eprintln!("Journal warning: {error}");
                     }
                     println!("Interrupted runs: {}", report.interrupted_runs);
+                    for goal in &report.unfinished_goals {
+                        println!(
+                            "Unfinished request (turn {}, {:?}{}): {}",
+                            goal.turn,
+                            goal.state,
+                            if goal.truncated { ", truncated" } else { "" },
+                            goal.goal
+                                .as_deref()
+                                .unwrap_or("[not recorded]")
+                                .escape_debug(),
+                        );
+                    }
                     println!("Executed operations: {}", report.executed_operations);
                     print_recovered_ops("Executed", &report.executed);
                     print_recovered_ops("Unknown result", &report.unknown_operations);
                     print_recovered_ops("Failed", &report.failed_operations);
+                    if !report.calls.is_empty() {
+                        println!("Canonical tool calls: {}", report.calls.len());
+                        print_recovered_calls(&report.calls);
+                    }
                     if report.has_unfinished() {
                         println!(
                             "Mio will not replay these operations; file changes are not rolled back."
@@ -2682,6 +604,17 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                     }
                 }
                 None => println!("No persisted execution evidence for this session"),
+            }
+        }
+        if !args.json {
+            println!(
+                "Unresolved effects: {} unknown, {} outstanding, {} resolved trimmed",
+                unresolved_view["unknownCount"],
+                unresolved_view["outstandingCount"],
+                unresolved_view["resolvedTrimmed"],
+            );
+            if let Some(error) = unresolved_view["error"].as_str() {
+                eprintln!("Unresolved effect ledger warning: {}", error.escape_debug());
             }
         }
         return Ok(());
@@ -2703,10 +636,11 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         };
         session.export_html(&out_path)?;
         if args.json {
-            println!(
-                "{}",
-                json!({"type": "exported", "session": session.id, "path": out_path})
-            );
+            emit_or_print(
+                &output,
+                json!({"type": "exported", "session": session.id, "path": out_path}),
+                false,
+            )?;
         } else {
             println!("Exported session {} to {}", session.id, out_path.display());
         }
@@ -2765,7 +699,17 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         args.exclude_tools.as_deref(),
         args.no_tools,
     )?;
-    let raw_model_arg = args.model.or_else(|| std::env::var("MIO_MODEL").ok());
+    let tool_filter = if args.no_shell {
+        tool_filter.without_shell()
+    } else {
+        tool_filter
+    };
+    let profile_directory = mio_coding_agent::profile::config_directory()?;
+    let settings = read_user_cli_settings(&profile_directory)?;
+    let raw_model_arg = args
+        .model
+        .or_else(|| settings.default_model.clone())
+        .or_else(|| std::env::var("MIO_MODEL").ok());
     let (shorthand_provider, parsed_model, shorthand_thinking) = match &raw_model_arg {
         Some(raw) => {
             let (prov, mdl, thk) = parse_model_spec(raw);
@@ -2773,11 +717,14 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         }
         None => (None, None, None),
     };
-    let profile_directory = mio_coding_agent::profile::config_directory()?;
-    let explicit_base = args.base_url.or_else(|| std::env::var("MIO_BASE_URL").ok());
+    let explicit_base = args
+        .base_url
+        .or_else(|| settings.base_url.clone())
+        .or_else(|| std::env::var("MIO_BASE_URL").ok());
     let selected_provider = args
         .provider
         .or(shorthand_provider)
+        .or_else(|| settings.default_provider.clone())
         .or_else(|| std::env::var("MIO_PROVIDER").ok());
     let profile = if selected_provider
         .as_deref()
@@ -2797,6 +744,13 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         });
     let (provider, resolved_base, resolved_key) =
         resolve_provider_endpoint(provider_str, explicit_base)?;
+    let resolved_key = if settings.default_provider.as_deref() == Some(provider_str)
+        && settings.base_url.as_deref() == Some(resolved_base.as_str())
+    {
+        settings.api_key.unwrap_or(resolved_key)
+    } else {
+        resolved_key
+    };
     let antigravity = if provider == Provider::Antigravity {
         Some(mio_coding_agent::antigravity::Antigravity::from_profile(
             profile_directory.clone(),
@@ -2811,6 +765,12 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             .ok_or("Set --model or MIO_MODEL")?,
         base_url: resolved_base,
         api_key: resolved_key,
+    };
+    // `--output-schema PATH` 在创建会话、调度器与任何模型请求之前一次性读取。
+    // 读盘/JSON/Schema 错误都在这里以明确错误返回，绝不降级为“无 schema”。
+    let output_schema = match &args.output_schema {
+        Some(path) => Some(runner::load_output_schema(&cwd, path)?),
+        None => None,
     };
     let shared_directory = if args.no_shared_limits {
         None
@@ -2833,19 +793,23 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         },
         shared_directory.as_deref(),
     )?);
+    // REQ-RECOVERY：工作区级可选文件检查点。默认关闭，只有 MIO_CHECKPOINTS=1 或交互式
+    // /checkpoints on 才把存储接到本次运行的 workspace 上。--no-session 与 journal 一致禁用。
+    let checkpoints = open_checkpoints(args.no_session, &session.cwd)?;
     let options = RunOptions {
+        pinned_context: session.pinned_context.clone(),
         scheduler: Some(scheduler),
         instructions,
+        checkpoints: args.checkpoints.then(|| checkpoints.clone()),
         context_window: args.context_window,
         max_output_tokens: args.max_output_tokens,
+        temperature: args.temperature,
         catalog_provider: Some(provider_str.to_owned()),
         max_turns: args.max_turns.unwrap_or(32),
+        tool_concurrency: args.tool_concurrency.unwrap_or(1),
         thinking: args.thinking.or(shorthand_thinking),
-        auto_compact_bytes: if args.auto_compact {
-            Some(DEFAULT_AUTO_COMPACT_BYTES)
-        } else {
-            None
-        },
+        auto_compact_bytes: (!args.no_auto_compact).then_some(DEFAULT_AUTO_COMPACT_BYTES),
+        task: None,
     };
     mio_coding_agent::validate_model_thinking(&config, options.thinking)?;
     mio_coding_agent::context_budget::ContextBudget::resolve(&config, &options)?;
@@ -2873,14 +837,21 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
     }
     .to_owned();
     let rpc_approvals = if args.mode == OutputMode::Rpc && args.approve {
-        Some(Arc::new(RpcApprovals::new(std::time::Duration::from_secs(
-            120,
-        ))))
+        Some(Arc::new(RpcApprovals::with_output(
+            std::time::Duration::from_secs(120),
+            output.clone(),
+        )))
     } else {
         None
     };
     // AUD-13: no-session 模式下 journal 完全禁用，不产生任何磁盘写入。
     let journal = open_journal(args.no_session, &session.cwd, &session.id.to_string());
+    // 显式任务 key 账本：--no-session 时仅进程内（零磁盘写入），否则按工作区持久化。
+    let dedup = Arc::new(if args.no_session {
+        TaskKeyLedger::ephemeral()
+    } else {
+        TaskKeyLedger::persistent(&session.cwd)
+    });
     let mut runner = Runner {
         connections: BTreeMap::from([(provider_name.clone(), config.clone())]),
         provider_name,
@@ -2893,7 +864,9 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         antigravity,
         host: Arc::new(CliHost {
             json: args.json,
+            output: output.clone(),
             no_shell: args.no_shell,
+            execution_policy,
             approve: args.approve,
             trust_project_mcp: args.trust_project_mcp,
             approved_project_mcp: Arc::new(Mutex::new(BTreeSet::new())),
@@ -2901,17 +874,31 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             steering_queue: Mutex::new(VecDeque::new()),
             rpc_approvals,
             journal: journal.clone(),
+            ledger: runner::open_ledger(args.no_session, &session.cwd),
+            workspace: session.cwd.clone(),
+            unknown_fence: Mutex::new(mio_coding_agent::unknown_effect::UnknownEffectFence::new()),
+            turn_claims: Mutex::new(Vec::new()),
+            dispatched_calls: Mutex::new(BTreeMap::new()),
+            run_states: Mutex::new(BTreeMap::new()),
+            run_tracking_saturated: AtomicBool::new(false),
+            output_schema: output_schema.clone(),
         }),
         session,
         path,
         journal,
+        checkpoints,
+        dedup,
     };
+    // 关联 ID 只在真实存在时附上：会话 ID 由运行器维护并同步到输出封套。
+    if let Some(output) = &output {
+        output.set_session_id(Some(runner.session.id.to_string()));
+    }
     // 恢复时的未完成运行提示 / RPC 事件。不重放操作，也不声称文件已回滚。
     if let Some(report) = runner.journal.recovery_report()
         && (report.has_unfinished() || report.journal_error.is_some())
     {
         if args.json {
-            println!("{}", json!({"type": "recovery", "data": report}));
+            emit_or_print(&output, json!({"type": "recovery", "data": report}), false)?;
         } else {
             if let Some(error) = &report.journal_error {
                 eprintln!("Warning: {error}");
@@ -2920,6 +907,12 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
                 eprintln!("Warning: {}", report.summary_line());
             }
         }
+    }
+    // 启用检查点时，索引损坏必须在启动时可见（fail-closed，后续写入会被拒绝）。
+    if runner.checkpoints_enabled()
+        && let Err(error) = runner.checkpoints.list()
+    {
+        eprintln!("Warning: {error}");
     }
     let render = |prompt: &str| -> Result<String, String> {
         if let Some(name) = &args.template {
@@ -2947,7 +940,8 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
         return run_rpc_loop(&mut runner, &directory, &cwd).await;
     }
     if let Some(prompt) = args.prompt {
-        return runner.turn(&render(&prompt)?).await;
+        let rendered = render(&prompt)?;
+        return run_one_shot(&mut runner, &rendered, args.dedup_key.as_deref()).await;
     }
     if !io::stdin().is_terminal() {
         let mut prompt = String::new();
@@ -2956,302 +950,16 @@ async fn execute(args: Args, reporter: Arc<StatusReporter>) -> Result<(), String
             .read_to_string(&mut prompt)
             .await
             .map_err(|e| e.to_string())?;
-        return runner.turn(&render(&prompt)?).await;
+        let rendered = render(&prompt)?;
+        return run_one_shot(&mut runner, &rendered, args.dedup_key.as_deref()).await;
+    }
+    if args.dedup_key.is_some() {
+        return Err("--dedup-key requires -p or piped input".into());
     }
     if args.json {
         return Err("--json requires -p, piped input, or --mode rpc".into());
     }
-    eprintln!(
-        "Mio · {} · model: {}{}\n/help for commands · Tab completes · Ctrl-C exits. Shell {}. Workspace: {}",
-        env!("CARGO_PKG_VERSION"),
-        runner.config.model,
-        runner
-            .options
-            .thinking
-            .map(|t| format!(" (thinking: {})", t.as_str()))
-            .unwrap_or_default(),
-        if args.no_shell { "disabled" } else { "enabled" },
-        cwd.display()
-    );
-    reporter.report(ProgramState::Idle, None);
-    let mut editor = InteractiveEditor::new();
-    loop {
-        let line = match editor.read_line(&cwd)? {
-            ReadOutcome::Line(line) => line,
-            ReadOutcome::Interrupted => {
-                reporter.report(ProgramState::Idle, None);
-                break;
-            }
-            ReadOutcome::Exit => break,
-        };
-        reporter.cancelled.store(false, Ordering::SeqCst);
-        reporter.report(ProgramState::Idle, None);
-        let trimmed = line.trim();
-        match trimmed {
-            "" => continue,
-            "/exit" | "/quit" => break,
-            "/help" => {
-                println!("{HELP}");
-                continue;
-            }
-            "/clear" => {
-                print!("\x1b[2J\x1b[H");
-                let _ = io::stdout().flush();
-                continue;
-            }
-            "/sessions" => {
-                print_sessions(&directory, false)?;
-                continue;
-            }
-            "/status" => {
-                eprintln!(
-                    "Session: {}{}\nModel: {} ({:?}, thinking: {})\nMessages: {} ({} bytes)",
-                    runner.session.id,
-                    runner
-                        .session
-                        .name
-                        .as_deref()
-                        .map(|n| format!(" [{n}]"))
-                        .unwrap_or_default(),
-                    runner.config.model,
-                    runner.config.provider,
-                    runner
-                        .options
-                        .thinking
-                        .map(|t| t.as_str())
-                        .unwrap_or("default"),
-                    runner.session.history.len(),
-                    mio_coding_agent::compact::history_bytes(&runner.session.history)
-                );
-                continue;
-            }
-            "/subagents" => {
-                if let Some(manager) = &runner.subagents {
-                    let list = manager.list();
-                    if list.is_empty() {
-                        eprintln!("No child subagent runs in this session.");
-                    } else {
-                        for snap in list {
-                            eprintln!(
-                                "{}  [{}]  {:?}  {}",
-                                snap.run_id, snap.session, snap.status, snap.goal
-                            );
-                        }
-                    }
-                } else {
-                    eprintln!("Subagents are disabled (launch with --subagents).");
-                }
-                continue;
-            }
-            "/new" | "/fork" => {
-                let candidate = if trimmed == "/fork" {
-                    runner.session.fork()
-                } else {
-                    match Session::new(&cwd) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Mio: {e}");
-                            continue;
-                        }
-                    }
-                };
-                let target_path = directory.join(format!("{}.json", candidate.id));
-                if let Err(e) = runner.commit_session(candidate, target_path) {
-                    eprintln!("Mio: {e}");
-                    continue;
-                }
-                eprintln!("Selected session {}", runner.session.id);
-                continue;
-            }
-            _ if trimmed.starts_with("/name") => {
-                let title = trimmed.strip_prefix("/name").unwrap_or("").trim();
-                if title.is_empty() {
-                    eprintln!(
-                        "Session name: {}",
-                        runner.session.name.as_deref().unwrap_or("(unnamed)")
-                    );
-                } else {
-                    let mut candidate = runner.session.clone();
-                    candidate.set_name(Some(title.to_owned()));
-                    if let Err(e) = runner.commit_session(candidate, runner.path.clone()) {
-                        eprintln!("Mio: {e}");
-                        continue;
-                    }
-                    eprintln!("Session named '{title}'");
-                }
-                continue;
-            }
-            _ if trimmed.starts_with("/compact") => {
-                let focus = trimmed.strip_prefix("/compact").unwrap_or("").trim();
-                let (compacted, stats) = compact_history(
-                    &runner.session.history,
-                    DEFAULT_KEEP_RECENT_MESSAGES,
-                    if focus.is_empty() { None } else { Some(focus) },
-                );
-                let mut candidate = runner.session.clone();
-                candidate.history = compacted;
-                if let Err(e) = runner.commit_session(candidate, runner.path.clone()) {
-                    eprintln!("Mio: {e}");
-                    continue;
-                }
-                eprintln!(
-                    "Compacted {} -> {} messages ({} -> {} bytes)",
-                    stats.original_messages,
-                    stats.compacted_messages,
-                    stats.original_bytes,
-                    stats.compacted_bytes
-                );
-                continue;
-            }
-            _ if trimmed.starts_with("/export") => {
-                let arg = trimmed.strip_prefix("/export").unwrap_or("").trim();
-                let out_path = if arg.is_empty() {
-                    cwd.join(format!("mio-session-{}.html", runner.session.id))
-                } else {
-                    cwd.join(arg)
-                };
-                runner.session.export_html(&out_path)?;
-                eprintln!("Exported session to {}", out_path.display());
-                continue;
-            }
-            _ if trimmed.starts_with("/model") => {
-                let arg = trimmed.strip_prefix("/model").unwrap_or("").trim();
-                if arg.is_empty() {
-                    eprintln!("Current model: {}", runner.config.model);
-                } else {
-                    match runner.set_model(arg, None) {
-                        Ok(()) => eprintln!(
-                            "Switched model to {}/{}",
-                            runner.provider_name, runner.config.model
-                        ),
-                        Err(error) => eprintln!("Cannot switch model: {error}"),
-                    }
-                }
-                continue;
-            }
-            _ if trimmed.starts_with("/thinking") => {
-                let arg = trimmed.strip_prefix("/thinking").unwrap_or("").trim();
-                if arg.is_empty() {
-                    eprintln!(
-                        "Current thinking level: {}",
-                        runner
-                            .options
-                            .thinking
-                            .map(|t| t.as_str())
-                            .unwrap_or("default")
-                    );
-                } else {
-                    let model = runner.config.model.clone();
-                    match ThinkingLevel::from_str(arg).and_then(|level| {
-                        runner.set_model(&model, Some(level))?;
-                        Ok(level)
-                    }) {
-                        Ok(level) => eprintln!("Thinking level set to {}", level.as_str()),
-                        Err(error) => eprintln!("Cannot set thinking level: {error}"),
-                    }
-                }
-                continue;
-            }
-            "/plugins" => {
-                let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
-                if installed.is_empty() {
-                    eprintln!("No plugins installed in this workspace.");
-                } else {
-                    for p in installed {
-                        eprintln!(
-                            "{} v{}  {}  ({})",
-                            p.manifest.name,
-                            p.manifest.version,
-                            p.manifest.description,
-                            p.root_dir.display()
-                        );
-                    }
-                }
-                continue;
-            }
-            _ if trimmed.starts_with("/plugin") => {
-                let rest = trimmed.strip_prefix("/plugin").unwrap_or("").trim();
-                let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                let arg = arg.trim();
-                match sub {
-                    "" | "list" => {
-                        let installed = mio_coding_agent::plugin::discover_plugins(&cwd)?;
-                        if installed.is_empty() {
-                            eprintln!("No plugins installed in this workspace.");
-                        } else {
-                            for p in installed {
-                                eprintln!(
-                                    "{} v{}  {}  ({})",
-                                    p.manifest.name,
-                                    p.manifest.version,
-                                    p.manifest.description,
-                                    p.root_dir.display()
-                                );
-                            }
-                        }
-                    }
-                    "search" => {
-                        let q = if arg.is_empty() { None } else { Some(arg) };
-                        for e in mio_coding_agent::plugin::search_community_plugins(q) {
-                            eprintln!(
-                                "{} v{}  {}  [{}]",
-                                e.name,
-                                e.version,
-                                e.description,
-                                e.keywords.join(", ")
-                            );
-                        }
-                    }
-                    "install" => {
-                        let installed = mio_coding_agent::plugin::install_plugin(&cwd, arg)?;
-                        eprintln!(
-                            "Installed plugin '{} v{}' into {}",
-                            installed.manifest.name,
-                            installed.manifest.version,
-                            installed.root_dir.display()
-                        );
-                    }
-                    "remove" => {
-                        mio_coding_agent::plugin::remove_plugin(&cwd, arg)?;
-                        eprintln!("Removed plugin '{arg}'");
-                    }
-                    "init" => {
-                        let dir = cwd.join(arg);
-                        let name = dir
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .ok_or("Invalid plugin directory")?;
-                        let created = mio_coding_agent::plugin::scaffold_plugin(&dir, name)?;
-                        eprintln!("Initialized plugin '{name}' at {}", created.display());
-                    }
-                    "validate" => {
-                        let target = if arg.is_empty() {
-                            cwd.clone()
-                        } else {
-                            cwd.join(arg)
-                        };
-                        let m = mio_coding_agent::plugin::validate_plugin_dir(&target)?;
-                        eprintln!("Valid plugin '{} v{}'", m.name, m.version);
-                    }
-                    _ => {
-                        eprintln!(
-                            "Usage: /plugin <list|search [q]|install <spec>|remove <name>|init <dir>|validate [dir]>"
-                        );
-                    }
-                }
-                continue;
-            }
-            _ => match render(&line) {
-                Ok(rendered) => {
-                    if let Err(err) = runner.turn(&rendered).await {
-                        eprintln!("Mio: {err}");
-                    }
-                }
-                Err(err) => eprintln!("Mio: {err}"),
-            },
-        }
-    }
-    Ok(())
+    run_interactive(&mut runner, &directory, &cwd, render).await
 }
 
 #[tokio::main]
@@ -3261,7 +969,7 @@ async fn main() -> ExitCode {
         .first()
         .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
-        println!("{HELP}");
+        print_help();
         return ExitCode::SUCCESS;
     }
     if arguments
@@ -3271,316 +979,67 @@ async fn main() -> ExitCode {
         println!("Mio {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    let result = match parse(arguments.iter().cloned()) {
+    let (outcome, reporter, output, json) = match parse(arguments.iter().cloned()) {
         Ok(args) => {
             let json = args.json;
+            let output = json.then(JsonOutput::new);
             let reporter_enabled = args.mode == OutputMode::Text && io::stderr().is_terminal();
             let reporter = Arc::new(StatusReporter::new(reporter_enabled));
-            (execute(args, reporter.clone()).await, reporter, json)
+            (
+                execute(args, reporter.clone(), output.clone()).await,
+                reporter,
+                output,
+                json,
+            )
         }
         Err(error) => {
             let json = arguments
                 .iter()
                 .any(|arg| arg == "--json" || arg == "json" || arg == "rpc");
+            let output = json.then(JsonOutput::new);
             let reporter_enabled = !json && io::stderr().is_terminal();
             let reporter = Arc::new(StatusReporter::new(reporter_enabled));
-            (Err(error), reporter, json)
+            (Err(error), reporter, output, json)
         }
     };
-    match result {
-        (Ok(()), _, _) => ExitCode::SUCCESS,
-        (Err(error), reporter, json) => {
+    mio_coding_agent::mcp::shutdown_mcp_connections();
+    let error = match outcome {
+        Ok(()) => None,
+        Err(error) => {
             if !reporter.cancelled.load(Ordering::SeqCst) {
                 reporter.report(ProgramState::Error, Some(&error));
             }
-            if json {
-                println!("{}", serde_json::json!({"type":"error", "error":error}));
-            } else {
-                eprintln!("Mio: {error}");
+            Some(error)
+        }
+    };
+    let mut failed = error.is_some();
+    if let Some(error) = &error {
+        // 传输已 fail-closed 时不再写 stdout，只允许短 stderr 诊断。
+        match &output {
+            Some(output) if json && !output.is_failed() => {
+                if let Err(transport) =
+                    output.emit_critical(serde_json::json!({"type":"error", "error": error}))
+                {
+                    eprintln!("Mio: JSON output transport failed: {transport}");
+                    failed = true;
+                }
             }
-            ExitCode::FAILURE
+            _ => eprintln!("Mio: {error}"),
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn latest_session_uses_save_order_even_when_session_seconds_match() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut original = Session::new(dir.path()).unwrap();
-        let mut fork = original.fork();
-        let a = dir.path().join("a.json");
-        let b = dir.path().join("b.json");
-        original.save(&a).unwrap();
-        fork.save(&b).unwrap();
-        for (path, nanos) in [(&a, 1), (&b, 2)] {
-            let times = std::fs::FileTimes::new()
-                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos));
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_times(times)
-                .unwrap();
+    if let Some(output) = &output {
+        let status = output.shutdown(json_output::EXIT_FLUSH);
+        if let Some(failure) = status.failure {
+            eprintln!(
+                "Mio: stdout output failed: {failure}; dropped streaming events: {}",
+                status.dropped
+            );
+            failed = true;
         }
-        let list = session_list(dir.path()).unwrap();
-        assert_eq!(list[0].id, fork.id);
     }
-
-    #[test]
-    fn interactive_tab_completes_commands_plugins_and_at_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("README.md"), "# Test").unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
-
-        // 1. Slash command completion
-        let mut editor = InteractiveEditor::new();
-        editor.set_str("/he");
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("/help"));
-
-        // 2. Tab cycling across multiple matching slash commands (/p -> /plugins -> /plugin )
-        editor.reset_line();
-        editor.set_str("/p");
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("/plugins"));
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("/plugin "));
-
-        // 3. /plugin install community completion
-        editor.reset_line();
-        editor.set_str("/plugin install rust");
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("/plugin install rust-expert"));
-
-        // 4. @file path completion
-        editor.reset_line();
-        editor.set_str("check @REA");
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("check @README.md"));
-
-        editor.reset_line();
-        editor.set_str("check @sr");
-        editor.handle_tab(dir.path());
-        assert_eq!(editor.as_str(), Some("check @src/"));
-    }
-
-    #[tokio::test]
-    async fn rpc_approvals_guard_and_resolution() {
-        let approvals = Arc::new(RpcApprovals::new(std::time::Duration::from_secs(60)));
-
-        // 1. drop unpolled future -> pending_count 清零
-        let fut = approvals.request("write", "a.txt");
-        assert_eq!(approvals.pending_count(), 1);
-        drop(fut);
-        assert_eq!(approvals.pending_count(), 0);
-
-        // 2. drop polled future -> pending_count 清零，resolve 旧 id 失败
-        let mut fut = approvals.request("write", "b.txt");
-        let id = {
-            let pending = approvals.pending.lock().unwrap();
-            pending.keys().next().cloned().unwrap()
-        };
-        assert_eq!(approvals.pending_count(), 1);
-        let waker = std::task::Waker::noop();
-        let mut cx = std::task::Context::from_waker(waker);
-        assert!(std::future::Future::poll(fut.as_mut(), &mut cx).is_pending());
-        assert_eq!(approvals.pending_count(), 1);
-        drop(fut);
-        assert_eq!(approvals.pending_count(), 0);
-        assert!(approvals.resolve(&id, true).is_err());
-
-        // 3. timeout: new(Duration::ZERO) 运行 await，pending 归零且旧 id 失败
-        let zero_approvals = Arc::new(RpcApprovals::new(std::time::Duration::ZERO));
-        let zero_fut = zero_approvals.request("write", "c.txt");
-        let zero_id = {
-            let pending = zero_approvals.pending.lock().unwrap();
-            pending.keys().next().cloned().unwrap()
-        };
-        let res = zero_fut.await;
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("timed out"));
-        assert_eq!(zero_approvals.pending_count(), 0);
-        assert!(zero_approvals.resolve(&zero_id, true).is_err());
-
-        // 3b. Duration::ZERO 但不 poll request 直接 resolve 必须 Err 且 pending 归零
-        let zero_approvals2 = Arc::new(RpcApprovals::new(std::time::Duration::ZERO));
-        let zero_fut2 = zero_approvals2.request("write", "unpolled.txt");
-        let zero_id2 = {
-            let pending = zero_approvals2.pending.lock().unwrap();
-            pending.keys().next().cloned().unwrap()
-        };
-        assert_eq!(zero_approvals2.pending_count(), 1);
-        // 不 poll zero_fut2，直接 resolve 已经到期的请求
-        let resolve_res = zero_approvals2.resolve(&zero_id2, true);
-        assert!(resolve_res.is_err());
-        assert_eq!(zero_approvals2.pending_count(), 0);
-        drop(zero_fut2);
-        assert_eq!(zero_approvals2.pending_count(), 0);
-
-        // 4. pending 容量 64 及 drop 后可再次申请（不用等 120 秒）
-        let limit_approvals = Arc::new(RpcApprovals::new(std::time::Duration::from_secs(120)));
-        let mut held_futs = Vec::new();
-        for i in 0..RPC_QUEUE_LIMIT {
-            held_futs.push(limit_approvals.request("write", &format!("file_{i}.txt")));
-        }
-        assert_eq!(limit_approvals.pending_count(), RPC_QUEUE_LIMIT);
-        // 第 65 个请求应直接失败
-        let overflow_fut = limit_approvals.request("write", "overflow.txt");
-        let overflow_res = overflow_fut.await;
-        assert!(overflow_res.is_err());
-        assert!(overflow_res.unwrap_err().contains("Too many pending"));
-        assert_eq!(limit_approvals.pending_count(), RPC_QUEUE_LIMIT);
-
-        // drop 其中一个后无需等待 120 秒，即可再次成功申请
-        held_futs.pop();
-        assert_eq!(limit_approvals.pending_count(), RPC_QUEUE_LIMIT - 1);
-        let new_fut = limit_approvals.request("write", "replacement.txt");
-        assert_eq!(limit_approvals.pending_count(), RPC_QUEUE_LIMIT);
-        drop(new_fut);
-        assert_eq!(limit_approvals.pending_count(), RPC_QUEUE_LIMIT - 1);
-        drop(held_futs);
-        assert_eq!(limit_approvals.pending_count(), 0);
-
-        // 4. 两个 pending 反序 resolve 各自结果正确
-        let keys_before: std::collections::BTreeSet<String> =
-            approvals.pending.lock().unwrap().keys().cloned().collect();
-        let fut1 = approvals.request("write", "first.txt");
-        let id1 = approvals
-            .pending
-            .lock()
-            .unwrap()
-            .keys()
-            .find(|k| !keys_before.contains(*k))
-            .cloned()
-            .unwrap();
-
-        let keys_before2: std::collections::BTreeSet<String> =
-            approvals.pending.lock().unwrap().keys().cloned().collect();
-        let fut2 = approvals.request("write", "second.txt");
-        let id2 = approvals
-            .pending
-            .lock()
-            .unwrap()
-            .keys()
-            .find(|k| !keys_before2.contains(*k))
-            .cloned()
-            .unwrap();
-        assert_eq!(approvals.pending_count(), 2);
-
-        let handle1 = tokio::spawn(fut1);
-        let handle2 = tokio::spawn(fut2);
-
-        // 反序 resolve：先 resolve id2 为 false，后 resolve id1 为 true
-        assert!(approvals.resolve(&id2, false).is_ok());
-        assert_eq!(approvals.pending_count(), 1);
-        assert!(approvals.resolve(&id1, true).is_ok());
-        assert_eq!(approvals.pending_count(), 0);
-
-        let res2 = handle2.await.unwrap();
-        let res1 = handle1.await.unwrap();
-        assert!(res2.is_err());
-        assert!(res2.unwrap_err().contains("rejected"));
-        assert!(res1.is_ok());
-    }
-
-    fn test_host(
-        root: &Path,
-        session_id: &str,
-        no_session: bool,
-        trust_project_mcp: bool,
-    ) -> Arc<CliHost> {
-        Arc::new(CliHost {
-            json: true,
-            no_shell: false,
-            approve: false,
-            trust_project_mcp,
-            approved_project_mcp: Arc::new(Mutex::new(BTreeSet::new())),
-            reporter: Arc::new(StatusReporter::new(false)),
-            steering_queue: Mutex::new(VecDeque::new()),
-            rpc_approvals: None,
-            journal: open_journal(no_session, root, session_id),
-        })
-    }
-
-    #[tokio::test]
-    async fn journal_records_executed_and_unknown_operations() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host(dir.path(), "s1", false, false);
-        host.journal.begin_run().unwrap();
-        host.approve_tool_async("write", "a.txt").await.unwrap();
-        host.on_event(AgentEvent::ToolFinished {
-            operation: "write".into(),
-            target: "a.txt".into(),
-            result: Ok("ok".into()),
-        });
-        // 取消时尚未返回结果的操作必须保留为 unknown。
-        host.approve_tool_async("bash", "sleep 99").await.unwrap();
-        host.journal.finish_run(RunState::Cancelled).unwrap();
-
-        let reloaded = Journal::open(dir.path(), "s1");
-        let report = reloaded.recovery_report().unwrap();
-        assert_eq!(report.executed_operations, 1);
-        assert_eq!(report.unknown_operations.len(), 1);
-        assert_eq!(report.unknown_operations[0].operation, "bash");
-        assert!(report.has_unfinished());
-    }
-
-    #[tokio::test]
-    async fn journal_write_failure_blocks_side_effects() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".mio")).unwrap();
-        std::fs::write(dir.path().join(".mio/journal"), "not a directory").unwrap();
-        let host = test_host(dir.path(), "s2", false, false);
-        let _ = host.journal.begin_run();
-        let err = host.approve_tool_async("write", "a.txt").await.unwrap_err();
-        assert!(
-            err.contains("Execution journal unavailable"),
-            "unexpected error: {err}"
-        );
-        // 证据持久化失败必须被报告，而不是静默通过。
-        assert!(
-            host.journal
-                .recovery_report()
-                .unwrap()
-                .journal_error
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn no_session_journal_is_disabled_and_creates_no_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let journal = open_journal(true, dir.path(), "s3");
-        assert!(!journal.is_enabled());
-        assert!(journal.path().is_none());
-        assert!(journal.begin_run().is_ok());
-        assert!(journal.record_intent("write", "a.txt").is_ok());
-        assert!(journal.finish_run(RunState::Completed).is_ok());
-        assert!(journal.recovery_report().is_none());
-        assert!(!dir.path().join(".mio").exists());
-    }
-
-    #[tokio::test]
-    async fn project_mcp_start_requires_explicit_trust() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host(dir.path(), "s4", false, false);
-        let err = host
-            .approve_tool_async(PROJECT_MCP_APPROVAL_OP, "server=proj; command=sh")
-            .await
-            .unwrap_err();
-        assert!(err.contains("requires authorization"), "unexpected: {err}");
-
-        let trusted = test_host(dir.path(), "s5", false, true);
-        assert!(
-            trusted
-                .approve_tool_async(PROJECT_MCP_APPROVAL_OP, "server=proj; command=sh")
-                .await
-                .is_ok()
-        );
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }

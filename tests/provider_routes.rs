@@ -8,17 +8,19 @@
 //! The Anthropic, Google (Gemini) and Ollama presets must speak their native
 //! protocols (`/v1/messages`, `/v1beta/models/…:streamGenerateContent`,
 //! `/api/chat`) with native authentication and thinking parameters. The
-//! OpenAI-compatible vendors and `custom` keep the Chat Completions route.
+//! OpenAI-compatible vendors and `custom` keep the Chat Completions route;
+//! `custom-responses` uses the Responses route.
 
 #[path = "../src/test_http.rs"]
 mod test_http;
 
 use mio_coding_agent::rpc::{list_catalog_models, resolve_provider_endpoint};
 use mio_coding_agent::{
-    AgentEvent, Config, Host, HostFuture, Message, Provider, RunOptions, Services, ThinkingLevel,
-    context_budget::ContextBudget, parse_model_spec, run_with_options, subagent::SubagentManager,
-    validate_model_thinking,
+    AgentEvent, Config, Host, HostFuture, Message, Provider, RunOptions, RunTools, Services,
+    ThinkingLevel, context_budget::ContextBudget, parse_model_spec, run_with_options,
+    run_with_tools_message, subagent::SubagentManager, validate_model_thinking,
 };
+use mio_core::message::{DocumentSourceKind, Image, ImageMediaType, Text, UserContent};
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -30,6 +32,8 @@ use std::{
 
 /// Content the mock `read` tool round-trips; the second request must carry it.
 const FIXTURE: &str = "provider-route-fixture";
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XcZUAAAAASUVORK5CYII=";
 
 #[derive(Default)]
 struct RecordingHost(Mutex<Vec<AgentEvent>>);
@@ -195,6 +199,52 @@ async fn drive(
     )
     .await;
     (result, server, host)
+}
+
+async fn drive_image(
+    provider: Provider,
+    model: &str,
+    base_suffix: &str,
+    response: Response,
+) -> (Result<Vec<Message>, String>, MockServer) {
+    let server = MockServer::start(vec![response]);
+    let dir = tempfile::tempdir().unwrap();
+    let prompt = Message::User {
+        content: vec![
+            UserContent::Text(Text::new("describe the image")),
+            UserContent::Image(Image {
+                data: DocumentSourceKind::Base64(PNG.into()),
+                media_type: Some(ImageMediaType::PNG),
+                detail: None,
+                native: None,
+            }),
+        ],
+    };
+    let result = run_with_tools_message(
+        Config {
+            provider,
+            model: model.into(),
+            base_url: format!("http://{}{}", server.address, base_suffix),
+            api_key: "local-test".into(),
+        },
+        vec![],
+        prompt,
+        dir.path(),
+        Arc::new(RecordingHost::default()),
+        Services::default(),
+        RunTools {
+            options: RunOptions {
+                // Ollama's catalog has no context size for gemma3. Supply the
+                // local mock's actual capacity instead of relaxing the image
+                // reserve used by production admission.
+                context_window: Some(131_072),
+                ..RunOptions::default()
+            },
+            ..RunTools::default()
+        },
+    )
+    .await;
+    (result, server)
 }
 
 // ---- Header-free stream fixtures -------------------------------------------
@@ -390,6 +440,7 @@ fn provider_serde_round_trips_for_model_switching() {
         (Provider::Google, "google"),
         (Provider::Ollama, "ollama"),
         (Provider::Custom, "custom"),
+        (Provider::CustomResponses, "custom-responses"),
     ] {
         let encoded = serde_json::to_string(&provider).unwrap();
         assert_eq!(encoded, format!("\"{name}\""));
@@ -643,6 +694,70 @@ async fn ollama_preset_speaks_native_chat() {
 }
 
 #[tokio::test]
+async fn native_image_routes_send_inline_bytes_in_their_own_wire_shapes() {
+    let (result, server) = drive_image(
+        Provider::Anthropic,
+        "claude-sonnet-4-5",
+        "/v1",
+        Response::sse(anthropic_text_stream("done")),
+    )
+    .await;
+    result.unwrap();
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/v1/messages");
+    let blocks = requests[0].body["messages"][0]["content"]
+        .as_array()
+        .unwrap();
+    let image = blocks.iter().find(|part| part["type"] == "image").unwrap();
+    assert_eq!(image["source"]["type"], "base64");
+    assert_eq!(image["source"]["media_type"], "image/png");
+    assert_eq!(image["source"]["data"], PNG);
+
+    let (result, server) = drive_image(
+        Provider::Google,
+        "gemini-2.5-pro",
+        "/v1beta/openai",
+        Response::sse(gemini_text_stream("done")),
+    )
+    .await;
+    result.unwrap();
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .path
+            .starts_with("/v1beta/models/gemini-2.5-pro:streamGenerateContent")
+    );
+    let parts = requests[0].body["contents"][0]["parts"].as_array().unwrap();
+    let image = parts
+        .iter()
+        .find(|part| part.get("inlineData").is_some())
+        .unwrap();
+    assert_eq!(image["inlineData"]["mimeType"], "image/png");
+    assert_eq!(image["inlineData"]["data"], PNG);
+
+    let (result, server) = drive_image(
+        Provider::Ollama,
+        "gemma3",
+        "/v1",
+        Response::ndjson(ollama_text_stream("done")),
+    )
+    .await;
+    result.unwrap();
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/api/chat");
+    let user = requests[0].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .unwrap();
+    assert_eq!(user["images"][0], PNG);
+}
+
+#[tokio::test]
 async fn custom_provider_keeps_openai_chat_semantics() {
     let (result, server, _) = drive(
         Provider::Custom,
@@ -659,4 +774,21 @@ async fn custom_provider_keeps_openai_chat_semantics() {
     assert_eq!(first.body["stream"], json!(true));
     assert_eq!(first.body["reasoning_effort"], "high");
     assert_eq!(first.body["model"], "test");
+}
+
+#[tokio::test]
+async fn custom_responses_uses_responses_route_without_storage() {
+    let (_, server, _) = drive(
+        Provider::CustomResponses,
+        "/v1",
+        vec![Response::sse(String::new())],
+    )
+    .await;
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let first = &requests[0];
+    assert_eq!(first.path, "/v1/responses");
+    assert_eq!(first.header("authorization"), Some("Bearer local-test"));
+    assert_eq!(first.body["store"], false);
+    assert_eq!(first.body["stream"], true);
 }

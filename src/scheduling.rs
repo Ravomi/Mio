@@ -1,6 +1,7 @@
 //! Admission at the actual model/tool dispatch boundary. All child runs may
 //! share one Scheduler; cooperating CLI processes also share file-lock quotas.
 //! Budgets count conservative reservations until the provider reports usage.
+use crate::task_lifecycle::ActiveLease;
 use crate::{Config, coordinator, shared_limits};
 use mio_agent::{
     agent::{
@@ -50,6 +51,12 @@ impl Scheduler {
         limits: coordinator::Limits,
         shared_directory: Option<&Path>,
     ) -> Result<Self, String> {
+        // The cross-process budget is seeded from the same local flags, but the
+        // durable ledger can only be narrowed by a later process, never widened.
+        let shared_budget = shared_limits::SharedBudgetPolicy {
+            max_model_calls: limits.max_model_calls,
+            max_total_tokens: limits.max_total_tokens,
+        };
         let coordinator =
             coordinator::Coordinator::new(limits).map_err(|error| error.to_string())?;
         // The cross-process policy has its own stable defaults. Local flags
@@ -59,7 +66,11 @@ impl Scheduler {
             .map(|directory| {
                 shared_limits::SharedLimits::new(
                     directory,
-                    shared_limits::SharedLimitsConfig::default(),
+                    shared_limits::SharedLimitsConfig {
+                        max_model_calls: shared_budget.max_model_calls,
+                        max_total_tokens: shared_budget.max_total_tokens,
+                        ..shared_limits::SharedLimitsConfig::default()
+                    },
                 )
             })
             .transpose()
@@ -87,6 +98,16 @@ impl Scheduler {
                 "modelLimit": snapshot.config.global_model_concurrency,
                 "providerLimit": snapshot.config.provider_model_concurrency,
                 "heavyLimit": snapshot.config.heavy_concurrency,
+                "budget": {
+                    "maxCalls": snapshot.budget.max_model_calls,
+                    "maxTokens": snapshot.budget.max_total_tokens,
+                    "calls": snapshot.budget.calls_started,
+                    "tokensReserved": snapshot.budget.tokens_reserved_active,
+                    "tokensUsed": snapshot.budget.tokens_used,
+                    "overReservation": snapshot.budget.tokens_over_reservation,
+                    "overage": snapshot.budget.tokens_overage,
+                    "blocked": snapshot.budget.blocked,
+                },
                 "cooldowns": snapshot.cooldowns.iter().map(|cooldown| json!({
                     "providerHash": cooldown.provider_hash,
                     "remainingMs": cooldown.remaining.as_millis(),
@@ -114,8 +135,11 @@ impl Scheduler {
 }
 
 struct ModelLease {
-    local: coordinator::ModelPermit,
+    local: Arc<ActiveLease>,
     _shared: Option<shared_limits::ModelPermit>,
+    /// Cross-process token/call reservation; settles with reported usage or
+    /// conservatively with the reservation when the run is cancelled.
+    budget: Option<shared_limits::SharedBudgetPermit>,
 }
 struct Waiting<'a>(&'a AtomicUsize);
 impl<'a> Waiting<'a> {
@@ -134,14 +158,26 @@ impl Drop for Waiting<'_> {
     }
 }
 struct HeavyLease {
-    _local: coordinator::HeavyPermit,
+    _local: Arc<ActiveLease>,
     _shared: Option<shared_limits::HeavyPermit>,
 }
+/// The one-time `Queued -> Running` admission for a run, serialized so a
+/// concurrent dispatch can never observe a success that the host has not yet
+/// durably committed.
+#[derive(Default)]
+struct AdmissionState {
+    /// Set only after `TaskLifecycleTracker::admit` returned `Ok`, i.e. after
+    /// the host persistence callback succeeded.
+    committed: bool,
+}
+
 struct RunAdmission {
     scheduler: Arc<Scheduler>,
     provider_key: String,
     models: Mutex<HashMap<EffectId, ModelLease>>,
     heavy: Mutex<HashMap<EffectId, HeavyLease>>,
+    /// Serializes the single real admission and publishes only a committed one.
+    admission: Mutex<AdmissionState>,
 }
 
 /// Each hook instance belongs to one run. Clones share its live permits so
@@ -162,7 +198,59 @@ impl SchedulingHook {
             provider_key: format!("{:x}", hash.finalize()),
             models: Mutex::new(HashMap::new()),
             heavy: Mutex::new(HashMap::new()),
+            admission: Mutex::new(AdmissionState::default()),
         }))
+    }
+
+    /// Record `Queued -> Running` once, using the real permit that was just
+    /// obtained. The bound task is read from the current task-local scope; an
+    /// unbound run is a no-op and a run that already admitted is idempotent.
+    /// The permit's `is_held` comes from the real owner, so a released or
+    /// fabricated permit is refused.
+    ///
+    /// The admission is serialized: a second concurrent dispatch waits for the
+    /// first synchronous host persistence and only then decides. Success is
+    /// published *after* `admit` actually committed (returned `Ok`); a pending
+    /// or failed persistence never lets another dispatch proceed as if the
+    /// task were already running.
+    fn admit(&self, lease: &Arc<ActiveLease>) -> Result<(), String> {
+        let Some(task) = crate::task_lifecycle::current_task_handle() else {
+            return Ok(());
+        };
+        // `admit` never awaits, so the std mutex is held across only the
+        // synchronous host persistence and no lock crosses an await point.
+        let mut state = self
+            .0
+            .admission
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.committed {
+            return Ok(());
+        }
+        // A delegated child may already be admitted by its real subagent slot
+        // lease before its engine run dispatches a model call. The first real
+        // owner wins; this later permit is not a second admission and must not
+        // be reported as a duplicate failure.
+        if task
+            .snapshot()
+            .map(|record| record.was_admitted())
+            .unwrap_or(false)
+        {
+            state.committed = true;
+            return Ok(());
+        }
+        match task.tracker().admit(task.task_id(), lease.as_ref()) {
+            Ok(_) => {
+                // Publish only the committed transition. Until here a
+                // concurrent dispatch stays blocked on this mutex.
+                state.committed = true;
+                Ok(())
+            }
+            // A refusal is not published as a success, and it is not retried
+            // implicitly: the caller denies its own dispatch. A later real
+            // permit may still attempt the still-uncommitted admission.
+            Err(error) => Err(format!("Task admission failed: {error}")),
+        }
     }
 
     async fn reserve_model(
@@ -191,18 +279,51 @@ impl SchedulingHook {
             }
             None => None,
         };
-        let local = self
+        // The cross-process budget is reserved before the local slot so a
+        // refusal never charges a call that was never dispatched. The local
+        // layer counts the same call in its own scope only; the effective bound
+        // is the narrower of the two, never a double charge.
+        let mut budget = match &self.0.scheduler.shared {
+            Some(shared) => shared
+                .reserve_budget(reservation)
+                .await
+                .map_err(|error| format!("Shared budget admission failed: {error}"))?,
+            None => None,
+        };
+        let local = match self
             .0
             .scheduler
             .coordinator
             .acquire_model(&self.0.provider_key, reservation)
             .await
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(local) => local,
+            Err(error) => {
+                if let Some(permit) = budget.take() {
+                    // Nothing reached the provider, so the pre-dispatch
+                    // reservation is returned instead of being charged as
+                    // unknown usage.
+                    let _ = permit.abandon().await;
+                }
+                return Err(error.to_string());
+            }
+        };
+        // The real permit is wrapped so it can admit the task and still settle
+        // with reported usage. A failed admission never inserts the lease and
+        // returns the reservation rather than charging a call that was denied.
+        let lease = ActiveLease::from_model_permit(local);
+        if let Err(error) = self.admit(&lease) {
+            if let Some(permit) = budget.take() {
+                let _ = permit.abandon().await;
+            }
+            return Err(error);
+        }
         self.0.models.lock().unwrap().insert(
             id,
             ModelLease {
-                local,
+                local: lease,
                 _shared: shared,
+                budget,
             },
         );
         Ok(())
@@ -231,10 +352,12 @@ impl SchedulingHook {
             .acquire_heavy()
             .await
             .map_err(|error| error.to_string())?;
+        let lease = ActiveLease::from_heavy_permit(local);
+        self.admit(&lease)?;
         self.0.heavy.lock().unwrap().insert(
             id,
             HeavyLease {
-                _local: local,
+                _local: lease,
                 _shared: shared,
             },
         );
@@ -315,7 +438,10 @@ impl AgentHook for SchedulingHook {
     }
 
     async fn on_outcome(&self, _: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
-        if let Some(lease) = self.0.models.lock().unwrap().remove(&event.id) {
+        // Drop the queue lock before awaiting settlement so the hook future
+        // stays `Send` and no lock is held across an await point.
+        let lease = self.0.models.lock().unwrap().remove(&event.id);
+        if let Some(lease) = lease {
             let usage = match event.outcome {
                 Ok(Outcome::Completion(response)) => response.usage.total_tokens.or_else(|| {
                     response
@@ -326,7 +452,18 @@ impl AgentHook for SchedulingHook {
                 }),
                 _ => None,
             };
-            lease.local.complete(usage);
+            let ModelLease {
+                local,
+                _shared,
+                budget,
+            } = lease;
+            if let Some(budget) = budget {
+                // Reported usage when present; otherwise the reservation is
+                // charged. A failed write leaves the reservation held (fail
+                // closed) rather than refunding it.
+                let _ = budget.settle(usage).await;
+            }
+            local.complete_model_usage(usage);
         }
         self.0.heavy.lock().unwrap().remove(&event.id);
         OutcomeAction::Proceed
@@ -433,5 +570,105 @@ mod tests {
         assert!(heavy_tool("mcp__server__tool", "{}"));
         assert!(heavy_tool("plugin__a__b", "{}"));
         assert!(!heavy_tool("read", "{}"));
+    }
+
+    /// A concurrent dispatch must not observe a committed admission while the
+    /// first one's host persistence is still pending, and a failed persistence
+    /// must never publish success. The first `Running` persistence blocks on a
+    /// channel and then fails; the test asserts the second dispatch has not
+    /// returned while it is pending and that neither dispatch succeeded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_admission_waits_for_the_first_commit() {
+        use crate::task_lifecycle::{
+            TaskHandle, TaskId, TaskIdentity, TaskLifecycleSink, TaskLifecycleTracker, TaskPhase,
+            TaskRecord, scope_task,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        struct BlockingFailSink {
+            entered: Mutex<Option<mpsc::Sender<()>>>,
+            release: Mutex<Option<mpsc::Receiver<()>>>,
+            block_running: AtomicBool,
+        }
+
+        impl TaskLifecycleSink for BlockingFailSink {
+            fn on_task_lifecycle(&self, record: &TaskRecord) -> Result<(), String> {
+                if record.phase == TaskPhase::Running
+                    && self.block_running.swap(false, Ordering::SeqCst)
+                {
+                    if let Some(entered) = self.entered.lock().unwrap().take() {
+                        let _ = entered.send(());
+                    }
+                    if let Some(release) = self.release.lock().unwrap().take() {
+                        let _ = release.recv();
+                    }
+                    return Err("blocked persistence failed".into());
+                }
+                Ok(())
+            }
+        }
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let sink = Arc::new(BlockingFailSink {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(Some(release_rx)),
+            block_running: AtomicBool::new(true),
+        });
+        let tracker = TaskLifecycleTracker::new("admission-serialization", sink);
+        let task_id = TaskId::new("admission-task").unwrap();
+        tracker
+            .register(TaskIdentity::new(task_id.clone()), None)
+            .unwrap();
+        let handle = TaskHandle::new(tracker.clone(), task_id.clone());
+        let hook = SchedulingHook::new(
+            Arc::new(Scheduler::new(coordinator::Limits::default(), None).unwrap()),
+            &Config::default(),
+        );
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+        let lease_a =
+            ActiveLease::from_semaphore_permit(semaphore.clone().acquire_owned().await.unwrap());
+        let lease_b =
+            ActiveLease::from_semaphore_permit(semaphore.clone().acquire_owned().await.unwrap());
+
+        let completed = Arc::new(AtomicUsize::new(0));
+        let hook_a = hook.clone();
+        let completed_a = completed.clone();
+        let first = tokio::spawn(scope_task(handle.clone(), async move {
+            let result = hook_a.admit(&lease_a);
+            completed_a.fetch_add(1, Ordering::SeqCst);
+            result
+        }));
+        // The first dispatch is now inside the blocking persistence callback.
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first Running persistence must start");
+
+        let hook_b = hook.clone();
+        let completed_b = completed.clone();
+        let second = tokio::spawn(scope_task(handle.clone(), async move {
+            let result = hook_b.admit(&lease_b);
+            completed_b.fetch_add(1, Ordering::SeqCst);
+            result
+        }));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "the second dispatch must wait for the first commit"
+        );
+        assert!(
+            !handle.snapshot().unwrap().was_admitted(),
+            "a pending persistence must not be published as admitted"
+        );
+
+        // Release the failed persistence. Both dispatches must be denied.
+        release_tx.send(()).unwrap();
+        assert!(first.await.unwrap().is_err());
+        assert!(second.await.unwrap().is_err());
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+        assert!(!handle.snapshot().unwrap().was_admitted());
+        assert!(tracker.is_fail_closed());
     }
 }

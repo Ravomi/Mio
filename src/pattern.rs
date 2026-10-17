@@ -22,6 +22,10 @@ pub struct ToolFilter {
     allow_all: bool,
     allowed_patterns: Vec<String>,
     excluded_patterns: Vec<String>,
+    /// An optional outer ceiling. A name is allowed only when both this filter
+    /// and every ceiling layer allow it, so nested permission can only narrow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ceiling: Option<Box<ToolFilter>>,
 }
 
 impl Default for ToolFilter {
@@ -37,6 +41,7 @@ impl ToolFilter {
             allow_all: true,
             allowed_patterns: Vec::new(),
             excluded_patterns: Vec::new(),
+            ceiling: None,
         }
     }
 
@@ -46,6 +51,7 @@ impl ToolFilter {
             allow_all: false,
             allowed_patterns: Vec::new(),
             excluded_patterns: Vec::new(),
+            ceiling: None,
         }
     }
 
@@ -64,6 +70,7 @@ impl ToolFilter {
             allow_all: false,
             allowed_patterns: allowed,
             excluded_patterns: Vec::new(),
+            ceiling: None,
         })
     }
 
@@ -139,17 +146,81 @@ impl ToolFilter {
         Ok(filter)
     }
 
+    /// Disable shell aliases at the shared admission gate, including
+    /// `workspace { operation: "shell" }`. File operations remain available.
+    /// This narrows existing rules and never relaxes a delegation ceiling.
+    /// It does not isolate arbitrary plugin/MCP subprocesses.
+    pub fn without_shell(mut self) -> Self {
+        for alias in ["shell", "bash"] {
+            if !self
+                .excluded_patterns
+                .iter()
+                .any(|pattern| pattern == alias)
+            {
+                self.excluded_patterns.push(alias.to_owned());
+            }
+        }
+        self
+    }
+
     pub fn is_none(&self) -> bool {
         !self.allow_all && self.allowed_patterns.is_empty()
     }
 
     pub fn is_disabled(&self) -> bool {
-        self.is_none()
+        self.is_none() || self.ceiling.as_ref().is_some_and(|c| c.is_disabled())
+    }
+
+    /// Compare the local (non-ceiling) rules of two filters. Used to keep a
+    /// repeated permission ceiling from nesting without bound.
+    pub fn same_base(&self, other: &Self) -> bool {
+        self.allow_all == other.allow_all
+            && self.allowed_patterns == other.allowed_patterns
+            && self.excluded_patterns == other.excluded_patterns
+    }
+
+    /// Whether every structural rule layer of `other` is already present.
+    /// Comparing only the local rules would discard a newly narrowed ceiling.
+    pub(crate) fn includes_constraints(&self, other: &Self) -> bool {
+        fn has_layer(filter: &ToolFilter, layer: &ToolFilter) -> bool {
+            filter.same_base(layer)
+                || filter
+                    .ceiling
+                    .as_ref()
+                    .is_some_and(|next| has_layer(next, layer))
+        }
+        has_layer(self, other)
+            && other
+                .ceiling
+                .as_ref()
+                .is_none_or(|next| self.includes_constraints(next))
+    }
+
+    /// Narrow this filter by an outer ceiling.
+    ///
+    /// Nested delegation uses this so a child can only lose permissions, never
+    /// gain them. Composing repeatedly keeps every previous ceiling in force.
+    pub fn narrowed_by(&self, ceiling: &ToolFilter) -> ToolFilter {
+        let mut narrowed = self.clone();
+        narrowed.ceiling = Some(Box::new(match narrowed.ceiling.take() {
+            Some(existing) => existing.narrowed_by(ceiling),
+            None => ceiling.clone(),
+        }));
+        narrowed
     }
 
     /// Check whether a tool or workspace operation is permitted.
     /// Treats `"bash"` and `"shell"` as synonyms for command execution.
+    /// The local filter and every enclosing ceiling must allow the name.
     pub fn allows(&self, name: &str) -> bool {
+        self.base_allows(name)
+            && self
+                .ceiling
+                .as_ref()
+                .is_none_or(|ceiling| ceiling.allows(name))
+    }
+
+    fn base_allows(&self, name: &str) -> bool {
         let single = [name];
         let candidates: &[&str] = match name {
             "bash" | "shell" => &["bash", "shell"],
@@ -179,6 +250,14 @@ impl ToolFilter {
     /// another alias is allowed. The tool is allowed when every alias is
     /// allowed, or when `allow_all` is set and no alias is excluded.
     pub fn allows_aliased(&self, names: &[&str]) -> bool {
+        self.base_allows_aliased(names)
+            && self
+                .ceiling
+                .as_ref()
+                .is_none_or(|ceiling| ceiling.allows_aliased(names))
+    }
+
+    fn base_allows_aliased(&self, names: &[&str]) -> bool {
         if names.iter().any(|name| self.is_excluded(name)) {
             return false;
         }
@@ -194,7 +273,12 @@ impl ToolFilter {
 
     /// Explicit exclusions also apply through the aggregate workspace tool.
     pub fn allows_workspace_operation(&self, operation: &str) -> bool {
-        !self.is_excluded(operation) && (self.allows(operation) || self.allows("workspace"))
+        let base = !self.is_excluded(operation)
+            && (self.base_allows(operation) || self.base_allows("workspace"));
+        base && self
+            .ceiling
+            .as_ref()
+            .is_none_or(|ceiling| ceiling.allows_workspace_operation(operation))
     }
 
     fn is_excluded(&self, name: &str) -> bool {

@@ -1,0 +1,12 @@
+{
+  "id": "review-session-cache",
+  "task_set": "mio-review-v1",
+  "task_set_version": 2,
+  "title": "Review two independent regressions",
+  "language": "python",
+  "covers": ["structured review", "multiple findings", "duplicate findings", "source preservation"],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 15
+}

@@ -5,6 +5,8 @@ name = "mio-core"
 version = "0.1.0"
 build = false
 exclude = [
+    "/Cargo.toml.orig",
+    "/.cargo_vcs_info.json",
     "tests/macro_hygiene.rs",
     "tests/fixtures/telemetry_macro_consumer",
 ]
@@ -152,9 +154,11 @@ optional = true
 
 [dependencies.mio-http]
 path = "../mio-http"
+version = "=0.1.0"
 
 [dependencies.mio-reqwest]
 path = "../mio-reqwest"
+version = "=0.1.0"
 optional = true
 default-features = false
 
@@ -261,6 +265,7 @@ features = ["js"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.mio-tungstenite]
 path = "../mio-tungstenite"
+version = "=0.1.0"
 optional = true
 default-features = false
 
@@ -290,6 +295,7 @@ check-cfg = ["cfg(rig_loom)"]
 
 [dev-dependencies.mio-core]
 path = "."
+version = "=0.1.0"
 features = ["reqwest", "test-utils", "websocket"]
 
 [[test]]

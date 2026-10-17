@@ -15,6 +15,7 @@ readme = "README.md"
 include = [
     "/src",
     "/README.md",
+    "/docs/model-catalog.json",
     "/LICENSE",
     "/CREDITS.md",
     "/licenses",
@@ -27,12 +28,12 @@ include = [
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-mio-core = { version = "=0.1.0", path = "crates/mio-core", default-features = false, features = ["reqwest", "rustls"] }
+mio-core = { version = "=0.1.0", path = "crates/mio-core", default-features = false, features = ["reqwest", "native-tls"] }
 mio-agent = { version = "=0.1.0", path = "crates/mio-agent", default-features = false }
-mio-reqwest = { version = "=0.1.0", path = "crates/mio-reqwest", default-features = false, features = ["rustls"] }
+mio-reqwest = { version = "=0.1.0", path = "crates/mio-reqwest", default-features = false, features = ["native-tls"] }
 tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "fs", "io-util", "io-std", "signal", "process", "net", "rt-multi-thread"] }
 futures-util = "=0.3.34"
-reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "form", "stream", "system-proxy"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["native-tls", "json", "form", "stream", "system-proxy"] }
 tempfile = "=3.27.0"
 base64 = "=0.22.1"
 bytes = "=1.12.1"

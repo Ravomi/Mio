@@ -2,6 +2,7 @@
 mod http;
 use mio_coding_agent::{
     AgentEvent, Arguments, Config, Host, HostFuture, Message, RunOptions, Workspace,
+    delegation::{RunMeta, RunSnapshot},
     subagent::{Delegate, Executor, Status, SubagentManager, Task},
 };
 use std::{
@@ -39,6 +40,22 @@ impl Executor for Fake {
             match task.prompt.as_str() {
                 "hold" => std::future::pending::<()>().await,
                 "fail" => return Err("intentional failure".into()),
+                "evidence_fail" => {
+                    task.host.on_event(AgentEvent::ToolFinished {
+                        operation: "workspace".into(),
+                        target: "src/main.rs".into(),
+                        result: Err("read failed".into()),
+                    });
+                    return Err("intentional failure after tool".into());
+                }
+                "evidence_hold" => {
+                    task.host.on_event(AgentEvent::ToolFinished {
+                        operation: "workspace".into(),
+                        target: "src/main.rs".into(),
+                        result: Ok("read complete".into()),
+                    });
+                    std::future::pending::<()>().await
+                }
                 "panic" => panic!("intentional panic"),
                 "large" => task.host.on_event(AgentEvent::Text("汉".repeat(40000))),
                 "evidence" => {
@@ -397,6 +414,64 @@ async fn evidence_is_bounded_and_structured_from_tool_finished_events() {
 }
 
 #[tokio::test]
+async fn terminal_result_preserves_tool_evidence_after_failure_and_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(
+        dir.path(),
+        2,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = Arc::new(TestHost::default());
+    let failed = manager
+        .delegate(request("failed", "evidence_fail"), host.clone())
+        .unwrap();
+    manager
+        .status(failed.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let failed = manager.result(failed.run_id).unwrap();
+    assert_eq!(failed.snapshot.status, Status::Failed);
+    assert_eq!(failed.verification, "unverified");
+    assert!(
+        failed
+            .snapshot
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("intentional failure")
+    );
+    assert_eq!(failed.snapshot.evidence.len(), 1);
+    assert!(!failed.snapshot.evidence[0].ok);
+    assert_eq!(
+        failed.snapshot.evidence[0].error.as_deref(),
+        Some("read failed")
+    );
+
+    let held = manager
+        .delegate(request("cancelled", "evidence_hold"), host)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.snapshot(held.run_id).unwrap().evidence.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(manager.result(held.run_id).is_err());
+    manager.kill(held.run_id).await.unwrap();
+    let cancelled = manager.result(held.run_id).unwrap();
+    assert_eq!(cancelled.snapshot.status, Status::Cancelled);
+    assert_eq!(cancelled.verification, "unverified");
+    assert_eq!(cancelled.snapshot.evidence.len(), 1);
+    assert!(cancelled.snapshot.evidence[0].ok);
+    assert_eq!(
+        cancelled.snapshot.evidence[0].summary.as_deref(),
+        Some("read complete")
+    );
+}
+
+#[tokio::test]
 async fn with_concurrency_configures_limits_only_when_idle() {
     let dir = tempfile::tempdir().unwrap();
     let mut subagents = manager(
@@ -686,4 +761,175 @@ async fn model_reconfiguration_preserves_sessions_and_rejects_active_children() 
     assert_eq!(finished.status, Status::Completed, "{:?}", finished.error);
     assert_eq!(finished.output, "resumed");
     server.join().unwrap();
+}
+
+#[tokio::test]
+async fn child_canonical_phase_and_source_id_are_recorded_without_parent_mixing() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(
+        dir.path(),
+        1,
+        Duration::from_secs(10),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = Arc::new(TestHost::default());
+    // The held parent occupies the only real slot, so the child must queue.
+    let parent = manager
+        .delegate(request("parent-run", "hold"), host.clone())
+        .unwrap();
+    let parent_engine_run = uuid::Uuid::new_v4();
+    let child = manager
+        .delegate_child_with_source(
+            request("child-run", "evidence"),
+            host.clone(),
+            Some(parent_engine_run),
+            Some("provider-call-1".to_owned()),
+        )
+        .unwrap();
+    assert_ne!(parent.run_id, child.run_id);
+    assert_eq!(child.status, Status::Queued);
+    // The canonical tracker, not the legacy `status`, is the phase authority;
+    // the parent dispatch's real provider call id is preserved as the source.
+    assert_eq!(child.canonical_phase.as_deref(), Some("queued"));
+    assert_eq!(child.parent_run_id, Some(parent_engine_run));
+    assert_eq!(RunMeta::from(&child).parent_run_id, Some(parent_engine_run));
+    assert_eq!(
+        RunSnapshot::from(child.clone()).parent_run_id,
+        Some(parent_engine_run)
+    );
+    assert_eq!(
+        child.provider_tool_call_id.as_deref(),
+        Some("provider-call-1")
+    );
+    assert!(child.engine_run_id.is_none());
+
+    manager.kill(parent.run_id).await.unwrap();
+    let parent_final = manager.snapshot(parent.run_id).unwrap();
+    assert_eq!(parent_final.canonical_phase.as_deref(), Some("cancelled"));
+
+    let child_final = manager
+        .status(child.run_id, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(child_final.status, Status::Completed);
+    assert_eq!(child_final.canonical_phase.as_deref(), Some("completed"));
+    // The parent's terminal never becomes the child's phase.
+    assert_eq!(parent_final.canonical_phase.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+async fn queued_cancel_dispatches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let active = Arc::new(AtomicUsize::new(0));
+    let manager = manager(dir.path(), 1, Duration::from_secs(10), active.clone());
+    let host = Arc::new(TestHost::default());
+    let running = manager
+        .delegate(request("holder", "hold"), host.clone())
+        .unwrap();
+    wait_active(&active, 1).await;
+    let queued = manager
+        .delegate(request("queued", "would-run"), host.clone())
+        .unwrap();
+    assert_eq!(queued.status, Status::Queued);
+
+    let killed = manager.kill(queued.run_id).await.unwrap();
+    assert_eq!(killed.status, Status::Cancelled);
+    assert_eq!(killed.canonical_phase.as_deref(), Some("cancelled"));
+    // Zero dispatch: the queued child's executor never ran a connection.
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        1,
+        "queued cancel must not start the child"
+    );
+
+    manager.kill(running.run_id).await.unwrap();
+    wait_active(&active, 0).await;
+}
+
+// ---------------------------------------------------------------------------
+// ROOT-REVIEW 12：真实的阻塞 worker 被取消后，下一个排队子任务必须自动获得准入
+// ---------------------------------------------------------------------------
+
+/// 在子任务自己的 canonical worker guard 下运行一个真实、受监督的 shell 进程。
+/// 取消子任务会 drop executor future，`Process` 的 drop 会 SIGKILL 进程组并把
+/// guard 移交给真实异步 reaper：因此终态提交时 worker 可能仍未回收，`finish`
+/// 返回 `Deferred`。这正是条目 12 要覆盖的真实路径。
+#[cfg(unix)]
+struct ShellWorkerExecutor {
+    started: Arc<tokio::sync::Notify>,
+}
+#[cfg(unix)]
+impl Executor for ShellWorkerExecutor {
+    fn execute(&self, task: Task) -> HostFuture<Result<Vec<Message>, String>> {
+        let started = self.started.clone();
+        let cwd = task.cwd.clone();
+        let handle = task
+            .task_handle
+            .clone()
+            .expect("a delegated child is bound to its canonical task");
+        Box::pin(async move {
+            started.notify_one();
+            // The blocker holds a real supervised child (and its worker guard)
+            // until it is cancelled; the later child finishes immediately once
+            // it is admitted.
+            let command = if task.prompt == "hold" {
+                "sleep 30"
+            } else {
+                "true"
+            };
+            let _ = mio_coding_agent::task_lifecycle::scope_task(
+                handle,
+                mio_coding_agent::shell::execute(command, &cwd),
+            )
+            .await;
+            Ok(task.history)
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelled_real_shell_worker_settles_before_the_next_queued_child_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let manager = SubagentManager::with_executor(
+        dir.path(),
+        Config {
+            model: "test".into(),
+            ..Config::default()
+        },
+        RunOptions::default(),
+        1,
+        Duration::from_secs(60),
+        Arc::new(ShellWorkerExecutor {
+            started: started.clone(),
+        }),
+    )
+    .unwrap();
+    let host = Arc::new(TestHost::default());
+    let blocker = manager
+        .delegate(request("blocker", "hold"), host.clone())
+        .unwrap();
+    // Wait until the real shell worker is running under the only slot.
+    started.notified().await;
+    let queued = manager
+        .delegate(request("queued-next", "later"), host.clone())
+        .unwrap();
+    assert_eq!(queued.status, Status::Queued, "the slot is still occupied");
+
+    // Cancel the running child. Its real shell reaper is the deferred worker.
+    let killed = manager.kill(blocker.run_id).await.unwrap();
+    assert_eq!(killed.status, Status::Cancelled);
+    assert_eq!(killed.canonical_phase.as_deref(), Some("cancelled"));
+
+    // The queued child must start automatically after the real worker settles,
+    // with no further user action. Before the fix, `run_job` cleared the slot
+    // and pumped while the phase was still `Running`, so nothing ever pumped
+    // again when the guard was released.
+    let done = manager
+        .status(queued.run_id, Duration::from_secs(15))
+        .await
+        .unwrap();
+    assert_eq!(done.status, Status::Completed, "{:?}", done.error);
+    assert_eq!(done.canonical_phase.as_deref(), Some("completed"));
 }

@@ -5,7 +5,9 @@
 
 use crate::{
     Host,
-    subagent::{Delegate, Snapshot, Status, SubagentManager, ToolEvidence},
+    subagent::{
+        Delegate, DeniedToolCall, Snapshot, Status, SubagentManager, SubagentResult, ToolEvidence,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -91,6 +93,14 @@ pub struct KillParams {
 #[serde(rename_all = "camelCase")]
 pub struct RunMeta {
     pub run_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_phase: Option<String>,
     pub session: String,
     pub goal: String,
     pub cwd: PathBuf,
@@ -105,12 +115,21 @@ pub struct RunMeta {
     pub evidence: Vec<ToolEvidence>,
     #[serde(default)]
     pub evidence_truncated: bool,
+    /// Canonical pre-dispatch denials, separate from tool execution evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_calls: Vec<DeniedToolCall>,
+    #[serde(default)]
+    pub denied_calls_truncated: bool,
 }
 
 impl From<&Snapshot> for RunMeta {
     fn from(s: &Snapshot) -> Self {
         Self {
             run_id: s.run_id,
+            parent_run_id: s.parent_run_id,
+            engine_run_id: s.engine_run_id,
+            provider_tool_call_id: s.provider_tool_call_id.clone(),
+            canonical_phase: s.canonical_phase.clone(),
             session: s.session.clone(),
             goal: s.goal.clone(),
             cwd: s.cwd.clone(),
@@ -120,6 +139,8 @@ impl From<&Snapshot> for RunMeta {
             error: s.error.clone(),
             evidence: s.evidence.clone(),
             evidence_truncated: s.evidence_truncated,
+            denied_calls: s.denied_calls.clone(),
+            denied_calls_truncated: s.denied_calls_truncated,
         }
     }
 }
@@ -129,6 +150,14 @@ impl From<&Snapshot> for RunMeta {
 #[serde(rename_all = "camelCase")]
 pub struct RunSnapshot {
     pub run_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_phase: Option<String>,
     pub session: String,
     pub goal: String,
     pub cwd: PathBuf,
@@ -145,12 +174,21 @@ pub struct RunSnapshot {
     pub evidence: Vec<ToolEvidence>,
     #[serde(default)]
     pub evidence_truncated: bool,
+    /// Canonical pre-dispatch denials, separate from tool execution evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_calls: Vec<DeniedToolCall>,
+    #[serde(default)]
+    pub denied_calls_truncated: bool,
 }
 
 impl From<Snapshot> for RunSnapshot {
     fn from(s: Snapshot) -> Self {
         Self {
             run_id: s.run_id,
+            parent_run_id: s.parent_run_id,
+            engine_run_id: s.engine_run_id,
+            provider_tool_call_id: s.provider_tool_call_id,
+            canonical_phase: s.canonical_phase,
             session: s.session,
             goal: s.goal,
             cwd: s.cwd,
@@ -162,6 +200,8 @@ impl From<Snapshot> for RunSnapshot {
             error: s.error,
             evidence: s.evidence,
             evidence_truncated: s.evidence_truncated,
+            denied_calls: s.denied_calls,
+            denied_calls_truncated: s.denied_calls_truncated,
         }
     }
 }
@@ -248,6 +288,11 @@ impl DelegationAdapter {
             .unwrap_or(Duration::ZERO);
         let snapshot = self.manager.status(params.run_id, wait).await?;
         Ok(RunMeta::from(&snapshot))
+    }
+
+    /// Collect the same versioned terminal result available to the native tool.
+    pub fn result(&self, run_id: Uuid) -> Result<SubagentResult, String> {
+        self.manager.result(run_id)
     }
 
     /// Snapshot query: finds the latest run for a session and returns its full snapshot.

@@ -46,6 +46,7 @@ use super::{
     runner::AgentRunner,
     streaming::MultiTurnStreamItem,
     telemetry::{build_chat_span, new_execute_tool_span},
+    tool_invocation::ToolInvocation,
 };
 use crate::run::UnhandledInvalidToolCall;
 use crate::{
@@ -2031,7 +2032,19 @@ pub(crate) async fn dispatch_tool_call(
     // The context the tool runs with travels beside the effect, never in it
     // (format 5): the hooks see it on the event, the bus carries it to the
     // tool's sink, and what the tool published comes back the same way.
-    let inbound = tool_context.for_dispatch();
+    //
+    // Its identity is this exact call: the bus-minted effect id, the model's
+    // wire call id, and the turn, attached as a live-only scope. A concurrent
+    // sibling with the same tool name is a different call, and the base context
+    // may already carry a `ToolInvocation` that a parent inherited or a host
+    // forged, so the fresh one *replaces* that type instead of hiding behind it
+    // (`scope` answers with the first of its type). The scope holds no
+    // arguments, content, or credentials, and never reaches the effect, a
+    // serialized context, or published result metadata — `PublishedContext`
+    // clears scopes as before.
+    let inbound = tool_context
+        .for_dispatch()
+        .with_replaced_scope(Arc::new(ToolInvocation::capture(id, call_id, ctx.turn())));
     let (kind, denied) = match hooks
         .on_dispatch(
             ctx,

@@ -1,0 +1,18 @@
+{
+  "id": "migrate-line-item-api",
+  "task_set": "mio-workflows-v1",
+  "task_set_version": 2,
+  "title": "Multi-file line-item API migration",
+  "language": "python",
+  "covers": [
+    "cross-file signature migration",
+    "keyword-only argument",
+    "integer half-up rounding",
+    "preserved validation boundary",
+    "caller and CLI consistency"
+  ],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 15
+}

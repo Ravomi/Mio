@@ -6,6 +6,7 @@ Does not contact external services or read user credentials.
 """
 
 import json
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -13,34 +14,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RPC_RS = ROOT / "src" / "rpc.rs"
 CATALOG_JSON = ROOT / "docs" / "model-catalog.json"
+CORE_CATALOG = ROOT / "crates/mio-core/src/catalog/models.json"
 
 PROVIDER_METADATA = {
     "antigravity": {
         "displayName": "Antigravity (Google Cloud Code PA)",
         "protocol": "Google Cloud Code PA (OAuth Profile)",
-        "notesZh": "凭据查找优先级：MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio；支持通过 mio --import-antigravity ~/.pi/agent 导入已有凭据。已有 profile 可提供默认 model。实际可用模型与档位取决于账号权限；一般 thinking 仅在 Antigravity 适配器中消费生效，不声称完整支持。",
-        "notesEn": "Credential search priority: MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio; supports importing existing profiles via mio --import-antigravity ~/.pi/agent. An existing profile can provide a default model. Available models and levels depend on account entitlements; generic thinking is consumed only by the Antigravity adapter without claiming universal support.",
+        "notesZh": "凭据查找优先级：MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio；支持通过 mio --import-antigravity ~/.pi/agent 导入已有凭据。已有 profile 可提供默认 model。实际可用模型与档位取决于账号权限；Antigravity 档位由该适配器与账号权限决定，不代替其他 Provider 的原生协议与 catalog 校验。",
+        "notesEn": "Credential search priority: MIO_CONFIG_DIR > XDG_CONFIG_HOME/mio > ~/.config/mio; supports importing existing profiles via mio --import-antigravity ~/.pi/agent. An existing profile can provide a default model. Available models and levels depend on account entitlements; Antigravity levels depend on this adapter and account entitlements; other providers use their own native protocol and catalog validation.",
         "requiresGateway": False,
     },
     "openai": {
         "displayName": "OpenAI",
         "protocol": "OpenAI Chat Completions",
-        "notesZh": "OpenAI 官方 Chat Completions 接口，原生支持函数调用与流式事件；思考档位由 Antigravity 专享，OpenAI 驱动忽略通用 thinking 预算。",
-        "notesEn": "Official OpenAI Chat Completions API with native tool-calling; thinking levels are Antigravity-only and ignored by standard OpenAI driver.",
+        "notesZh": "OpenAI Chat Completions 接口；工具与思考能力优先读取底层 catalog，具体档位由模型验证，不代表账号或端点已实测。",
+        "notesEn": "OpenAI Chat Completions; model capabilities come from the core catalog and local validation, not a live account or endpoint probe.",
         "requiresGateway": False,
     },
     "anthropic": {
-        "displayName": "Anthropic (Compatible Gateway Required)",
-        "protocol": "OpenAI Chat Completions (Via Gateway)",
-        "notesZh": "⚠️ Mio 采用通用 OpenAI Chat 驱动。原生 api.anthropic.com 端点格式不兼容，必须搭配 OpenAI 兼容网关并显式指定 --base-url https://your-gateway.example/v1。",
-        "notesEn": "⚠️ Mio uses a standard OpenAI Chat driver. Native api.anthropic.com endpoint is incompatible; you must provide an OpenAI-compatible gateway via explicit --base-url.",
-        "requiresGateway": True,
+        "displayName": "Anthropic",
+        "protocol": "Anthropic Messages",
+        "notesZh": "使用原生 Anthropic Messages 协议。若接入 OpenAI 兼容网关，应显式选择 custom。目录声明不代表账号、认证或线上协议已验证。",
+        "notesEn": "Uses native Anthropic Messages. Select custom for an OpenAI-compatible gateway. Catalog facts do not prove account access, authentication or live protocol support.",
+        "requiresGateway": False,
     },
     "google": {
-        "displayName": "Google Gemini (OpenAI Endpoint)",
-        "protocol": "Gemini OpenAI-Compatible Endpoint",
-        "notesZh": "使用 Google Generative Language 提供的 OpenAI 兼容接口 (/v1beta/openai)。支持通过 GEMINI_API_KEY 或 GOOGLE_API_KEY 接入。",
-        "notesEn": "Uses Google Generative Language OpenAI-compatible endpoint (/v1beta/openai). Configured via GEMINI_API_KEY or GOOGLE_API_KEY.",
+        "displayName": "Google Gemini",
+        "protocol": "Gemini GenerateContent",
+        "notesZh": "使用 Google 原生 GenerateContent 协议。凭据来自 GEMINI_API_KEY 或 GOOGLE_API_KEY；账号可用性须另行实测。",
+        "notesEn": "Uses native Google GenerateContent. Credentials come from GEMINI_API_KEY or GOOGLE_API_KEY; account readiness requires a separate live probe.",
         "requiresGateway": False,
     },
     "deepseek": {
@@ -80,15 +82,16 @@ PROVIDER_METADATA = {
     },
     "ollama": {
         "displayName": "Ollama (Local)",
-        "protocol": "Local Ollama (OpenAI Compatible)",
-        "notesZh": "本地运行的 Ollama 实例（默认 http://127.0.0.1:11434/v1），无需外部密钥即可离线使用。",
-        "notesEn": "Locally running Ollama instance (default http://127.0.0.1:11434/v1), completely offline without remote keys.",
+        "protocol": "Native Ollama /api/chat",
+        "notesZh": "使用本地 Ollama 原生 /api/chat 协议。预设不要求远程密钥，不代表本地守护进程正在运行。",
+        "notesEn": "Uses the local native Ollama /api/chat protocol. No remote key is required by the preset; daemon reachability is not inferred.",
         "requiresGateway": False,
     },
 }
 
 def parse_presets_from_rpc():
     content = RPC_RS.read_text(encoding="utf-8")
+    core = json.loads(CORE_CATALOG.read_text(encoding="utf-8"))
     match = re.search(r"const PROVIDER_PRESETS: &\[ProviderPreset\] = &\[(.*?)\];", content, re.DOTALL)
     if not match:
         raise RuntimeError("Failed to locate PROVIDER_PRESETS in src/rpc.rs")
@@ -112,9 +115,15 @@ def parse_presets_from_rpc():
         
         models = []
         for m in re.finditer(r'\(\s*"([^"]+)"\s*,\s*(true|false)\s*\)', models_match.group(1)):
+            model_id = m.group(1)
+            vendor = "gcp.gemini" if name == "google" else name
+            row = core.get(vendor, {}).get("models", {}).get(model_id)
             models.append({
-                "id": m.group(1),
-                "reasoning": m.group(2) == "true",
+                "id": model_id,
+                "reasoning": bool(row.get("reasoning", False)) if row is not None else m.group(2) == "true",
+                "capabilitySource": "mio-core/catalog/models.json" if row is not None else "provider-preset (not live verified)",
+                "contextWindow": row.get("limit", {}).get("context") if row is not None else None,
+                "maxOutputTokens": row.get("limit", {}).get("output") if row is not None else None,
             })
 
         meta = PROVIDER_METADATA.get(name, {
@@ -142,7 +151,15 @@ def parse_presets_from_rpc():
 def generate_catalog():
     presets = parse_presets_from_rpc()
     catalog = {
-        "version": "1.0",
+        "version": "1.1",
+        "source": {
+            "presets": "src/rpc.rs::PROVIDER_PRESETS",
+            "capabilities": "crates/mio-core/src/catalog/models.json",
+            "capabilitiesSha256": hashlib.sha256(CORE_CATALOG.read_bytes()).hexdigest(),
+            "reviewedAt": "2026-10-15",
+            "reviewScope": "local source alignment; not live provider verification",
+        },
+        "liveVerification": {"reachable": None, "authenticated": None, "protocolSupported": None},
         "description": "Static snapshot of Mio built-in provider presets from src/rpc.rs PROVIDER_PRESETS. Does not read user credentials.",
         "totalProviders": len(presets),
         "totalModels": sum(len(p["models"]) for p in presets),

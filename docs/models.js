@@ -180,12 +180,14 @@
       // 3. Reasoning
       var tdReasoning = document.createElement('td');
       var reasoningSpan = document.createElement('span');
-      if (p.name === 'antigravity') {
-        reasoningSpan.textContent = isZh() ? '支持 (可选)' : 'Supported (Opt)';
+      if (m.reasoning) {
+        reasoningSpan.textContent = m.capabilitySource === 'mio-core/catalog/models.json'
+          ? (isZh() ? '目录声明支持' : 'Catalog support')
+          : (isZh() ? '预设声明（待验证）' : 'Preset (unverified)');
         reasoningSpan.style.color = 'var(--ref-primary, #10b981)';
         reasoningSpan.style.fontWeight = '500';
       } else {
-        reasoningSpan.textContent = isZh() ? '不传递思考档位' : 'Thinking level not forwarded';
+        reasoningSpan.textContent = isZh() ? '未声明支持' : 'Not declared supported';
         reasoningSpan.style.color = 'var(--ref-text-muted, #737373)';
       }
       tdReasoning.appendChild(reasoningSpan);

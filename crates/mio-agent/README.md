@@ -217,31 +217,15 @@ than through an agent bus.
 
 ## Target support
 
-| Tier | Target | Status |
-| --- | --- | --- |
-| 1 | native (linux / macOS / windows, `x86_64` and `aarch64`) | Full support, all features; MCP tools via the companion `rig-rmcp` crate |
-| 2 | `wasm32-unknown-unknown` (browser) | Supported, with no feature flags to set; `rig-rmcp` (MCP tools) is **not** available |
-| — | `wasm32-wasip1` / `wasm32-wasip2` (WASI) | **Not supported** |
-| — | `wasm32-unknown-emscripten` | Not supported |
+Mio's native examples and helper feature combinations are checked by the
+[SDK contract matrix](../../docs/sdk.md). Linux has local compilation evidence;
+macOS and Windows have a CI matrix awaiting native execution evidence.
 
-**Building for `wasm32-unknown-unknown` is the entire opt-in** — there are no
-wasm feature flags anywhere in the workspace. `mio-core` relaxes its
-`WasmCompat*` bounds from the target alone.
-
-Wasm gates name a `target_os` (`all(target_arch = "wasm32", target_os =
-"unknown")`) rather than a bare `target_arch = "wasm32"`, because the latter
-also matches WASI, which has no JS host. WASI itself does not build: `mio-core`
-depends unconditionally on `reqwest`, which pulls `hyper`/`socket2` and a tokio
-feature set WASI rejects. Supporting it would mean making `reqwest` optional and
-adding a `wasi:http` client behind `mio_core::http_client` — a project, not a
-`cfg` fix.
-
-**MCP (`rig-rmcp`) is native-only.** rmcp's `ClientHandler` is declared
-`Sized + Send + Sync + 'static` unconditionally — its `local` feature relaxes
-the future bounds but not the handler itself — while this crate's handler owns a
-tool registry whose `Arc<dyn ErasedTool>` is deliberately neither `Send` nor
-`Sync` on wasm. Enabling `rmcp` on a wasm target fails with a single explanatory
-`compile_error!` rather than a wall of trait errors.
+Browser `wasm32-unknown-unknown` compatibility uses the target-gated
+`WasmCompat*` contracts in `mio-core`; the current SDK matrix does not verify
+browser or WASI builds. The coding CLI and its process/MCP integrations belong
+to `mio-coding-agent`, not this runtime crate. No external MCP adapter is
+included by this package.
 
 ## License
 

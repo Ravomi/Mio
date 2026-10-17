@@ -26,6 +26,32 @@
 //! 因此**不允许**通过传入更大的并发上限来偷偷扩大全局限额；要变更策略必须由用户
 //! 明确换用新目录，或停机后统一处理。
 //!
+//! # 跨进程预算账本（版本化）
+//!
+//! 同一个 `root` 下可持久化一份版本化的预算账本 `budget.json`（`0600`、有大小上限），
+//! 记录跨进程的模型调用次数 / token 预算、已结算用量与仍未结算的在途预留。账本只在
+//! 调用方显式设置 `max_model_calls` / `max_total_tokens` 时创建；从未设置预算的 root
+//! 保持兼容（不创建文件、不写盘、不改变准入）。
+//!
+//! - **只能收窄**：账本记录的策略只能被更窄的请求逐项收窄（取 min）。请求比账本已记录
+//!   的策略更宽时 fail-closed 报 [`SharedLimitsError::BudgetPolicyMismatch`]；因此更宽的
+//!   本地参数不会悄悄放大已有共享策略，要放宽必须换用新 root。请求完全未设置时继承
+//!   账本已记录的策略（重启后仍然一致生效）。首次打开用阻塞 `flock` 串行化首次创建 /
+//!   收窄的读-改-写（仅启动阶段）；运行时的预留 / 结算仍用轮询 `try_lock`，不阻塞工作线程。
+//! - **原子预留**：调用前在账本内原子占用「token 预留 + 一次调用次数」，预留落盘后才
+//!   可能发出请求；账本损坏、丢失、超额或次数耗尽一律 fail-closed 报错，绝不降级放行。
+//! - **真实 usage 结算**：结算写回 Provider 上报的真实 usage；未上报按预留额保守计费，
+//!   绝不按 0 计。实际用量超过预留记 over-reservation，超过预算记 overage 并阻止后续请求。
+//! - **取消 / 崩溃不退款**：只有在请求**尚未发出**时才能显式归还预留
+//!   （[`SharedBudgetPermit::abandon`]）。已发出的调用即使取消、进程退出甚至被 `SIGKILL`，
+//!   其预留仍保留在账本里（最多按预留额保守计入），因此无法靠反复取消绕过共享预算。
+//! - **调用次数已发出才算**：次数只在预留成功（紧接真实 dispatch）时 +1；未发出的调用
+//!   在放弃预留时回滚，保证不会为未发出的请求计数。
+//! - **与本地预算的关系**：进程内 `Coordinator` 的预算只统计本进程，共享账本统计同一
+//!   `root` 下的全部协作进程。一次调用会在两层各记一次（每层恰好一次，作用域不同，
+//!   不是对同一层的重复计费），实际生效的上限是两者中更窄的一方；未启用共享 root 时
+//!   只有本地预算。
+//!
 //! # 调度语义
 //!
 //! - 模型请求需要**同时**持有「全局」与「provider」两级槽位。若 provider 槽位不可用，
@@ -54,8 +80,9 @@
 //! # 不可观测项
 //!
 //! 无法可靠枚举「其它进程持有哪些槽位」：持有者集合只能通过会改变状态的探测获得，
-//! 且 PID/fd 归属不可信。因此 [`SharedLimits::snapshot`] 只返回配置与 cooldown，
-//! 不返回 active 计数，也绝不伪造计数。
+//! 且 PID/fd 归属不可信。因此 [`SharedLimits::snapshot`] 只返回配置、cooldown 与预算
+//! 账本，不返回 active 槽位计数，也绝不伪造计数（账本里的在途预留在用户视角下是持久
+//! 计数，含进程崩溃后遗留的预留，不是「当前活着的持有者」清单）。
 
 use std::{
     collections::BTreeMap,
@@ -65,7 +92,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -104,6 +131,14 @@ const PATH_COMPONENT_HEX_LEN: usize = 32;
 const CLAIM_PREFIX: &str = "claim-";
 /// 路径身份哈希的域分隔前缀。
 const PATH_HASH_DOMAIN: &[u8] = b"mio-shared-limits-path-v1\0";
+/// 预算账本格式版本。
+const BUDGET_VERSION: u32 = 1;
+/// 预算账本字节上限。
+const MAX_BUDGET_FILE_BYTES: u64 = 8 * 1024;
+/// `Drop` 里同步结算预留的重试次数（约 200ms）。
+const SETTLE_SYNC_ATTEMPTS: usize = 200;
+/// `Drop` 里同步结算预留的重试间隔。
+const SETTLE_SYNC_INTERVAL: Duration = Duration::from_millis(1);
 
 /// 临时文件命名的进程内自增序列，配合 PID / 纳秒避免碰撞。
 static TMP_SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -123,6 +158,10 @@ pub struct SharedLimitsConfig {
     pub max_cooldown_entries: usize,
     /// cooldown 文件最大字节数。
     pub max_cooldown_file_bytes: u64,
+    /// 可选的跨进程模型调用次数上限；持久化在共享预算账本，只会收窄不会放宽。
+    pub max_model_calls: Option<u64>,
+    /// 可选的跨进程 token 总数上限；持久化在共享预算账本，只会收窄不会放宽。
+    pub max_total_tokens: Option<u64>,
 }
 
 impl Default for SharedLimitsConfig {
@@ -133,6 +172,8 @@ impl Default for SharedLimitsConfig {
             heavy_concurrency: 2,
             max_cooldown_entries: DEFAULT_MAX_COOLDOWN_ENTRIES,
             max_cooldown_file_bytes: DEFAULT_MAX_COOLDOWN_FILE_BYTES,
+            max_model_calls: None,
+            max_total_tokens: None,
         }
     }
 }
@@ -179,6 +220,16 @@ impl SharedLimitsConfig {
                 "max_cooldown_file_bytes must be <= 16 MiB".into(),
             ));
         }
+        if self.max_model_calls == Some(0) {
+            return Err(SharedLimitsError::InvalidConfig(
+                "max_model_calls must be >= 1 when set".into(),
+            ));
+        }
+        if self.max_total_tokens == Some(0) {
+            return Err(SharedLimitsError::InvalidConfig(
+                "max_total_tokens must be >= 1 when set".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -202,6 +253,35 @@ pub enum SharedLimitsError {
     CorruptWorkspace(String),
     /// workspace registry 已达容量 / 大小上限。
     WorkspaceLimit(String),
+    /// 预算账本损坏、版本未知、超限或已丢失，fail-closed。
+    CorruptBudget(String),
+    /// 请求的本地预算比共享账本已记录的策略更宽，fail-closed。
+    BudgetPolicyMismatch(String),
+    /// 共享 token 预算不足或已超额，拒绝本次请求。
+    BudgetExhausted {
+        /// 已结算的 token 数。
+        tokens_used: u64,
+        /// 当前仍未结算的在途预留。
+        tokens_reserved_active: u64,
+        /// 超过预算的累计 token 数。
+        tokens_overage: u64,
+        /// 配置上限（若设置）。
+        limit: Option<u64>,
+    },
+    /// 共享模型调用次数预算已耗尽。
+    ModelCallBudgetExceeded {
+        /// 已占用的调用次数。
+        used: u64,
+        /// 配置上限。
+        limit: u64,
+    },
+    /// 单次预留本身就超过共享 token 上限，无法满足。
+    BudgetReservationTooLarge {
+        /// 请求预留的 token 数。
+        reservation: u64,
+        /// 配置上限。
+        limit: u64,
+    },
 }
 
 impl fmt::Display for SharedLimitsError {
@@ -219,6 +299,27 @@ impl fmt::Display for SharedLimitsError {
             Self::PolicyMismatch(msg) => write!(f, "shared limits policy mismatch: {msg}"),
             Self::CorruptWorkspace(msg) => write!(f, "corrupt shared limits workspace: {msg}"),
             Self::WorkspaceLimit(msg) => write!(f, "shared limits workspace limit: {msg}"),
+            Self::CorruptBudget(msg) => write!(f, "corrupt shared limits budget: {msg}"),
+            Self::BudgetPolicyMismatch(msg) => {
+                write!(f, "shared limits budget policy mismatch: {msg}")
+            }
+            Self::BudgetExhausted {
+                tokens_used,
+                tokens_reserved_active,
+                tokens_overage,
+                limit,
+            } => write!(
+                f,
+                "shared token budget exhausted: used {tokens_used}, in-flight {tokens_reserved_active}, overage {tokens_overage}, limit {limit:?}"
+            ),
+            Self::ModelCallBudgetExceeded { used, limit } => write!(
+                f,
+                "shared model call budget exceeded: used {used} >= limit {limit}"
+            ),
+            Self::BudgetReservationTooLarge { reservation, limit } => write!(
+                f,
+                "shared token reservation {reservation} exceeds budget limit {limit}"
+            ),
         }
     }
 }
@@ -346,7 +447,7 @@ pub struct ProviderCooldown {
 
 /// [`SharedLimits::snapshot`] 的返回值。
 ///
-/// **只包含配置与 cooldown**，不含 active 槽位计数：跨进程持有者无法被可靠枚举，
+/// **只包含配置、cooldown 与预算账本**，不含 active 槽位计数：跨进程持有者无法被可靠枚举，
 /// 因此不提供该字段，也不伪造计数。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SharedLimitsSnapshot {
@@ -354,6 +455,8 @@ pub struct SharedLimitsSnapshot {
     pub config: SharedLimitsConfig,
     /// 当前仍未过期的 provider cooldown（按 hash 排序）。
     pub cooldowns: Vec<ProviderCooldown>,
+    /// 当前跨进程预算账本快照（未启用时为空策略）。
+    pub budget: SharedBudgetSnapshot,
 }
 
 /// registry 中的一条 workspace 租约记录。
@@ -436,6 +539,409 @@ fn validate_components(components: &[String]) -> Result<(), SharedLimitsError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 跨进程预算账本
+// ---------------------------------------------------------------------------
+
+/// 跨进程共享的预算策略。两个维度各自可选；全为 `None` 表示不启用持久化预算。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SharedBudgetPolicy {
+    /// 模型调用次数上限。
+    pub max_model_calls: Option<u64>,
+    /// token 总数上限。
+    pub max_total_tokens: Option<u64>,
+}
+
+impl SharedBudgetPolicy {
+    /// 两个维度都为 `None` 时返回 `false`，表示不启用持久化预算。
+    pub fn is_enabled(self) -> bool {
+        self.max_model_calls.is_some() || self.max_total_tokens.is_some()
+    }
+
+    /// 逐项取更窄的上限：`None` 表示无限制，因此有值的一方受限。
+    fn narrower(self, other: Self) -> Self {
+        Self {
+            max_model_calls: narrower_limit(self.max_model_calls, other.max_model_calls),
+            max_total_tokens: narrower_limit(self.max_total_tokens, other.max_total_tokens),
+        }
+    }
+}
+
+fn narrower_limit(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// 请求比账本已记录的策略更宽时返回 `(字段, 账本值, 请求值)`。
+fn wider_than(
+    recorded: SharedBudgetPolicy,
+    requested: SharedBudgetPolicy,
+) -> Option<(&'static str, u64, u64)> {
+    if let (Some(recorded), Some(requested)) = (recorded.max_model_calls, requested.max_model_calls)
+        && requested > recorded
+    {
+        return Some(("max_model_calls", recorded, requested));
+    }
+    if let (Some(recorded), Some(requested)) =
+        (recorded.max_total_tokens, requested.max_total_tokens)
+        && requested > recorded
+    {
+        return Some(("max_total_tokens", recorded, requested));
+    }
+    None
+}
+
+/// 持久化的跨进程预算账本。所有计数单调递增（除 `abandon` 对未发出调用的精确回滚）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct BudgetLedger {
+    version: u32,
+    max_model_calls: Option<u64>,
+    max_total_tokens: Option<u64>,
+    calls_started: u64,
+    tokens_reserved_active: u64,
+    tokens_used: u64,
+    tokens_over_reservation: u64,
+    tokens_overage: u64,
+    blocked: bool,
+}
+
+impl BudgetLedger {
+    fn new(policy: SharedBudgetPolicy) -> Self {
+        Self {
+            version: BUDGET_VERSION,
+            max_model_calls: policy.max_model_calls,
+            max_total_tokens: policy.max_total_tokens,
+            calls_started: 0,
+            tokens_reserved_active: 0,
+            tokens_used: 0,
+            tokens_over_reservation: 0,
+            tokens_overage: 0,
+            blocked: false,
+        }
+    }
+
+    fn policy(&self) -> SharedBudgetPolicy {
+        SharedBudgetPolicy {
+            max_model_calls: self.max_model_calls,
+            max_total_tokens: self.max_total_tokens,
+        }
+    }
+
+    fn set_policy(&mut self, policy: SharedBudgetPolicy) {
+        self.max_model_calls = policy.max_model_calls;
+        self.max_total_tokens = policy.max_total_tokens;
+    }
+
+    fn validate(&self) -> Result<(), SharedLimitsError> {
+        if self.version != BUDGET_VERSION {
+            return Err(SharedLimitsError::CorruptBudget(format!(
+                "unsupported budget ledger version {} (expected {BUDGET_VERSION})",
+                self.version
+            )));
+        }
+        for (name, value) in [
+            ("max_model_calls", self.max_model_calls),
+            ("max_total_tokens", self.max_total_tokens),
+        ] {
+            if value == Some(0) {
+                return Err(SharedLimitsError::CorruptBudget(format!(
+                    "{name} must be >= 1 when set"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> SharedBudgetSnapshot {
+        SharedBudgetSnapshot {
+            max_model_calls: self.max_model_calls,
+            max_total_tokens: self.max_total_tokens,
+            calls_started: self.calls_started,
+            tokens_reserved_active: self.tokens_reserved_active,
+            tokens_used: self.tokens_used,
+            tokens_over_reservation: self.tokens_over_reservation,
+            tokens_overage: self.tokens_overage,
+            blocked: self.blocked,
+        }
+    }
+}
+
+/// 跨进程预算账本的只读快照（不含任何凭据或 provider 原文）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SharedBudgetSnapshot {
+    /// 模型调用次数上限（若设置）。
+    pub max_model_calls: Option<u64>,
+    /// token 总数上限（若设置）。
+    pub max_total_tokens: Option<u64>,
+    /// 已占用的调用次数（已发出或仍在途）。
+    pub calls_started: u64,
+    /// 仍未结算的在途预留（含进程崩溃后遗留的预留）。
+    pub tokens_reserved_active: u64,
+    /// 已结算的 token 数（未知 usage 按预留额保守计入）。
+    pub tokens_used: u64,
+    /// 结算值超过预留额的累计 token 数。
+    pub tokens_over_reservation: u64,
+    /// 超过 token 预算的累计 token 数。
+    pub tokens_overage: u64,
+    /// 是否已因超额用量阻止后续请求。
+    pub blocked: bool,
+}
+
+impl SharedBudgetSnapshot {
+    fn disabled() -> Self {
+        Self {
+            max_model_calls: None,
+            max_total_tokens: None,
+            calls_started: 0,
+            tokens_reserved_active: 0,
+            tokens_used: 0,
+            tokens_over_reservation: 0,
+            tokens_overage: 0,
+            blocked: false,
+        }
+    }
+}
+
+/// 一次跨进程预算预留（token 预留 + 一次调用次数）。
+///
+/// - 正常结算用 [`SharedBudgetPermit::settle`]（真实 usage，或 `None` 表示未知）。
+/// - 只有在**请求尚未发出**时才能用 [`SharedBudgetPermit::abandon`] 归还预留；已发出的
+///   调用绝不归还（取消、退出、`SIGKILL` 都只会保留在账本里）。
+/// - 未显式结算就被 `drop` 时按未知 usage 保守结算，并做一次有界的同步尝试；若仍拿不到
+///   账本锁，预留保持占用（fail-closed，绝不退款）。
+#[must_use = "dropping the permit conservatively settles the shared reservation"]
+pub struct SharedBudgetPermit {
+    limits: SharedLimits,
+    reservation: u64,
+    settled: bool,
+}
+
+impl SharedBudgetPermit {
+    /// 本次预留的 token 数。
+    pub fn reservation(&self) -> u64 {
+        self.reservation
+    }
+
+    /// 以真实 usage 结算；`None` 表示 Provider 未上报，按预留额保守计费。
+    pub async fn settle(mut self, usage: Option<u64>) -> Result<(), SharedLimitsError> {
+        self.settled = true;
+        self.limits.settle_budget(self.reservation, usage).await
+    }
+
+    /// 请求尚未发出的失败路径：归还本次预留与调用次数。
+    pub async fn abandon(mut self) -> Result<(), SharedLimitsError> {
+        self.settled = true;
+        self.limits.abandon_budget(self.reservation).await
+    }
+}
+
+impl fmt::Debug for SharedBudgetPermit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedBudgetPermit")
+            .field("reservation", &self.reservation)
+            .field("settled", &self.settled)
+            .finish()
+    }
+}
+
+impl Drop for SharedBudgetPermit {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        self.limits
+            .try_settle_budget_blocking(self.reservation, None);
+    }
+}
+
+/// 预留 / 结算尝试的结果，用于把「账本锁忙」与「未启用预算」分开处理。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BudgetAttempt {
+    /// 已在账本中完成写入。
+    Applied,
+    /// 该 root 未启用持久化预算。
+    NoBudget,
+    /// 账本锁忙，调用者可重试。
+    Busy,
+}
+
+/// 在账本内原子占用一次预留，或在任何不满足条件时 fail-closed。
+fn apply_budget_reservation(
+    ledger: &mut BudgetLedger,
+    tokens: u64,
+) -> Result<(), SharedLimitsError> {
+    if ledger.blocked {
+        return Err(SharedLimitsError::BudgetExhausted {
+            tokens_used: ledger.tokens_used,
+            tokens_reserved_active: ledger.tokens_reserved_active,
+            tokens_overage: ledger.tokens_overage,
+            limit: ledger.max_total_tokens,
+        });
+    }
+    if let Some(limit) = ledger.max_total_tokens {
+        if tokens > limit {
+            return Err(SharedLimitsError::BudgetReservationTooLarge {
+                reservation: tokens,
+                limit,
+            });
+        }
+        // 已结算用量不会下降；在途预留只能通过结算或未发出的放弃而减少。
+        let committed = ledger
+            .tokens_used
+            .saturating_add(ledger.tokens_reserved_active);
+        if committed.saturating_add(tokens) > limit {
+            return Err(SharedLimitsError::BudgetExhausted {
+                tokens_used: ledger.tokens_used,
+                tokens_reserved_active: ledger.tokens_reserved_active,
+                tokens_overage: ledger.tokens_overage,
+                limit: Some(limit),
+            });
+        }
+    }
+    if let Some(limit) = ledger.max_model_calls
+        && ledger.calls_started >= limit
+    {
+        return Err(SharedLimitsError::ModelCallBudgetExceeded {
+            used: ledger.calls_started,
+            limit,
+        });
+    }
+    ledger.calls_started = ledger.calls_started.saturating_add(1);
+    ledger.tokens_reserved_active = ledger.tokens_reserved_active.saturating_add(tokens);
+    Ok(())
+}
+
+/// 以真实 usage（或未知时按预留额）结算一次预留。
+fn apply_budget_settlement(ledger: &mut BudgetLedger, reservation: u64, usage: Option<u64>) {
+    ledger.tokens_reserved_active = ledger.tokens_reserved_active.saturating_sub(reservation);
+    let actual = usage.unwrap_or(reservation);
+    ledger.tokens_used = ledger.tokens_used.saturating_add(actual);
+    if actual > reservation {
+        ledger.tokens_over_reservation = ledger
+            .tokens_over_reservation
+            .saturating_add(actual - reservation);
+    }
+    if let Some(limit) = ledger.max_total_tokens
+        && ledger.tokens_used > limit
+    {
+        ledger.tokens_overage = ledger.tokens_overage.max(ledger.tokens_used - limit);
+        ledger.blocked = true;
+    }
+}
+
+/// 归还一次**尚未发出**的预留（含调用次数）。已发出的调用绝不应走到这里。
+fn apply_budget_abandon(ledger: &mut BudgetLedger, reservation: u64) {
+    ledger.tokens_reserved_active = ledger.tokens_reserved_active.saturating_sub(reservation);
+    ledger.calls_started = ledger.calls_started.saturating_sub(1);
+}
+
+/// 打开（必要时创建）版本化预算账本，并核对本地请求没有被放得更宽。
+fn ensure_budget(
+    path: &Path,
+    lock_path: &Path,
+    requested: SharedBudgetPolicy,
+) -> Result<Option<SharedBudgetPolicy>, SharedLimitsError> {
+    if !requested.is_enabled() && read_budget(path)?.is_none() {
+        // 兼容：从未设置预算的 root 不创建账本文件，也不写盘。
+        return Ok(None);
+    }
+    // 读-改-写必须串行化，否则并发收窄会丢失更新。
+    let lock = open_lock_file(lock_path)?;
+    lock.lock()?;
+    match read_budget(path)? {
+        None => {
+            if !requested.is_enabled() {
+                return Ok(None);
+            }
+            publish_budget(path, requested)?;
+            Ok(Some(requested))
+        }
+        Some(mut ledger) => {
+            let recorded = ledger.policy();
+            if let Some((name, recorded_limit, requested_limit)) = wider_than(recorded, requested) {
+                return Err(SharedLimitsError::BudgetPolicyMismatch(format!(
+                    "{name}: ledger records {recorded_limit}, requested {requested_limit}; the shared budget can only be narrowed, use a different root to raise it"
+                )));
+            }
+            let effective = recorded.narrower(requested);
+            if effective != recorded {
+                ledger.set_policy(effective);
+                write_budget_file(path, &ledger)?;
+            }
+            Ok(Some(effective))
+        }
+    }
+}
+
+/// 首建账本：写私有临时文件后 `hard_link`，绝不覆盖并发创建者的账本。
+fn publish_budget(path: &Path, policy: SharedBudgetPolicy) -> Result<(), SharedLimitsError> {
+    let bytes = encode_budget(&BudgetLedger::new(policy))?;
+    let tmp = temp_sibling(path);
+    if let Err(err) = write_new_private_file(&tmp, &bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    match std::fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            sync_parent(path)
+        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            // 所有协作进程都在 flock 之后创建；这里出现 AlreadyExists 说明有外部写入。
+            Err(SharedLimitsError::BudgetPolicyMismatch(
+                "budget ledger was created concurrently; reopen the shared limits root".into(),
+            ))
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(SharedLimitsError::Io(err))
+        }
+    }
+}
+
+fn read_budget(path: &Path) -> Result<Option<BudgetLedger>, SharedLimitsError> {
+    reject_symlink(path)?;
+    let bytes = match read_bounded(path, MAX_BUDGET_FILE_BYTES, || {
+        SharedLimitsError::CorruptBudget(format!(
+            "budget ledger exceeds {MAX_BUDGET_FILE_BYTES} bytes"
+        ))
+    })? {
+        Some(bytes) => bytes,
+        None => return Ok(None),
+    };
+    if bytes.is_empty() {
+        return Err(SharedLimitsError::CorruptBudget(
+            "budget ledger is empty".into(),
+        ));
+    }
+    let ledger: BudgetLedger = serde_json::from_slice(&bytes).map_err(|err| {
+        SharedLimitsError::CorruptBudget(format!("invalid budget ledger json: {err}"))
+    })?;
+    ledger.validate()?;
+    Ok(Some(ledger))
+}
+
+fn encode_budget(ledger: &BudgetLedger) -> Result<Vec<u8>, SharedLimitsError> {
+    let bytes = serde_json::to_vec(ledger).map_err(|err| {
+        SharedLimitsError::CorruptBudget(format!("failed to encode budget ledger: {err}"))
+    })?;
+    if bytes.len() as u64 > MAX_BUDGET_FILE_BYTES {
+        return Err(SharedLimitsError::CorruptBudget(
+            "encoded budget ledger exceeds size limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn write_budget_file(path: &Path, ledger: &BudgetLedger) -> Result<(), SharedLimitsError> {
+    atomic_replace_private(path, &encode_budget(ledger)?)
+}
+
 #[derive(Debug)]
 struct Inner {
     locks_dir: PathBuf,
@@ -444,6 +950,12 @@ struct Inner {
     registry_file: PathBuf,
     registry_lock: PathBuf,
     claims_dir: PathBuf,
+    budget_file: PathBuf,
+    budget_lock: PathBuf,
+    /// 打开时账本已要求启用预算（账本消失后必须 fail-closed）。
+    budget_required: bool,
+    /// 运行时是否观察到过账本；一旦观察到，之后消失同样 fail-closed。
+    budget_observed: AtomicBool,
     config: SharedLimitsConfig,
 }
 
@@ -463,6 +975,10 @@ impl SharedLimits {
     ///
     /// 首次调用会原子且不覆盖地发布版本化策略文件；此后同一 `root` 必须传入一致的并发
     /// 上限，否则返回 [`SharedLimitsError::PolicyMismatch`]。
+    ///
+    /// 若设置了 `max_model_calls` / `max_total_tokens`，同时会打开（必要时创建）版本化
+    /// 预算账本；请求比账本已记录的策略更宽时返回
+    /// [`SharedLimitsError::BudgetPolicyMismatch`]（只能收窄，不能放宽）。
     pub fn new(
         root: impl AsRef<Path>,
         config: SharedLimitsConfig,
@@ -481,6 +997,22 @@ impl SharedLimits {
         ensure_private_dir(&claims_dir)?;
         let registry_file = workspace_dir.join("registry.json");
         let registry_lock = workspace_dir.join("registry.lock");
+        let budget_file = root.join("budget.json");
+        let budget_lock = root.join("budget.lock");
+        let effective_budget = ensure_budget(
+            &budget_file,
+            &budget_lock,
+            SharedBudgetPolicy {
+                max_model_calls: config.max_model_calls,
+                max_total_tokens: config.max_total_tokens,
+            },
+        )?;
+        let mut config = config;
+        if let Some(policy) = effective_budget {
+            config.max_model_calls = policy.max_model_calls;
+            config.max_total_tokens = policy.max_total_tokens;
+        }
+        let budget_required = effective_budget.is_some_and(SharedBudgetPolicy::is_enabled);
         Ok(Self {
             inner: Arc::new(Inner {
                 locks_dir,
@@ -489,6 +1021,10 @@ impl SharedLimits {
                 registry_file,
                 registry_lock,
                 claims_dir,
+                budget_file,
+                budget_lock,
+                budget_required,
+                budget_observed: AtomicBool::new(false),
                 config,
             }),
         })
@@ -504,6 +1040,138 @@ impl SharedLimits {
     /// 只做单向摘要，调用方无需担心原文外泄。
     pub fn provider_key_hash(provider_key: &str) -> String {
         provider_hash(provider_key)
+    }
+
+    /// 预留跨进程 token 预算与一次模型调用。
+    ///
+    /// 未启用持久化预算时返回 `Ok(None)`（不创建账本、不写盘、不改变准入）。启用时先在
+    /// 账本中原子占用预留并计数一次调用，落盘成功后调用者才应发出请求。账本损坏 / 丢失 /
+    /// 超额 / 次数耗尽一律 fail-closed 返回 `Err`，绝不降级放行。
+    ///
+    /// 返回的 [`SharedBudgetPermit`] 必须以真实 usage 结算；只有在请求**尚未发出**的
+    /// 失败路径才能调用 [`SharedBudgetPermit::abandon`] 归还预留。
+    pub async fn reserve_budget(
+        &self,
+        tokens: u64,
+    ) -> Result<Option<SharedBudgetPermit>, SharedLimitsError> {
+        loop {
+            match self.try_reserve_budget(tokens)? {
+                BudgetAttempt::Busy => sleep(POLL_INTERVAL).await,
+                BudgetAttempt::NoBudget => return Ok(None),
+                BudgetAttempt::Applied => {
+                    return Ok(Some(SharedBudgetPermit {
+                        limits: self.clone(),
+                        reservation: tokens,
+                        settled: false,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// 返回跨进程预算账本的只读快照；未启用时返回空策略。
+    pub fn budget_snapshot(&self) -> Result<SharedBudgetSnapshot, SharedLimitsError> {
+        match self.read_budget_ledger()? {
+            Some(ledger) => Ok(ledger.snapshot()),
+            None => Ok(SharedBudgetSnapshot::disabled()),
+        }
+    }
+
+    fn try_reserve_budget(&self, tokens: u64) -> Result<BudgetAttempt, SharedLimitsError> {
+        let Some(_guard) = self.try_acquire_single(&self.inner.budget_lock)? else {
+            return Ok(BudgetAttempt::Busy);
+        };
+        let Some(mut ledger) = self.read_budget_ledger()? else {
+            return Ok(BudgetAttempt::NoBudget);
+        };
+        apply_budget_reservation(&mut ledger, tokens)?;
+        self.write_budget_ledger(&ledger)?;
+        Ok(BudgetAttempt::Applied)
+    }
+
+    async fn settle_budget(
+        &self,
+        reservation: u64,
+        usage: Option<u64>,
+    ) -> Result<(), SharedLimitsError> {
+        loop {
+            match self.try_settle_budget(reservation, usage)? {
+                BudgetAttempt::Busy => sleep(POLL_INTERVAL).await,
+                BudgetAttempt::NoBudget | BudgetAttempt::Applied => return Ok(()),
+            }
+        }
+    }
+
+    fn try_settle_budget(
+        &self,
+        reservation: u64,
+        usage: Option<u64>,
+    ) -> Result<BudgetAttempt, SharedLimitsError> {
+        let Some(_guard) = self.try_acquire_single(&self.inner.budget_lock)? else {
+            return Ok(BudgetAttempt::Busy);
+        };
+        let Some(mut ledger) = self.read_budget_ledger()? else {
+            return Ok(BudgetAttempt::NoBudget);
+        };
+        apply_budget_settlement(&mut ledger, reservation, usage);
+        self.write_budget_ledger(&ledger)?;
+        Ok(BudgetAttempt::Applied)
+    }
+
+    /// `Drop` 使用：有界重试的同步结算。拿不到锁 / 读写失败时保留预留（fail-closed）。
+    fn try_settle_budget_blocking(&self, reservation: u64, usage: Option<u64>) {
+        for _ in 0..SETTLE_SYNC_ATTEMPTS {
+            match self.try_acquire_single(&self.inner.budget_lock) {
+                Ok(Some(_guard)) => {
+                    if let Ok(Some(mut ledger)) = self.read_budget_ledger() {
+                        apply_budget_settlement(&mut ledger, reservation, usage);
+                        let _ = self.write_budget_ledger(&ledger);
+                    }
+                    return;
+                }
+                Ok(None) => std::thread::sleep(SETTLE_SYNC_INTERVAL),
+                Err(_) => return,
+            }
+        }
+        // 超时仍拿不到账本锁：不做任何退款，预留保持占用。
+    }
+
+    async fn abandon_budget(&self, reservation: u64) -> Result<(), SharedLimitsError> {
+        loop {
+            match self.try_abandon_budget(reservation)? {
+                BudgetAttempt::Busy => sleep(POLL_INTERVAL).await,
+                BudgetAttempt::NoBudget | BudgetAttempt::Applied => return Ok(()),
+            }
+        }
+    }
+
+    fn try_abandon_budget(&self, reservation: u64) -> Result<BudgetAttempt, SharedLimitsError> {
+        let Some(_guard) = self.try_acquire_single(&self.inner.budget_lock)? else {
+            return Ok(BudgetAttempt::Busy);
+        };
+        let Some(mut ledger) = self.read_budget_ledger()? else {
+            return Ok(BudgetAttempt::NoBudget);
+        };
+        apply_budget_abandon(&mut ledger, reservation);
+        self.write_budget_ledger(&ledger)?;
+        Ok(BudgetAttempt::Applied)
+    }
+
+    fn read_budget_ledger(&self) -> Result<Option<BudgetLedger>, SharedLimitsError> {
+        let Some(ledger) = read_budget(&self.inner.budget_file)? else {
+            if self.inner.budget_required || self.inner.budget_observed.load(Ordering::SeqCst) {
+                return Err(SharedLimitsError::CorruptBudget(
+                    "budget ledger disappeared after it was observed".into(),
+                ));
+            }
+            return Ok(None);
+        };
+        self.inner.budget_observed.store(true, Ordering::SeqCst);
+        Ok(Some(ledger))
+    }
+
+    fn write_budget_ledger(&self, ledger: &BudgetLedger) -> Result<(), SharedLimitsError> {
+        write_budget_file(&self.inner.budget_file, ledger)
     }
 
     /// 获取一个模型请求许可：同时持有全局槽位与对应 provider 槽位。
@@ -594,12 +1262,13 @@ impl SharedLimits {
         }
     }
 
-    /// 返回配置与当前未过期的 cooldown。
+    /// 返回配置、当前未过期的 cooldown 与跨进程预算账本快照。
     ///
-    /// 不返回 active 槽位计数（见模块文档）。
+    /// 不返回 active 槽位计数（见模块文档）。账本损坏 / 丢失时 fail-closed 返回 `Err`。
     pub fn snapshot(&self) -> Result<SharedLimitsSnapshot, SharedLimitsError> {
         let now = now_millis();
         let map = self.read_cooldowns()?;
+        let budget = self.budget_snapshot()?;
         let mut cooldowns: Vec<ProviderCooldown> = map
             .into_iter()
             .filter(|(_, deadline)| *deadline > now)
@@ -613,6 +1282,7 @@ impl SharedLimits {
         Ok(SharedLimitsSnapshot {
             config: self.inner.config,
             cooldowns,
+            budget,
         })
     }
 
@@ -1031,6 +1701,16 @@ fn atomic_replace_private(path: &Path, bytes: &[u8]) -> Result<(), SharedLimitsE
         let _ = std::fs::remove_file(&tmp);
         return Err(SharedLimitsError::Io(err));
     }
+    sync_parent(path)
+}
+
+fn sync_parent(path: &Path) -> Result<(), SharedLimitsError> {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

@@ -3,12 +3,14 @@
 <html data-theme="dark" data-theme-mode="dark" lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
+<meta name="color-scheme" content="dark light">
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
 <title>Documentation · Mio 原生编程 Agent 完整指南</title>
 <meta content="Mio 官方技术文档。涵盖 CLI 选项全表、会话分支、MCP 与插件、上下文压缩、子代理委派、RPC 协议与 Rust 宿主嵌入。" name="description"/>
 <link href="favicon.svg" rel="icon" type="image/svg+xml"/>
 <link href="styles.css" rel="stylesheet"/>
 <link href="reference.css" rel="stylesheet"/>
+<link rel="stylesheet" href="diffuse.css">
 </head>
 <body class="ref-page-wrap">
 <a class="skip-link" href="#main-content">跳转到正文内容 (Skip to main content)</a>
@@ -658,6 +660,12 @@ fn main() {}
 <td data-en="Disable MCP discovery and plugin dynamic tools." data-zh="禁用 MCP 外部服务扫描与插件动态工具加载。">禁用 MCP 外部服务扫描与插件动态工具加载。</td>
 </tr>
 <tr>
+<td><code>--trust-project-mcp</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Explicitly authorize starting project .mio/mcp.json servers without per-start approval; equivalent to MIO_TRUST_PROJECT_MCP=1 (also true/yes). Authorization binds to the server fingerprint, so config changes re-request it." data-zh="显式信任并启动项目 .mio/mcp.json 中的 MCP Server，不再逐次确认；等价于环境变量 MIO_TRUST_PROJECT_MCP=1（亦接受 true/yes）。授权绑定服务器指纹，配置变化会重新请求。">显式信任并启动项目 .mio/mcp.json 中的 MCP Server，不再逐次确认；等价于环境变量 MIO_TRUST_PROJECT_MCP=1（亦接受 true/yes）。授权绑定服务器指纹，配置变化会重新请求。</td>
+</tr>
+<tr>
 <td><code>--approve</code></td>
 <td>None (Flag)</td>
 <td><code>false</code></td>
@@ -698,6 +706,62 @@ fn main() {}
 <td>None (Flag)</td>
 <td><code>false</code></td>
 <td data-en="Keep the session in memory without writing .mio/sessions/*.json." data-zh="完全在内存中运行，不产生 .mio/sessions/*.json 持久化文件。">完全在内存中运行，不产生 .mio/sessions/*.json 持久化文件。</td>
+</tr>
+<tr>
+<td><code>--temperature</code></td>
+<td><code>0..2</code></td>
+<td data-en="Unset" data-zh="不传">不传</td>
+<td data-en="Explicit sampling temperature; finite 0..2. Unsupported adapters reject it rather than silently ignoring it; model-specific validation still applies." data-zh="显式采样温度，须为 0..2 的有限数值。不支持的适配器明确拒绝，具体模型仍受底层能力校验。">显式采样温度，须为 0..2 的有限数值。不支持的适配器明确拒绝，具体模型仍受底层能力校验。</td>
+</tr>
+<tr>
+<td><code>--checkpoints</code></td>
+<td><code>None (Flag)</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Enable pre-edit file snapshots for write/edit; off by default; conflicts with --no-session." data-zh="为 write/edit 启用可选的写前文件快照，默认关闭；与 --no-session 互斥。">为 write/edit 启用可选的写前文件快照，默认关闭；与 --no-session 互斥。</td>
+</tr>
+<tr>
+<td><code>--list-checkpoints</code></td>
+<td><code>None (Flag)</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List workspace file checkpoints and exit without calling a model." data-zh="列出当前工作区文件检查点后退出，不调用模型。">列出当前工作区文件检查点后退出，不调用模型。</td>
+</tr>
+<tr>
+<td><code>--rewind</code></td>
+<td><code>ID</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Rewind one file checkpoint and exit only if the current file still matches; preserves later edits and never rewinds shell effects or Git history." data-zh="回退指定文件检查点后退出；文件仍须匹配操作后指纹，不覆盖用户后续修改，不回滚 Shell 或 Git 历史。">回退指定文件检查点后退出；文件仍须匹配操作后指纹，不覆盖用户后续修改，不回滚 Shell 或 Git 历史。</td>
+</tr>
+<tr>
+<td><code>--output-cleanup-plan</code></td><td><code>PATH</code></td><td>None</td>
+<td data-en="Offline dry run: create a new private cleanup plan without deleting outputs; refuses to overwrite an existing plan." data-zh="离线预览：新建私有输出清理计划，不删除产物，也不覆盖已有计划。">离线预览：新建私有输出清理计划，不删除产物，也不覆盖已有计划。</td>
+</tr>
+<tr>
+<td><code>--output-cleanup-confirm</code></td><td><code>PATH</code></td><td>None</td>
+<td data-en="Explicitly apply a saved cleanup plan after rechecking references, age, workspace and content; no automatic cleanup." data-zh="显式应用已保存的计划；重新检查引用、保留期、工作区与文件内容，不自动清理。">显式应用已保存的计划；重新检查引用、保留期、工作区与文件内容，不自动清理。</td>
+</tr>
+<tr>
+<td><code>--dedup-key</code></td>
+<td><code>KEY</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Explicit key for a single prompt or piped input. Workspace-persistent dedup returns the original task_id for queued, active and terminal tasks without executing again. Conflicts with --no-session; RPC prompt/follow_up accept dedup_key (memory-only with --no-session)." data-zh="单次提示或管道输入的显式任务 key。按工作区持久化；排队、活动及终态重复提交均返回原 task_id，不再次执行。与 --no-session 互斥；RPC prompt/follow_up 可传 dedup_key（--no-session 时仅进程内有效）。">单次提示或管道输入的显式任务 key。按工作区持久化；排队、活动及终态重复提交均返回原 task_id，不再次执行。与 --no-session 互斥；RPC prompt/follow_up 可传 dedup_key（--no-session 时仅进程内有效）。</td>
+</tr>
+<tr>
+<td><code>--recovery</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Print persisted .mio/journal execution evidence for unfinished or interrupted runs and exit. Scans every workspace journal unless --session/--resume narrows it; conflicts with --no-session. Mio never replays these operations and does not roll back file changes." data-zh="打印 .mio/journal 中未完成/中断运行的执行证据后退出。默认遍历工作区全部 journal，配合 --session/--resume 只看指定会话；与 --no-session 互斥。不会重放这些操作，也不回滚已发生的文件修改。">打印 .mio/journal 中未完成/中断运行的执行证据后退出。默认遍历工作区全部 journal，配合 --session/--resume 只看指定会话；与 --no-session 互斥。不会重放这些操作，也不回滚已发生的文件修改。</td>
+</tr>
+<tr>
+<td><code>--list-unresolved-effects</code></td>
+<td>None (Flag)</td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="List the persistent durable unknown-side-effect ledger records (exact (scope, call_index) keys and snapshot digests) and exit. Read-only: it does not create, lock or modify files. Requires the persistent ledger (conflicts with --no-session), and conflicts with --ack-unresolved-effect, --mode rpc and every other standalone command." data-zh="列出持久化未知副作用账本的精确记录（真实 (scope, call_index) 主键与快照摘要）后退出。只读：不创建、不加锁、不修改文件。需要持久账本（与 --no-session 互斥），并与 --ack-unresolved-effect、--mode rpc 及其他独立命令互斥。">列出持久化未知副作用账本的精确记录（真实 (scope, call_index) 主键与快照摘要）后退出。只读：不创建、不加锁、不修改文件。需要持久账本（与 --no-session 互斥），并与 --ack-unresolved-effect、--mode rpc 及其他独立命令互斥。</td>
+</tr>
+<tr>
+<td><code>--ack-unresolved-effect</code></td>
+<td><code>JSON</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Acknowledge exactly one durable unknown-side-effect record by exact key and snapshot digest and exit. This is a maintenance write; it is refused when coverage is incomplete or the snapshot does not match. Conflicts with --list-unresolved-effects, --no-session, --mode rpc and every other standalone command." data-zh="按精确主键与快照摘要确认一条持久化未知副作用记录后退出。这是维护性写入；覆盖不完整或快照不匹配时拒绝。与 --list-unresolved-effects、--no-session、--mode rpc 及其他独立命令互斥。">按精确主键与快照摘要确认一条持久化未知副作用记录后退出。这是维护性写入；覆盖不完整或快照不匹配时拒绝。与 --list-unresolved-effects、--no-session、--mode rpc 及其他独立命令互斥。</td>
 </tr>
 <tr>
 <td><code>--export</code></td>
@@ -766,6 +830,30 @@ fn main() {}
 <td data-en="Disable shell execution while retaining file and search tools." data-zh="禁用 Bash 执行器；文件读写与搜索工具保持可用。">禁用 Bash 执行器；文件读写与搜索工具保持可用。</td>
 </tr>
 <tr>
+<td><code>--sandbox</code></td><td><code>BACKEND</code></td><td><code>unrestricted</code></td>
+<td data-en="Native subprocess backend: unrestricted or Linux bubblewrap; never silently falls back." data-zh="原生子进程执行环境：unrestricted 或 Linux bubblewrap；不可用时不静默降级。">原生子进程执行环境：unrestricted 或 Linux bubblewrap；不可用时不静默降级。</td>
+</tr>
+<tr>
+<td><code>--sandbox-read-only</code></td><td><code>PATH</code> (repeatable)</td><td>None</td>
+<td data-en="Add an absolute read-only mount for a runtime or data file; requires bubblewrap and refuses the host root. Use absolute executable paths for nonstandard runtimes; extra mounts under private /tmp are refused." data-zh="为运行环境或数据追加绝对路径只读挂载；需选择 bubblewrap，拒绝宿主根目录。非标准运行环境请配置绝对可执行路径；私有 /tmp 下的额外挂载会被拒绝。">为运行环境或数据追加绝对路径只读挂载；需选择 bubblewrap，拒绝宿主根目录。非标准运行环境请配置绝对可执行路径；私有 /tmp 下的额外挂载会被拒绝。</td>
+</tr>
+<tr>
+<td><code>--sandbox-status</code></td><td>None (Flag)</td><td><code>false</code></td>
+<td data-en="Show the selected backend and isolation scope without contacting a model." data-zh="查询执行环境与隔离范围，不调用模型。">查询执行环境与隔离范围，不调用模型。</td>
+</tr>
+<tr>
+<td><code>--sandbox-cpu-seconds</code></td><td><code>N &gt; 0</code></td><td>Host default</td>
+<td data-en="Per-process CPU ceiling in seconds; requires bubblewrap." data-zh="沙箱内每进程 CPU 秒数上限，需选择 bubblewrap。">沙箱内每进程 CPU 秒数上限，需选择 bubblewrap。</td>
+</tr>
+<tr>
+<td><code>--sandbox-memory-mib</code></td><td><code>N &gt; 0</code></td><td>Host default</td>
+<td data-en="Per-process address-space ceiling in MiB; requires bubblewrap." data-zh="沙箱内每进程地址空间上限（MiB），需选择 bubblewrap。">沙箱内每进程地址空间上限（MiB），需选择 bubblewrap。</td>
+</tr>
+<tr>
+<td><code>--sandbox-open-files</code></td><td><code>N &gt;= 3</code></td><td>Host default</td>
+<td data-en="Per-process file-descriptor ceiling; requires bubblewrap." data-zh="沙箱内每进程文件描述符上限，需选择 bubblewrap。">沙箱内每进程文件描述符上限，需选择 bubblewrap。</td>
+</tr>
+<tr>
 <td><code>--subagents</code></td>
 <td>None (Flag)</td>
 <td><code>false</code></td>
@@ -786,10 +874,66 @@ fn main() {}
 <td data-en="Output reserve and provider cap; must leave input room plus a 5% margin. Unsupported by DeepSeek web." data-zh="输出预留与请求上限；必须留下输入空间及 5% 余量。DeepSeek 网页端不支持。">输出预留与请求上限；必须留下输入空间及 5% 余量。DeepSeek 网页端不支持。</td>
 </tr>
 <tr>
+<td><code>--output-schema</code></td><td><code>PATH</code></td><td data-en="None" data-zh="无">无</td>
+<td data-en="Require the final reply to match a JSON Schema file (max 32 KiB). Format constraint only; content correctness still requires verification." data-zh="要求最终回复符合指定 JSON Schema 文件（上限 32 KiB）。仅约束格式，不证明内容正确。">要求最终回复符合指定 JSON Schema 文件（上限 32 KiB）。仅约束格式，不证明内容正确。</td>
+</tr>
+<tr>
 <td><code>--max-turns</code></td>
 <td><code>1..256</code></td>
 <td><code>32</code></td>
 <td data-en="Maximum tool-loop steps per turn, from 1 to 256." data-zh="单次回合工具循环最大执行步数（范围校验 1–256）。">单次回合工具循环最大执行步数（范围校验 1–256）。</td>
+</tr>
+<tr>
+<td><code>--max-model-concurrency</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent model requests admitted in this process; does not widen the cross-process policy.json defaults." data-zh="本进程内并发的模型请求准入上限；不会放宽跨进程 policy.json 的全局默认限额。">本进程内并发的模型请求准入上限；不会放宽跨进程 policy.json 的全局默认限额。</td>
+</tr>
+<tr>
+<td><code>--max-provider-concurrency</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent requests admitted per provider in this process." data-zh="本进程内同一 Provider 的并发请求准入上限。">本进程内同一 Provider 的并发请求准入上限。</td>
+</tr>
+<tr>
+<td><code>--tool-concurrency</code></td><td><code>N</code> (1–32)</td><td><code>1</code></td>
+<td data-en="Maximum concurrent tool handlers in one run; heavy quotas and workspace write leases still apply." data-zh="单次运行的工具处理器并发上限；重任务配额与工作区写入租约仍然生效。">单次运行的工具处理器并发上限；重任务配额与工作区写入租约仍然生效。</td>
+</tr>
+<tr>
+<td><code>--max-heavy-tasks</code></td>
+<td><code>1..64</code></td>
+<td><code>2</code></td>
+<td data-en="Concurrent heavy tasks (shell and external tool calls) admitted in this process." data-zh="本进程内重任务（shell 与外部工具调用）并发准入上限。">本进程内重任务（shell 与外部工具调用）并发准入上限。</td>
+</tr>
+<tr>
+<td><code>--max-subagents</code></td>
+<td><code>1..16</code></td>
+<td><code>4</code></td>
+<td data-en="Concurrent admitted child tasks; excess tasks queue as Queued instead of being rejected. Only takes effect together with --subagents." data-zh="并发准入的子代理任务上限；超出上限进入 Queued 队列而非直接拒绝，需配合 --subagents 生效。">并发准入的子代理任务上限；超出上限进入 Queued 队列而非直接拒绝，需配合 --subagents 生效。</td>
+</tr>
+<tr>
+<td><code>--max-model-calls</code></td>
+<td><code>N &gt; 0</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Model-call cap. With shared coordination it also seeds or narrows the persistent budget for that root; later processes inherit it." data-zh="模型调用次数上限。启用共享协调时同时建立或收窄同 root 的持久预算，后续进程继承；放宽须使用新的共享根。">模型调用次数上限。启用共享协调时同时建立或收窄同 root 的持久预算，后续进程继承；放宽须使用新的共享根。</td>
+</tr>
+<tr>
+<td><code>--max-total-tokens</code></td>
+<td><code>N &gt; 0</code></td>
+<td data-en="None" data-zh="无">无</td>
+<td data-en="Conservative token budget reserved before each call and settled with reported usage. With shared coordination, cumulative across processes and restarts in the same root. Token accounting, not a dollar-denominated hard cap." data-zh="调用前按保守预留、结算时按 Provider 上报真实 usage 的 token 预算。启用共享协调时在同 root 跨进程、跨重启累计；属于 token 计数，不是美元硬限额。">调用前按保守预留、结算时按 Provider 上报真实 usage 的 token 预算。启用共享协调时在同 root 跨进程、跨重启累计；属于 token 计数，不是美元硬限额。</td>
+</tr>
+<tr>
+<td><code>--shared-limits-dir</code></td>
+<td><code>PATH</code></td>
+<td data-en="User config coordination/" data-zh="用户配置目录 coordination/">用户配置目录 coordination/</td>
+<td data-en="Shared cross-process quota root; the first writer pins a versioned policy.json that every process must match item by item." data-zh="跨进程共享配额根目录；首个写入者固定版本化 policy.json，后续进程必须逐项一致否则 fail-closed。">跨进程共享配额根目录；首个写入者固定版本化 policy.json，后续进程必须逐项一致否则 fail-closed。</td>
+</tr>
+<tr>
+<td><code>--no-shared-limits</code></td>
+<td>None (Flag)</td>
+<td><code>false</code></td>
+<td data-en="Use only in-process admission limits without reading or writing the cross-process root. Conflicts with --shared-limits-dir." data-zh="只用本进程准入限额，不读写跨进程共享根。与 --shared-limits-dir 互斥。">只用本进程准入限额，不读写跨进程共享根。与 --shared-limits-dir 互斥。</td>
 </tr>
 <tr>
 <td><code>--plugin-install</code></td>

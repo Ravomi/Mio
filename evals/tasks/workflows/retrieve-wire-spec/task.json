@@ -1,0 +1,18 @@
+{
+  "id": "retrieve-wire-spec",
+  "task_set": "mio-workflows-v1",
+  "task_set_version": 2,
+  "title": "Retrieve constraints from a long spec",
+  "language": "python",
+  "covers": [
+    "long-document retrieval",
+    "independent normative constraints",
+    "escaping and boundary validation",
+    "canonical rendering",
+    "unrelated files preserved"
+  ],
+  "instruction": "instruction.md",
+  "initial": "initial",
+  "acceptance": "acceptance.py",
+  "acceptance_timeout_seconds": 15
+}

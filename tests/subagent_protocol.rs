@@ -26,7 +26,8 @@ fn run_scenario(read_only: bool, shell: bool) {
     let server = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let (mut parent_turn, mut child_turn) = (0, 0);
-        for _ in 0..5 {
+        let mut first_child_call_id = None;
+        for _ in 0..6 {
             let mut socket = loop {
                 match listener.accept() {
                     Ok((socket, _)) => break socket,
@@ -74,12 +75,10 @@ fn run_scenario(read_only: bool, shell: bool) {
                     if read_only {
                         assert!(last_tool()["error"].as_str().unwrap().contains("只读"));
                     } else if shell {
-                        assert!(
-                            last_tool()["error"]
-                                .as_str()
-                                .unwrap()
-                                .contains("Shell disabled")
-                        );
+                        let result = last_tool();
+                        let denial = result["error"].as_str().unwrap();
+                        assert!(denial.contains("Tool policy denied"), "{denial}");
+                        assert!(denial.contains("does not allow 'shell'"), "{denial}");
                     } else {
                         assert!(last_tool()["output"].is_string());
                     }
@@ -98,14 +97,45 @@ fn run_scenario(read_only: bool, shell: bool) {
                         json!({"operation":"status","run_id":last_tool()["run_id"],"wait_ms":10000}),
                         "",
                     ),
+                    3 => {
+                        let status = last_tool();
+                        assert_eq!(status["status"], "completed");
+                        (
+                            "subagent",
+                            json!({"operation":"result","run_id":status["run_id"]}),
+                            "",
+                        )
+                    }
                     _ => {
                         let result = last_tool();
+                        assert_eq!(result["schema"], "mio.subagent.result/v1");
+                        assert_eq!(result["verification"], "unverified");
                         assert_eq!(result["status"], "completed");
                         assert_eq!(result["output"], "child complete");
+                        let evidence = result["evidence"].as_array().unwrap();
+                        let denied = result["denied_calls"].as_array().unwrap();
+                        if read_only || shell {
+                            assert!(evidence.is_empty(), "a denied tool never ran: {result}");
+                            assert_eq!(denied.len(), 1, "{result}");
+                            assert_eq!(denied[0]["tool"], if shell { "shell" } else { "write" });
+                            assert_eq!(
+                                denied[0]["provider_tool_call_id"].as_str(),
+                                first_child_call_id.as_deref()
+                            );
+                            assert_eq!(result["denied_calls_truncated"], false);
+                        } else {
+                            assert_eq!(evidence.len(), 1, "{result}");
+                            assert_eq!(evidence[0]["tool"], "write");
+                            assert_eq!(evidence[0]["ok"], true);
+                            assert!(denied.is_empty(), "{result}");
+                        }
                         ("", Value::Null, "parent verified")
                     }
                 }
             };
+            if child && child_turn == 1 {
+                first_child_call_id = Some(format!("call_{parent_turn}_{child_turn}"));
+            }
             let delta = if tool.is_empty() {
                 json!({"role":"assistant","content":answer})
             } else {
@@ -114,8 +144,19 @@ fn run_scenario(read_only: bool, shell: bool) {
             let chunk = |delta: Value, finish: Value| {
                 json!({"id":"mock","object":"chat.completion.chunk","created":0,"model":"mock","choices":[{"index":0,"delta":delta,"finish_reason":finish}]}).to_string()
             };
+            let reasoning = if child && tool.is_empty() {
+                format!(
+                    "data: {}\n\n",
+                    chunk(
+                        json!({"role":"assistant","reasoning_content":"child reasoning"}),
+                        Value::Null
+                    )
+                )
+            } else {
+                String::new()
+            };
             let body = format!(
-                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                "{reasoning}data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                 chunk(delta, Value::Null),
                 chunk(
                     json!({}),
@@ -128,7 +169,7 @@ fn run_scenario(read_only: bool, shell: bool) {
             );
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
-        assert_eq!((parent_turn, child_turn), (3, 2));
+        assert_eq!((parent_turn, child_turn), (4, 2));
     });
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_mio"))
         .args([
@@ -171,6 +212,16 @@ fn run_scenario(read_only: bool, shell: bool) {
         !events
             .iter()
             .any(|e| e["type"] == "text" && e["data"] == "child complete")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| { e["type"] == "reasoning" && e["data"]["text"] == "child reasoning" })
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| { e["type"] == "text" && e["data"] == "child reasoning" })
     );
     assert_eq!(
         dir.path().join("forbidden.txt").exists(),
